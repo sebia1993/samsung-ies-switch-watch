@@ -73,7 +73,7 @@ public sealed class SetupDiagnosticsService(
             steps.Add(Success(
                 "PATHS_READY",
                 "경로 사전 확인",
-                "설치·데이터 경로 형식과 상위 폴더를 확인했습니다. 실제 쓰기 권한과 EDR 허용 여부는 설치 중 확인합니다."));
+                "설치·데이터 경로 형식과 실제 비파괴 쓰기 권한을 확인했습니다."));
             steps.MarkActiveStage(SetupFailureStage.Firewall);
             try
             {
@@ -239,12 +239,22 @@ public sealed class SetupDiagnosticsService(
         {
             fileSystem.ValidateDeploymentPaths(paths, service, transactionPaths);
             if (!fileSystem.CanCreateUnder(paths.InstallDirectory) ||
-                !fileSystem.CanCreateUnder(paths.DataDirectory))
+                !fileSystem.CanCreateUnder(paths.DataDirectory) ||
+                !fileSystem.CanCreateUnder(paths.OperationsDirectory))
             {
                 throw new SetupException(
                     SetupErrorCodes.PathNotWritable,
                     "Program Files 또는 ProgramData 설치 경로의 상위 폴더를 확인할 수 없습니다.");
             }
+
+            // An existing parent directory is not evidence that the installer
+            // can create and replace files below it. Use a uniquely named,
+            // flushed probe and remove it before continuing. This catches
+            // ACL, EDR and policy failures before the transaction mutates the
+            // current installation.
+            fileSystem.EnsureDirectoryWritable(paths.InstallDirectory);
+            fileSystem.EnsureDirectoryWritable(paths.DataDirectory);
+            fileSystem.EnsureDirectoryWritable(paths.OperationsDirectory);
         }
         catch (SetupException)
         {

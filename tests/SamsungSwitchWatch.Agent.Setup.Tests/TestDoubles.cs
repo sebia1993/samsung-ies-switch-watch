@@ -8,11 +8,13 @@ internal sealed class TestFileSystem : ISetupFileSystem
     private readonly PhysicalSetupFileSystem _inner = new();
 
     public List<(string Path, DirectoryAccessKind Kind)> AccessRequests { get; } = [];
+    public List<string> WriteProbePaths { get; } = [];
     public bool FailBackupCleanup { get; set; }
     public string? FreshDataDirectory { get; set; }
     public int DataCleanupFailuresRemaining { get; set; }
     public Exception? PathValidationException { get; set; }
     public Exception? CanCreateException { get; set; }
+    public Exception? WriteProbeException { get; set; }
     public string? AccessFailurePath { get; set; }
     public DirectoryAccessKind? AccessFailureKind { get; set; }
     public int AccessFailureOccurrence { get; set; } = 1;
@@ -38,6 +40,17 @@ internal sealed class TestFileSystem : ISetupFileSystem
     public int ActivationMoveFailuresRemaining { get; set; }
     public Func<string, string, bool>? MoveFailurePredicate { get; set; }
     public int MoveFailuresRemaining { get; set; }
+    public int MoveFailureHResult { get; set; } = 32;
+    public Func<string, string, bool>? CopyFailurePredicate { get; set; }
+    public int CopyFailuresRemaining { get; set; }
+    public int CopyFailureHResult { get; set; } = 32;
+    public Func<string, string, bool>? CopyCorruptionPredicate { get; set; }
+    public int CorruptedCopies { get; private set; }
+    public Func<string, bool>? HashFailurePredicate { get; set; }
+    public int HashFailuresRemaining { get; set; }
+    public int HashFailureMatchesToSkip { get; set; }
+    public int HashFailureHResult { get; set; } = 32;
+    public int CopyAttempts { get; private set; }
     private int MatchingAccessRequests { get; set; }
     private string? JournalReappearancePath { get; set; }
     private string? JournalReappearanceContents { get; set; }
@@ -104,17 +117,58 @@ internal sealed class TestFileSystem : ISetupFileSystem
 
         _inner.WriteAllTextAtomic(path, contents);
     }
-    public string ComputeSha256(string path) => _inner.ComputeSha256(path);
+    public void EnsureDirectoryWritable(string path)
+    {
+        WriteProbePaths.Add(path);
+        if (WriteProbeException is not null)
+        {
+            throw WriteProbeException;
+        }
+
+        _inner.EnsureDirectoryWritable(path);
+    }
+    public string ComputeSha256(string path)
+    {
+        if (HashFailurePredicate?.Invoke(path) == true)
+        {
+            if (HashFailureMatchesToSkip > 0)
+            {
+                HashFailureMatchesToSkip--;
+            }
+            else if (HashFailuresRemaining > 0)
+            {
+                HashFailuresRemaining--;
+                throw new IOException("simulated hash read failure", HashFailureHResult);
+            }
+        }
+
+        return _inner.ComputeSha256(path);
+    }
     public void CreateDirectory(string path) => _inner.CreateDirectory(path);
-    public void CopyFile(string source, string destination, bool overwrite) =>
+    public void CopyFile(string source, string destination, bool overwrite)
+    {
+        CopyAttempts++;
+        if (CopyFailuresRemaining > 0 &&
+            CopyFailurePredicate?.Invoke(source, destination) == true)
+        {
+            CopyFailuresRemaining--;
+            throw new IOException("simulated copy failure", CopyFailureHResult);
+        }
+
         _inner.CopyFile(source, destination, overwrite);
+        if (CopyCorruptionPredicate?.Invoke(source, destination) == true)
+        {
+            File.AppendAllText(destination, "tampered-after-copy");
+            CorruptedCopies++;
+        }
+    }
     public void MoveDirectory(string source, string destination)
     {
         if (MoveFailuresRemaining > 0 &&
             MoveFailurePredicate?.Invoke(source, destination) == true)
         {
             MoveFailuresRemaining--;
-            throw new IOException("simulated directory move failure");
+            throw new IOException("simulated move failure", MoveFailureHResult);
         }
 
         if (ActivationMoveFailuresRemaining > 0 &&
@@ -145,7 +199,7 @@ internal sealed class TestFileSystem : ISetupFileSystem
                     HiddenJournalParentUntilAccessNormalization =
                         Path.GetDirectoryName(path);
                 }
-                throw new IOException("simulated journal delete failure");
+                throw new IOException("simulated sharing violation", 32);
             }
 
             if (SilentJournalDeleteAttemptsRemaining > 0)
@@ -239,7 +293,7 @@ internal sealed class TestFileSystem : ISetupFileSystem
             {
                 StagingDirectoryCleanupFailuresRemaining--;
                 HideCleanupDirectoryAfterFailure(path);
-                throw new IOException("simulated staging directory cleanup failure");
+                throw new IOException("simulated sharing violation", 32);
             }
         }
 
@@ -250,7 +304,7 @@ internal sealed class TestFileSystem : ISetupFileSystem
             {
                 BackupDirectoryCleanupFailuresRemaining--;
                 HideCleanupDirectoryAfterFailure(path);
-                throw new IOException("simulated backup directory cleanup failure");
+                throw new IOException("simulated sharing violation", 32);
             }
         }
 
@@ -259,7 +313,7 @@ internal sealed class TestFileSystem : ISetupFileSystem
             PhysicalSetupFileSystem.SamePath(path, FreshDataDirectory))
         {
             DataCleanupFailuresRemaining--;
-            throw new IOException("simulated data cleanup failure");
+            throw new IOException("simulated sharing violation", 32);
         }
 
         if (FailBackupCleanup &&
@@ -274,7 +328,7 @@ internal sealed class TestFileSystem : ISetupFileSystem
             FailedDirectoryCleanupAttempts++;
             FailedDirectoryCleanupFailuresRemaining--;
             HideCleanupDirectoryAfterFailure(path);
-            throw new IOException("simulated failed directory cleanup failure");
+            throw new IOException("simulated sharing violation", 32);
         }
 
         if (Path.GetFileName(path).Contains(".__failed_", StringComparison.Ordinal))

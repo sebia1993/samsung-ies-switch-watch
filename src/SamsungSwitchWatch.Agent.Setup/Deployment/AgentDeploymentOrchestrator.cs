@@ -1,3 +1,5 @@
+using SamsungSwitchWatch.Agent.Setup.Infrastructure;
+
 namespace SamsungSwitchWatch.Agent.Setup.Deployment;
 
 public sealed class AgentDeploymentOrchestrator(
@@ -15,8 +17,8 @@ public sealed class AgentDeploymentOrchestrator(
     private const int EvidenceCleanupMaxAttempts = 3;
     private static readonly TimeSpan EvidenceCleanupRetryDelay =
         TimeSpan.FromMilliseconds(250);
-    private const int RollbackMoveMaxAttempts = 5;
-    private static readonly TimeSpan RollbackMoveRetryDelay =
+    private const int FileMutationMaxAttempts = 5;
+    private static readonly TimeSpan FileMutationRetryDelay =
         TimeSpan.FromMilliseconds(250);
     private const int FirewallVerificationRetryCount = 10;
     private static readonly TimeSpan FirewallVerificationRetryDelay =
@@ -438,18 +440,21 @@ public sealed class AgentDeploymentOrchestrator(
                 DirectoryAccessKind.AdministratorOnly);
             foreach (var runtimeFile in package.VerifiedFiles.Where(IsAgentRuntimeFile))
             {
-                fileSystem.CopyFile(
+                await CopyFileWithRetryAsync(
                     runtimeFile.Path,
                     Path.Combine(stagingDirectory, runtimeFile.Name),
-                    overwrite: false);
+                    overwrite: false,
+                    cancellationToken: cancellationToken);
             }
-            fileSystem.CopyFile(
+            await CopyFileWithRetryAsync(
                 package.ManifestPath,
                 Path.Combine(stagingDirectory, SetupConstants.ManifestFileName),
-                overwrite: false);
+                overwrite: false,
+                cancellationToken: cancellationToken);
 
-            var stagedHash = fileSystem.ComputeSha256(
-                Path.Combine(stagingDirectory, SetupConstants.AgentExecutableName));
+            var stagedHash = await ComputeSha256WithRetryAsync(
+                Path.Combine(stagingDirectory, SetupConstants.AgentExecutableName),
+                cancellationToken);
             if (!string.Equals(stagedHash, package.ExecutableSha256, StringComparison.OrdinalIgnoreCase))
             {
                 throw new SetupException(
@@ -457,7 +462,10 @@ public sealed class AgentDeploymentOrchestrator(
                     "보호된 임시 폴더로 복사한 Agent 파일의 무결성 확인에 실패했습니다.");
             }
 
-            VerifyStagedRuntime(package, stagingDirectory);
+            await VerifyStagedRuntimeAsync(
+                package,
+                stagingDirectory,
+                cancellationToken);
 
             fileSystem.WriteAllTextAtomic(
                 Path.Combine(stagingDirectory, "appsettings.Production.json"),
@@ -497,13 +505,19 @@ public sealed class AgentDeploymentOrchestrator(
                     InstallMovedToBackup = true
                 };
                 journalStore.Write(journal);
-                fileSystem.MoveDirectory(paths.InstallDirectory, backupDirectory);
+                await MoveDirectoryWithRetryAsync(
+                    paths.InstallDirectory,
+                    backupDirectory,
+                    cancellationToken);
                 fileSystem.EnsureDirectoryAccess(
                     backupDirectory,
                     DirectoryAccessKind.AdministratorOnly);
             }
 
-            VerifyStagedRuntime(package, stagingDirectory);
+            await VerifyStagedRuntimeAsync(
+                package,
+                stagingDirectory,
+                cancellationToken);
             stagingActivated = true;
             journal = journal with
             {
@@ -511,7 +525,10 @@ public sealed class AgentDeploymentOrchestrator(
                 StagingActivated = true
             };
             journalStore.Write(journal);
-            fileSystem.MoveDirectory(stagingDirectory, paths.InstallDirectory);
+            await MoveDirectoryWithRetryAsync(
+                stagingDirectory,
+                paths.InstallDirectory,
+                cancellationToken);
 
             steps.MarkActiveStage(SetupFailureStage.ServiceConfiguration);
             var serviceBinaryPath = $"\"{paths.AgentExecutablePath}\" --service";
@@ -1274,7 +1291,7 @@ public sealed class AgentDeploymentOrchestrator(
                         throw new InvalidOperationException();
                     }
 
-                    await MoveDirectoryForRollbackAsync(
+                    await MoveDirectoryWithRetryAsync(
                         paths.InstallDirectory,
                         failedDirectory,
                         cleanupCancellationToken);
@@ -1298,7 +1315,7 @@ public sealed class AgentDeploymentOrchestrator(
                             throw new InvalidOperationException();
                         }
 
-                        await MoveDirectoryForRollbackAsync(
+                        await MoveDirectoryWithRetryAsync(
                             backupDirectory,
                             paths.InstallDirectory,
                             cleanupCancellationToken);
@@ -1671,12 +1688,71 @@ public sealed class AgentDeploymentOrchestrator(
         steps.Add(Failed(code, label, message));
     }
 
-    private async Task MoveDirectoryForRollbackAsync(
+    private async Task CopyFileWithRetryAsync(
+        string source,
+        string destination,
+        bool overwrite,
+        CancellationToken cancellationToken)
+    {
+        string? sourceHash = null;
+        for (var attempt = 1; attempt <= FileMutationMaxAttempts; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                sourceHash ??= fileSystem.ComputeSha256(source);
+                if (fileSystem.FileExists(destination))
+                {
+                    if (string.Equals(
+                            sourceHash,
+                            fileSystem.ComputeSha256(destination),
+                            StringComparison.OrdinalIgnoreCase))
+                    {
+                        return;
+                    }
+
+                    throw new InvalidOperationException(
+                        "Package copy reached an ambiguous destination state.");
+                }
+
+                fileSystem.CopyFile(source, destination, overwrite);
+
+                if (!fileSystem.FileExists(destination))
+                {
+                    throw new InvalidOperationException(
+                        "Package copy did not create its destination.");
+                }
+
+                if (!string.Equals(
+                        sourceHash,
+                        fileSystem.ComputeSha256(destination),
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new SetupException(
+                        SetupErrorCodes.PackageHashMismatch,
+                        "보호된 임시 폴더로 복사한 파일의 무결성 확인에 실패했습니다.");
+                }
+
+                return;
+            }
+            catch (Exception exception) when (
+                PhysicalSetupFileSystem.IsTransientFileSystemException(exception) &&
+                attempt < FileMutationMaxAttempts)
+            {
+                await Task.Delay(FileMutationRetryDelay, cancellationToken);
+                continue;
+            }
+        }
+
+        throw new IOException("Package copy attempts were exhausted.");
+    }
+
+    private async Task MoveDirectoryWithRetryAsync(
         string source,
         string destination,
         CancellationToken cancellationToken)
     {
-        for (var attempt = 1; attempt <= RollbackMoveMaxAttempts; attempt++)
+        for (var attempt = 1; attempt <= FileMutationMaxAttempts; attempt++)
         {
             cancellationToken.ThrowIfCancellationRequested();
             var sourceExists = fileSystem.DirectoryExists(source);
@@ -1692,7 +1768,7 @@ public sealed class AgentDeploymentOrchestrator(
             if (!sourceExists || destinationExists)
             {
                 throw new InvalidOperationException(
-                    "Rollback directory topology is ambiguous.");
+                    "Directory move topology is ambiguous.");
             }
 
             try
@@ -1700,15 +1776,11 @@ public sealed class AgentDeploymentOrchestrator(
                 fileSystem.MoveDirectory(source, destination);
             }
             catch (Exception exception)
-                when (exception is IOException or UnauthorizedAccessException)
+                when (PhysicalSetupFileSystem.IsTransientFileSystemException(exception) &&
+                      attempt < FileMutationMaxAttempts)
             {
-                if (attempt == RollbackMoveMaxAttempts)
-                {
-                    throw;
-                }
-
                 await Task.Delay(
-                    RollbackMoveRetryDelay,
+                    FileMutationRetryDelay,
                     cancellationToken);
                 continue;
             }
@@ -1720,10 +1792,32 @@ public sealed class AgentDeploymentOrchestrator(
             }
 
             throw new InvalidOperationException(
-                "Rollback directory move did not reach the expected state.");
+                "Directory move did not reach the expected state.");
         }
 
-        throw new IOException("Rollback directory move attempts were exhausted.");
+        throw new IOException("Directory move attempts were exhausted.");
+    }
+
+    private async Task<string> ComputeSha256WithRetryAsync(
+        string path,
+        CancellationToken cancellationToken)
+    {
+        for (var attempt = 1; attempt <= FileMutationMaxAttempts; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                return fileSystem.ComputeSha256(path);
+            }
+            catch (Exception exception) when (
+                PhysicalSetupFileSystem.IsTransientFileSystemException(exception) &&
+                attempt < FileMutationMaxAttempts)
+            {
+                await Task.Delay(FileMutationRetryDelay, cancellationToken);
+            }
+        }
+
+        throw new IOException("File hash attempts were exhausted.");
     }
 
     private static void AddRollbackFailure(
@@ -1967,13 +2061,18 @@ public sealed class AgentDeploymentOrchestrator(
                 // The delete returned without an access exception, but the
                 // journal still exists. Retry without changing its ACL.
             }
-            catch (IOException)
+            catch (IOException exception) when (
+                PhysicalSetupFileSystem.IsTransientFileSystemException(exception))
             {
                 normalizeAccessBeforeRetry = true;
             }
             catch (UnauthorizedAccessException)
             {
-                normalizeAccessBeforeRetry = true;
+                return false;
+            }
+            catch (IOException)
+            {
+                return false;
             }
             catch
             {
@@ -1996,10 +2095,18 @@ public sealed class AgentDeploymentOrchestrator(
                     throw;
                 }
                 catch (Exception exception) when (
-                    exception is IOException or UnauthorizedAccessException)
+                    PhysicalSetupFileSystem.IsTransientFileSystemException(exception))
                 {
                     // Keep the retry bounded. A later delete may still succeed
                     // when the local lock or policy race was transient.
+                }
+                catch (UnauthorizedAccessException)
+                {
+                    return false;
+                }
+                catch (IOException)
+                {
+                    return false;
                 }
                 catch
                 {
@@ -2752,14 +2859,19 @@ public sealed class AgentDeploymentOrchestrator(
                file.Name.EndsWith(".runtimeconfig.json", StringComparison.OrdinalIgnoreCase);
     }
 
-    private void VerifyStagedRuntime(AgentPackage package, string stagingDirectory)
+    private async Task VerifyStagedRuntimeAsync(
+        AgentPackage package,
+        string stagingDirectory,
+        CancellationToken cancellationToken)
     {
         foreach (var runtimeFile in package.VerifiedFiles.Where(IsAgentRuntimeFile))
         {
             var stagedRuntimePath = Path.Combine(stagingDirectory, runtimeFile.Name);
             if (!fileSystem.FileExists(stagedRuntimePath) ||
                 !string.Equals(
-                    fileSystem.ComputeSha256(stagedRuntimePath),
+                    await ComputeSha256WithRetryAsync(
+                        stagedRuntimePath,
+                        cancellationToken),
                     runtimeFile.Sha256,
                     StringComparison.OrdinalIgnoreCase))
             {

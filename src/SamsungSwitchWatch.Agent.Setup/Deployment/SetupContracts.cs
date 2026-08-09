@@ -501,6 +501,7 @@ public interface ISetupFileSystem
     void DeleteDirectory(string path, bool recursive);
     void DeleteFile(string path);
     void EnsureDirectoryAccess(string path, DirectoryAccessKind accessKind);
+    void EnsureDirectoryWritable(string path);
     bool CanCreateUnder(string path);
     void ValidateDeploymentPaths(
         DeploymentPaths paths,

@@ -9,6 +9,8 @@ namespace SamsungSwitchWatch.Agent.Setup.Infrastructure;
 
 public sealed class PhysicalSetupFileSystem : ISetupFileSystem
 {
+    private const int WindowsSharingViolation = 32;
+    private const int WindowsLockViolation = 33;
     private static readonly UTF8Encoding Utf8WithoutBom = new(false);
 
     public bool FileExists(string path) => File.Exists(path);
@@ -103,6 +105,59 @@ public sealed class PhysicalSetupFileSystem : ISetupFileSystem
 
     public void DeleteFile(string path) => File.Delete(Path.GetFullPath(path));
 
+    public void EnsureDirectoryWritable(string path)
+    {
+        var fullPath = Path.GetFullPath(path);
+        var directoriesMissingBeforeProbe = new List<string>();
+        var current = new DirectoryInfo(fullPath);
+        while (!current.Exists && current.Parent is { } parent)
+        {
+            directoriesMissingBeforeProbe.Add(current.FullName);
+            current = parent;
+        }
+
+        var probePath = Path.Combine(
+            fullPath,
+            $".samsung-switch-watch-write-{Guid.NewGuid():N}.tmp");
+        try
+        {
+            Directory.CreateDirectory(fullPath);
+            using var stream = new FileStream(
+                probePath,
+                FileMode.CreateNew,
+                FileAccess.Write,
+                FileShare.None,
+                bufferSize: 1,
+                FileOptions.WriteThrough);
+            stream.WriteByte(0);
+            stream.Flush(flushToDisk: true);
+        }
+        finally
+        {
+            if (File.Exists(probePath))
+            {
+                File.Delete(probePath);
+            }
+
+            // Directory.CreateDirectory can create several missing ancestors.
+            // Remove only paths that were absent before the probe and remain
+            // empty, deepest first. Stop as soon as another actor left data.
+            foreach (var createdDirectory in directoriesMissingBeforeProbe)
+            {
+                if (!Directory.Exists(createdDirectory))
+                {
+                    continue;
+                }
+                if (Directory.EnumerateFileSystemEntries(createdDirectory).Any())
+                {
+                    break;
+                }
+
+                Directory.Delete(createdDirectory);
+            }
+        }
+    }
+
     public bool CanCreateUnder(string path)
     {
         try
@@ -135,19 +190,39 @@ public sealed class PhysicalSetupFileSystem : ISetupFileSystem
         {
             directory.Create();
         }
+        if (IsReparsePoint(File.GetAttributes(directory.FullName)))
+        {
+            throw new SetupException(
+                SetupErrorCodes.PathUntrusted,
+                "Agent 폴더 권한을 안전하게 적용할 수 없습니다.");
+        }
 
         var administrators =
             new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null);
         var system =
             new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null);
-        var service = accessKind == DirectoryAccessKind.AdministratorOnly
-            ? null
-            : CreateServiceSid(SetupConstants.ServiceName);
+        // Keep the service SID available while auditing AdministratorOnly
+        // trees so stale read/execute entries from the old install are also
+        // removed from backup and failed evidence.
+        var service = CreateServiceSid(SetupConstants.ServiceName);
         var serviceRights = accessKind == DirectoryAccessKind.AgentDataModify
             ? FileSystemRights.Modify
             : FileSystemRights.ReadAndExecute;
-        var pending = new Queue<string>();
-        pending.Enqueue(directory.FullName);
+        var rootDirectory = directory.FullName;
+        ApplyDirectoryAccess(
+            rootDirectory,
+            accessKind,
+            administrators,
+            system,
+            service,
+            serviceRights);
+
+        // The protected root ACL is inherited by new children. Existing
+        // children are inspected and rewritten only when their owner or ACL
+        // violates the contract; clean files do not receive a needless
+        // per-file SetAccessControl call on every update.
+        var pending = new Queue<string>(
+            Directory.EnumerateFileSystemEntries(rootDirectory));
         var checkedEntries = 0;
         while (pending.Count > 0)
         {
@@ -160,53 +235,208 @@ public sealed class PhysicalSetupFileSystem : ISetupFileSystem
                     "Agent 폴더 권한을 안전하게 적용할 수 없습니다.");
             }
 
-            if (Directory.Exists(current))
-            {
-                var security = new DirectorySecurity();
-                security.SetAccessRuleProtection(
-                    isProtected: true,
-                    preserveInheritance: false);
-                security.SetOwner(administrators);
-                AddDirectoryRule(security, system, FileSystemRights.FullControl);
-                AddDirectoryRule(
+            var isDirectory = Directory.Exists(current);
+            FileSystemSecurity security = isDirectory
+                ? new DirectoryInfo(current).GetAccessControl(
+                    AccessControlSections.Owner | AccessControlSections.Access)
+                : new FileInfo(current).GetAccessControl(
+                    AccessControlSections.Owner | AccessControlSections.Access);
+            if (NeedsAccessNormalization(
+                    rootDirectory,
+                    current,
+                    accessKind,
                     security,
                     administrators,
-                    FileSystemRights.FullControl);
-                if (service is not null)
-                {
-                    AddDirectoryRule(security, service, serviceRights);
-                }
+                    system,
+                    service))
+            {
+                ApplyEntryAccess(
+                    rootDirectory,
+                    current,
+                    isDirectory,
+                    accessKind,
+                    administrators,
+                    system,
+                    service,
+                    serviceRights);
+            }
 
-                new DirectoryInfo(current).SetAccessControl(security);
+            if (isDirectory)
+            {
                 foreach (var child in Directory.EnumerateFileSystemEntries(current))
                 {
                     pending.Enqueue(child);
                 }
             }
-            else
-            {
-                var security = new FileSecurity();
-                security.SetAccessRuleProtection(
-                    isProtected: true,
-                    preserveInheritance: false);
-                security.SetOwner(administrators);
-                AddFileRule(security, system, FileSystemRights.FullControl);
-                AddFileRule(
-                    security,
-                    administrators,
-                    FileSystemRights.FullControl);
-                if (service is not null &&
-                    ShouldGrantServiceAccess(
-                        directory.FullName,
-                        current,
-                        accessKind))
-                {
-                    AddFileRule(security, service, serviceRights);
-                }
+        }
+    }
 
-                new FileInfo(current).SetAccessControl(security);
+    private static void ApplyDirectoryAccess(
+        string current,
+        DirectoryAccessKind accessKind,
+        SecurityIdentifier administrators,
+        SecurityIdentifier system,
+        SecurityIdentifier service,
+        FileSystemRights serviceRights)
+    {
+        var security = new DirectorySecurity();
+        security.SetAccessRuleProtection(
+            isProtected: true,
+            preserveInheritance: false);
+        security.SetOwner(administrators);
+        AddDirectoryRule(security, system, FileSystemRights.FullControl);
+        AddDirectoryRule(security, administrators, FileSystemRights.FullControl);
+        if (accessKind != DirectoryAccessKind.AdministratorOnly)
+        {
+            AddDirectoryRule(security, service, serviceRights);
+        }
+
+        new DirectoryInfo(current).SetAccessControl(security);
+    }
+
+    private static void ApplyEntryAccess(
+        string rootDirectory,
+        string current,
+        bool isDirectory,
+        DirectoryAccessKind accessKind,
+        SecurityIdentifier administrators,
+        SecurityIdentifier system,
+        SecurityIdentifier service,
+        FileSystemRights serviceRights)
+    {
+        if (isDirectory)
+        {
+            ApplyDirectoryAccess(
+                current,
+                accessKind,
+                administrators,
+                system,
+                service,
+                serviceRights);
+            return;
+        }
+
+        var security = new FileSecurity();
+        security.SetAccessRuleProtection(
+            isProtected: true,
+            preserveInheritance: false);
+        security.SetOwner(administrators);
+        AddFileRule(security, system, FileSystemRights.FullControl);
+        AddFileRule(security, administrators, FileSystemRights.FullControl);
+        if (ShouldGrantServiceAccess(rootDirectory, current, accessKind))
+        {
+            AddFileRule(security, service, serviceRights);
+        }
+
+        new FileInfo(current).SetAccessControl(security);
+    }
+
+    internal static bool NeedsAccessNormalization(
+        string rootDirectory,
+        string entryPath,
+        DirectoryAccessKind accessKind,
+        FileSystemSecurity security,
+        SecurityIdentifier administrators,
+        SecurityIdentifier system,
+        SecurityIdentifier? service)
+    {
+        var owner = security.GetOwner(typeof(SecurityIdentifier)) as SecurityIdentifier;
+        // Preflight may trust SYSTEM, the service SID or the current elevated
+        // user long enough to adopt an existing tree. The normalized product
+        // contract is stricter: every descendant is Administrators-owned.
+        if (owner is null || !owner.Equals(administrators))
+        {
+            return true;
+        }
+
+        var accessRules = security
+            .GetAccessRules(
+                includeExplicit: true,
+                includeInherited: true,
+                targetType: typeof(SecurityIdentifier))
+            .OfType<FileSystemAccessRule>()
+            .ToArray();
+        var expectedInheritance = security is DirectorySecurity
+            ? InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit
+            : InheritanceFlags.None;
+        if (!HasCanonicalAllowRule(
+                accessRules,
+                administrators,
+                FileSystemRights.FullControl,
+                expectedInheritance) ||
+            !HasCanonicalAllowRule(
+                accessRules,
+                system,
+                FileSystemRights.FullControl,
+                expectedInheritance))
+        {
+            return true;
+        }
+
+        var serviceAccessExpected = service is not null &&
+                                    ShouldGrantServiceAccess(
+                                        rootDirectory,
+                                        entryPath,
+                                        accessKind);
+        var allowedRuleIdentities = new HashSet<SecurityIdentifier>
+        {
+            administrators,
+            system
+        };
+        if (serviceAccessExpected)
+        {
+            allowedRuleIdentities.Add(service!);
+        }
+
+        if (accessRules.Any(rule =>
+                rule.AccessControlType != AccessControlType.Allow ||
+                rule.IdentityReference is not SecurityIdentifier sid ||
+                !allowedRuleIdentities.Contains(sid)))
+        {
+            return true;
+        }
+
+        FileSystemAccessRule[] serviceRules = service is null
+            ? []
+            : accessRules
+                .Where(rule =>
+                    rule.IdentityReference is SecurityIdentifier sid &&
+                    sid.Equals(service))
+                .ToArray();
+        if (!serviceAccessExpected && serviceRules.Length > 0)
+        {
+            return true;
+        }
+
+        if (serviceAccessExpected)
+        {
+            var expectedServiceRights = accessKind == DirectoryAccessKind.AgentDataModify
+                ? FileSystemRights.Modify
+                : FileSystemRights.ReadAndExecute;
+            // Windows persists Synchronize on ordinary allow ACEs even when
+            // the requested FileSystemRights value omitted it.
+            expectedServiceRights |= FileSystemRights.Synchronize;
+            var serviceRights = serviceRules
+                .Where(rule => rule.AccessControlType == AccessControlType.Allow)
+                .Aggregate(
+                    (FileSystemRights)0,
+                    (rights, rule) => rights | rule.FileSystemRights);
+            // Keep the service grant aligned with the directory contract. In
+            // particular, a stale Modify/FullControl grant must not survive
+            // on program files, and data files must not gain ACL ownership
+            // rights merely because the service SID is trusted.
+            if (serviceRights != expectedServiceRights ||
+                !HasCanonicalAllowRule(
+                    serviceRules,
+                    service!,
+                    expectedServiceRights,
+                    expectedInheritance))
+            {
+                return true;
             }
         }
+
+        return serviceAccessExpected && serviceRules.Length == 0;
     }
 
     internal static bool ShouldGrantServiceAccess(
@@ -550,13 +780,17 @@ public sealed class PhysicalSetupFileSystem : ISetupFileSystem
         {
             return action();
         }
-        catch (IOException)
+        catch (Exception exception) when (IsTransientFileSystemException(exception))
         {
             // A running Agent or endpoint-security product can briefly replace
             // a product file while preflight is inspecting it. Retry once only.
             return action();
         }
     }
+
+    internal static bool IsTransientFileSystemException(Exception exception) =>
+        exception is IOException &&
+        (exception.HResult & 0xFFFF) is WindowsSharingViolation or WindowsLockViolation;
 
     internal static bool IsVanishedNonRootEntry(
         string rootPath,
@@ -631,6 +865,24 @@ public sealed class PhysicalSetupFileSystem : ISetupFileSystem
                 rule.IdentityReference is SecurityIdentifier sid &&
                 !allowedWriters.Contains(sid) &&
                 (rule.FileSystemRights & dangerous) != 0);
+    }
+
+    private static bool HasCanonicalAllowRule(
+        IEnumerable<FileSystemAccessRule> rules,
+        SecurityIdentifier identity,
+        FileSystemRights expectedRights,
+        InheritanceFlags expectedInheritance)
+    {
+        var identityRules = rules
+            .Where(rule =>
+                rule.IdentityReference is SecurityIdentifier sid &&
+                sid.Equals(identity))
+            .ToArray();
+        return identityRules.Length == 1 &&
+               identityRules[0].AccessControlType == AccessControlType.Allow &&
+               identityRules[0].FileSystemRights == expectedRights &&
+               identityRules[0].InheritanceFlags == expectedInheritance &&
+               identityRules[0].PropagationFlags == PropagationFlags.None;
     }
 
     private static bool HasOwnedAgentData(string dataDirectory)

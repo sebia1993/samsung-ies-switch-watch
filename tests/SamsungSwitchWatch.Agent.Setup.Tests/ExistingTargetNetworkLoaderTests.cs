@@ -135,6 +135,8 @@ public sealed class ExistingTargetNetworkLoaderTests
         public void DeleteFile(string path) => throw new NotSupportedException();
         public void EnsureDirectoryAccess(string path, DirectoryAccessKind accessKind) =>
             throw new NotSupportedException();
+        public void EnsureDirectoryWritable(string path) =>
+            throw new NotSupportedException();
         public bool CanCreateUnder(string path) => throw new NotSupportedException();
         public void ValidateDeploymentPaths(
             DeploymentPaths paths,

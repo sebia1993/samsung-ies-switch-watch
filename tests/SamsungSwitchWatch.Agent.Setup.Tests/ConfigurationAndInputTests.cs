@@ -318,4 +318,53 @@ public sealed class ConfigurationAndInputTests
         Assert.Equal(SetupErrorCodes.PathInvalid, exception.Code);
         Assert.DoesNotContain("private", exception.Message, StringComparison.OrdinalIgnoreCase);
     }
+
+    [Fact]
+    public void DeploymentWriteProbe_MapsAccessFailureToPathNotWritable()
+    {
+        var fileSystem = new TestFileSystem
+        {
+            WriteProbeException = new UnauthorizedAccessException("private")
+        };
+        var paths = new DeploymentPaths("package", "install", "data", "operations");
+
+        var exception = Assert.Throws<SetupException>(() =>
+            SetupDiagnosticsService.ValidateDeploymentPathsForInstall(
+                fileSystem,
+                paths,
+                ServiceSnapshot.Missing,
+                []));
+
+        Assert.Equal(SetupErrorCodes.PathNotWritable, exception.Code);
+        Assert.DoesNotContain("private", exception.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void DeploymentWriteProbe_ChecksEveryMutableProductRoot()
+    {
+        using var folder = new TemporaryFolder();
+        var fileSystem = new TestFileSystem();
+        var paths = new DeploymentPaths(
+            folder.Combine("package"),
+            folder.Combine("program", "SamsungSwitchWatch", "Agent"),
+            folder.Combine("data", "SamsungSwitchWatch"),
+            folder.Combine("data", "SamsungSwitchWatch-Operations"));
+
+        SetupDiagnosticsService.ValidateDeploymentPathsForInstall(
+            fileSystem,
+            paths,
+            ServiceSnapshot.Missing,
+            []);
+
+        Assert.Equal(
+            [
+                paths.InstallDirectory,
+                paths.DataDirectory,
+                paths.OperationsDirectory
+            ],
+            fileSystem.WriteProbePaths);
+        Assert.False(Directory.Exists(paths.InstallDirectory));
+        Assert.False(Directory.Exists(paths.DataDirectory));
+        Assert.False(Directory.Exists(paths.OperationsDirectory));
+    }
 }

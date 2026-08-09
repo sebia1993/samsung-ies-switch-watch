@@ -521,6 +521,235 @@ public sealed class AgentDeploymentOrchestratorTests
     }
 
     [Fact]
+    public async Task DeployAsync_TransientPackageCopySharingViolationRetries()
+    {
+        using var folder = new TemporaryFolder();
+        var fixture = CreateFreshFixture(folder);
+        fixture.FileSystem.CopyFailuresRemaining = 1;
+        fixture.FileSystem.CopyFailurePredicate = (_, destination) =>
+            string.Equals(
+                Path.GetFileName(destination),
+                SetupConstants.AgentExecutableName,
+                StringComparison.Ordinal);
+
+        var result = await fixture.CreateOrchestrator(ready: true).DeployAsync(
+            new SetupRequest("10.1.1.20", ["10.30.0.0/16"]),
+            CancellationToken.None);
+
+        Assert.True(result.Succeeded);
+        Assert.Equal(0, fixture.FileSystem.CopyFailuresRemaining);
+        Assert.Equal(
+            "new-agent",
+            File.ReadAllText(fixture.Paths.AgentExecutablePath));
+    }
+
+    [Fact]
+    public async Task DeployAsync_TransientPostCopyHashReadLockRetries()
+    {
+        using var folder = new TemporaryFolder();
+        var fixture = CreateFreshFixture(folder);
+        fixture.FileSystem.HashFailuresRemaining = 1;
+        fixture.FileSystem.HashFailurePredicate = path =>
+            path.Contains(".__staging_", StringComparison.Ordinal) &&
+            string.Equals(
+                Path.GetFileName(path),
+                SetupConstants.AgentExecutableName,
+                StringComparison.Ordinal);
+
+        var result = await fixture.CreateOrchestrator(ready: true).DeployAsync(
+            new SetupRequest("10.1.1.20", ["10.30.0.0/16"]),
+            CancellationToken.None);
+
+        Assert.True(result.Succeeded);
+        Assert.Equal(0, fixture.FileSystem.HashFailuresRemaining);
+        Assert.Equal(
+            "new-agent",
+            File.ReadAllText(fixture.Paths.AgentExecutablePath));
+    }
+
+    [Fact]
+    public async Task DeployAsync_TransientStagedRuntimeHashReadLockRetries()
+    {
+        using var folder = new TemporaryFolder();
+        var fixture = CreateFreshFixture(folder);
+        fixture.FileSystem.HashFailureMatchesToSkip = 1;
+        fixture.FileSystem.HashFailuresRemaining = 1;
+        fixture.FileSystem.HashFailurePredicate = path =>
+            path.Contains(".__staging_", StringComparison.Ordinal) &&
+            string.Equals(
+                Path.GetFileName(path),
+                SetupConstants.AgentExecutableName,
+                StringComparison.Ordinal);
+
+        var result = await fixture.CreateOrchestrator(ready: true).DeployAsync(
+            new SetupRequest("10.1.1.20", ["10.30.0.0/16"]),
+            CancellationToken.None);
+
+        Assert.True(result.Succeeded);
+        Assert.Equal(0, fixture.FileSystem.HashFailureMatchesToSkip);
+        Assert.Equal(0, fixture.FileSystem.HashFailuresRemaining);
+        Assert.Equal(
+            "new-agent",
+            File.ReadAllText(fixture.Paths.AgentExecutablePath));
+    }
+
+    [Fact]
+    public async Task DeployAsync_TransientActivationMoveSharingViolationRetries()
+    {
+        using var folder = new TemporaryFolder();
+        var fixture = CreateFreshFixture(folder);
+        fixture.FileSystem.MoveFailuresRemaining = 1;
+        fixture.FileSystem.MoveFailurePredicate = (_, destination) =>
+            PhysicalSetupFileSystem.SamePath(
+                destination,
+                fixture.Paths.InstallDirectory);
+
+        var result = await fixture.CreateOrchestrator(ready: true).DeployAsync(
+            new SetupRequest("10.1.1.20", ["10.30.0.0/16"]),
+            CancellationToken.None);
+
+        Assert.True(result.Succeeded);
+        Assert.Equal(0, fixture.FileSystem.MoveFailuresRemaining);
+        Assert.Equal(
+            "new-agent",
+            File.ReadAllText(fixture.Paths.AgentExecutablePath));
+    }
+
+    [Fact]
+    public async Task DeployAsync_PersistentPackageCopySharingViolationStopsAfterFiveAttempts()
+    {
+        using var folder = new TemporaryFolder();
+        var fixture = CreateFreshFixture(folder);
+        fixture.FileSystem.CopyFailuresRemaining = 10;
+        fixture.FileSystem.CopyFailurePredicate = (_, destination) =>
+            string.Equals(
+                Path.GetFileName(destination),
+                SetupConstants.AgentExecutableName,
+                StringComparison.Ordinal);
+
+        var result = await fixture.CreateOrchestrator(ready: true).DeployAsync(
+            new SetupRequest("10.1.1.20", ["10.30.0.0/16"]),
+            CancellationToken.None);
+
+        Assert.False(result.Succeeded);
+        Assert.Equal(SetupErrorCodes.Unexpected, result.Code);
+        Assert.Equal(5, fixture.FileSystem.CopyFailuresRemaining);
+        Assert.False(Directory.Exists(fixture.Paths.InstallDirectory));
+    }
+
+    [Fact]
+    public async Task DeployAsync_PersistentActivationMoveSharingViolationStopsAfterFiveAttempts()
+    {
+        using var folder = new TemporaryFolder();
+        var fixture = CreateFreshFixture(folder);
+        fixture.FileSystem.MoveFailuresRemaining = 10;
+        fixture.FileSystem.MoveFailurePredicate = (_, destination) =>
+            PhysicalSetupFileSystem.SamePath(
+                destination,
+                fixture.Paths.InstallDirectory);
+
+        var result = await fixture.CreateOrchestrator(ready: true).DeployAsync(
+            new SetupRequest("10.1.1.20", ["10.30.0.0/16"]),
+            CancellationToken.None);
+
+        Assert.False(result.Succeeded);
+        Assert.Equal(SetupErrorCodes.Unexpected, result.Code);
+        Assert.Equal(5, fixture.FileSystem.MoveFailuresRemaining);
+        Assert.False(Directory.Exists(fixture.Paths.InstallDirectory));
+    }
+
+    [Fact]
+    public async Task DeployAsync_UnclassifiedPackageCopyIoDoesNotRetry()
+    {
+        using var folder = new TemporaryFolder();
+        var fixture = CreateFreshFixture(folder);
+        fixture.FileSystem.CopyFailuresRemaining = 10;
+        fixture.FileSystem.CopyFailureHResult = 5;
+        fixture.FileSystem.CopyFailurePredicate = (_, destination) =>
+            string.Equals(
+                Path.GetFileName(destination),
+                SetupConstants.AgentExecutableName,
+                StringComparison.Ordinal);
+
+        var result = await fixture.CreateOrchestrator(ready: true).DeployAsync(
+            new SetupRequest("10.1.1.20", ["10.30.0.0/16"]),
+            CancellationToken.None);
+
+        Assert.False(result.Succeeded);
+        Assert.Equal(SetupErrorCodes.Unexpected, result.Code);
+        Assert.Equal(9, fixture.FileSystem.CopyFailuresRemaining);
+        Assert.False(Directory.Exists(fixture.Paths.InstallDirectory));
+    }
+
+    [Fact]
+    public async Task DeployAsync_UnclassifiedPostCopyHashIoDoesNotRetry()
+    {
+        using var folder = new TemporaryFolder();
+        var fixture = CreateFreshFixture(folder);
+        fixture.FileSystem.HashFailuresRemaining = 10;
+        fixture.FileSystem.HashFailureHResult = 5;
+        fixture.FileSystem.HashFailurePredicate = path =>
+            path.Contains(".__staging_", StringComparison.Ordinal) &&
+            string.Equals(
+                Path.GetFileName(path),
+                SetupConstants.AgentExecutableName,
+                StringComparison.Ordinal);
+
+        var result = await fixture.CreateOrchestrator(ready: true).DeployAsync(
+            new SetupRequest("10.1.1.20", ["10.30.0.0/16"]),
+            CancellationToken.None);
+
+        Assert.False(result.Succeeded);
+        Assert.Equal(SetupErrorCodes.Unexpected, result.Code);
+        Assert.Equal(9, fixture.FileSystem.HashFailuresRemaining);
+        Assert.False(Directory.Exists(fixture.Paths.InstallDirectory));
+    }
+
+    [Fact]
+    public async Task DeployAsync_UnclassifiedActivationMoveIoDoesNotRetry()
+    {
+        using var folder = new TemporaryFolder();
+        var fixture = CreateFreshFixture(folder);
+        fixture.FileSystem.MoveFailuresRemaining = 10;
+        fixture.FileSystem.MoveFailureHResult = 5;
+        fixture.FileSystem.MoveFailurePredicate = (_, destination) =>
+            PhysicalSetupFileSystem.SamePath(
+                destination,
+                fixture.Paths.InstallDirectory);
+
+        var result = await fixture.CreateOrchestrator(ready: true).DeployAsync(
+            new SetupRequest("10.1.1.20", ["10.30.0.0/16"]),
+            CancellationToken.None);
+
+        Assert.False(result.Succeeded);
+        Assert.Equal(SetupErrorCodes.Unexpected, result.Code);
+        Assert.Equal(9, fixture.FileSystem.MoveFailuresRemaining);
+        Assert.False(Directory.Exists(fixture.Paths.InstallDirectory));
+    }
+
+    [Fact]
+    public async Task DeployAsync_PostCopyHashMismatchFailsWithoutActivation()
+    {
+        using var folder = new TemporaryFolder();
+        var fixture = CreateFreshFixture(folder);
+        fixture.FileSystem.CopyCorruptionPredicate = (_, destination) =>
+            string.Equals(
+                Path.GetFileName(destination),
+                SetupConstants.AgentExecutableName,
+                StringComparison.Ordinal);
+
+        var result = await fixture.CreateOrchestrator(ready: true).DeployAsync(
+            new SetupRequest("10.1.1.20", ["10.30.0.0/16"]),
+            CancellationToken.None);
+
+        Assert.False(result.Succeeded);
+        Assert.Equal(SetupErrorCodes.PackageHashMismatch, result.Code);
+        Assert.Equal(1, fixture.FileSystem.CorruptedCopies);
+        Assert.False(Directory.Exists(fixture.Paths.InstallDirectory));
+        Assert.DoesNotContain("install", fixture.Services.Operations);
+    }
+
+    [Fact]
     public async Task DeployAsync_UnexpectedServiceStartFailurePreservesSafeDiagnosticsAndRollsBack()
     {
         using var folder = new TemporaryFolder();
@@ -1230,6 +1459,7 @@ public sealed class AgentDeploymentOrchestratorTests
         Assert.Contains(
             SetupErrorCodes.RollbackFileRestoreFailed,
             result.RollbackFailureCodes);
+        Assert.Equal(5, fixture.FileSystem.MoveFailuresRemaining);
         Assert.DoesNotContain("restore", fixture.Services.Operations);
         Assert.False(fixture.Services.State.Running);
         var pending = new DeploymentJournalStore(
@@ -1378,6 +1608,7 @@ public sealed class AgentDeploymentOrchestratorTests
         var pending = journalStore.Read();
         Assert.Equal("committed", pending.Stage);
         Assert.True(Directory.Exists(pending.BackupDirectory));
+        Assert.Equal(1, fixture.FileSystem.BackupDirectoryCleanupAttempts);
     }
 
     [Fact]

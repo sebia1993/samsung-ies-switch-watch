@@ -23,6 +23,10 @@ Write-SswStep '테스트 실행'
 & $dotnet test $solution -c $Configuration --no-build --logger 'console;verbosity=normal'
 if ($LASTEXITCODE -ne 0) { throw 'test 실패' }
 
+Write-SswStep 'Agent Setup 재시도 안정성 반복 검사'
+& (Join-Path $PSScriptRoot 'test-agent-setup-retry-stability.ps1') `
+    -Configuration $Configuration -Iterations 3 -NoBuild
+
 Write-SswStep 'C# 서식 검사'
 & $dotnet format $solution --verify-no-changes --no-restore
 if ($LASTEXITCODE -ne 0) { throw 'dotnet format 검사 실패' }
@@ -63,6 +67,7 @@ if ($parseFailures.Count -gt 0) {
 
 Write-SswStep '배포 도우미 계약 검사'
 & (Join-Path $PSScriptRoot 'test-deployment-helpers.ps1')
+& (Join-Path $PSScriptRoot 'test-agent-setup-filesystem-contract.ps1')
 & (Join-Path $PSScriptRoot 'test-viewer-installer-contract.ps1')
 & (Join-Path $PSScriptRoot 'test-agent-address-input-contract.ps1')
 & (Join-Path $PSScriptRoot 'test-agent-health-diagnostics-contract.ps1')
