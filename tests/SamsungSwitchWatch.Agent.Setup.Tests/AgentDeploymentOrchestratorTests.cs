@@ -1660,7 +1660,7 @@ public sealed class AgentDeploymentOrchestratorTests
         Assert.Empty(fixture.FileSystem.AccessRequests);
         Assert.False(Directory.Exists(fixture.Paths.InstallDirectory));
         var pathStep = Assert.Single(result.Steps, step => step.Code == "PATHS_READY");
-        Assert.Contains("실제 쓰기 권한", pathStep.Message, StringComparison.Ordinal);
+        Assert.Contains("실제 비파괴 쓰기 권한", pathStep.Message, StringComparison.Ordinal);
     }
 
     [Fact]
