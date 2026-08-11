@@ -1281,6 +1281,165 @@ public sealed class AgentDeploymentOrchestratorTests
     }
 
     [Fact]
+    public async Task RecoverAsync_TransientServiceRestoreFailurePreservesEvidenceAndNextRetrySucceeds()
+    {
+        using var folder = new TemporaryFolder();
+        var fixture = CreateUpgradeFixture(folder);
+        fixture.Services.StartException =
+            new IOException("simulated unexpected service start failure");
+        fixture.Services.RestoreFailuresRemaining = 2;
+        var journalStore = new DeploymentJournalStore(
+            fixture.FileSystem,
+            fixture.Paths);
+
+        var deployment = await fixture.CreateOrchestrator(ready: true).DeployAsync(
+            SetupConstants.CreateAutomaticRequest(),
+            CancellationToken.None);
+
+        Assert.False(deployment.Succeeded);
+        Assert.Equal(SetupErrorCodes.RollbackFailed, deployment.Code);
+        Assert.Equal(SetupErrorCodes.Unexpected, deployment.PrimaryFailureCode);
+        Assert.Contains(
+            SetupErrorCodes.RollbackServiceRestoreFailed,
+            deployment.RollbackFailureCodes);
+        Assert.True(journalStore.Exists);
+        Assert.Equal("old-agent", File.ReadAllText(fixture.Paths.AgentExecutablePath));
+        Assert.False(fixture.Services.State.Running);
+        fixture.Services.StartException = null;
+
+        var firstRecovery = await fixture.CreateOrchestrator(ready: true)
+            .RecoverAsync(CancellationToken.None);
+
+        Assert.False(firstRecovery.Succeeded);
+        Assert.Equal(SetupErrorCodes.RollbackFailed, firstRecovery.Code);
+        Assert.Equal(SetupErrorCodes.Unexpected, firstRecovery.PrimaryFailureCode);
+        Assert.Contains(
+            SetupErrorCodes.RollbackServiceRestoreFailed,
+            firstRecovery.RollbackFailureCodes);
+        Assert.True(journalStore.Exists);
+        var pending = journalStore.Read();
+        Assert.Equal("service-configured", pending.Stage);
+        Assert.Equal(SetupErrorCodes.Unexpected, pending.PrimaryFailureCode);
+        Assert.Contains(
+            SetupErrorCodes.RollbackServiceRestoreFailed,
+            pending.RollbackFailureCodes);
+        Assert.Equal("old-agent", File.ReadAllText(fixture.Paths.AgentExecutablePath));
+        Assert.True(Directory.Exists(pending.FailedDirectory));
+        Assert.False(Directory.Exists(pending.BackupDirectory));
+        Assert.False(Directory.Exists(pending.StagingDirectory));
+        Assert.False(fixture.Services.State.Running);
+
+        var secondRecovery = await fixture.CreateOrchestrator(ready: true)
+            .RecoverAsync(CancellationToken.None);
+
+        Assert.True(secondRecovery.Succeeded);
+        Assert.Equal("old-agent", File.ReadAllText(fixture.Paths.AgentExecutablePath));
+        Assert.True(fixture.Services.State.Running);
+        Assert.False(journalStore.Exists);
+        Assert.False(Directory.Exists(pending.FailedDirectory));
+        Assert.Contains(
+            secondRecovery.Steps,
+            step => step.Code == "ROLLBACK_COMPLETED");
+    }
+
+    [Fact]
+    public async Task RecoverAsync_PersistentServiceRestoreFailurePreservesEvidenceAcrossRetries()
+    {
+        using var folder = new TemporaryFolder();
+        var fixture = CreateUpgradeFixture(folder);
+        fixture.Services.StartException =
+            new IOException("simulated unexpected service start failure");
+        fixture.Services.RestoreFailuresRemaining = int.MaxValue;
+        var journalStore = new DeploymentJournalStore(
+            fixture.FileSystem,
+            fixture.Paths);
+
+        var deployment = await fixture.CreateOrchestrator(ready: true).DeployAsync(
+            SetupConstants.CreateAutomaticRequest(),
+            CancellationToken.None);
+
+        Assert.False(deployment.Succeeded);
+        Assert.Equal(SetupErrorCodes.RollbackFailed, deployment.Code);
+        Assert.Equal(SetupErrorCodes.Unexpected, deployment.PrimaryFailureCode);
+        Assert.True(journalStore.Exists);
+        var initialPending = journalStore.Read();
+        fixture.Services.StartException = null;
+
+        var firstRecovery = await fixture.CreateOrchestrator(ready: true)
+            .RecoverAsync(CancellationToken.None);
+        var secondRecovery = await fixture.CreateOrchestrator(ready: true)
+            .RecoverAsync(CancellationToken.None);
+
+        foreach (var result in new[] { firstRecovery, secondRecovery })
+        {
+            Assert.False(result.Succeeded);
+            Assert.Equal(SetupErrorCodes.RollbackFailed, result.Code);
+            Assert.Equal(SetupErrorCodes.Unexpected, result.PrimaryFailureCode);
+            Assert.Contains(
+                SetupErrorCodes.RollbackServiceRestoreFailed,
+                result.RollbackFailureCodes);
+        }
+
+        Assert.True(journalStore.Exists);
+        var finalPending = journalStore.Read();
+        Assert.Equal(initialPending.TransactionId, finalPending.TransactionId);
+        Assert.Equal(initialPending.Stage, finalPending.Stage);
+        Assert.Equal(SetupErrorCodes.Unexpected, finalPending.PrimaryFailureCode);
+        Assert.Contains(
+            SetupErrorCodes.RollbackServiceRestoreFailed,
+            finalPending.RollbackFailureCodes);
+        Assert.Equal("old-agent", File.ReadAllText(fixture.Paths.AgentExecutablePath));
+        Assert.True(Directory.Exists(finalPending.FailedDirectory));
+        Assert.False(Directory.Exists(finalPending.BackupDirectory));
+        Assert.False(Directory.Exists(finalPending.StagingDirectory));
+        Assert.False(fixture.Services.State.Running);
+        Assert.Equal(
+            3,
+            fixture.Services.Operations.Count(operation => operation == "restore"));
+    }
+
+    [Theory]
+    [InlineData(SetupErrorCodes.RollbackServiceDescriptionRestoreWarning)]
+    [InlineData(SetupErrorCodes.RollbackServiceRecoveryPolicyRestoreWarning)]
+    [InlineData(SetupErrorCodes.RollbackServiceDaclRestoreWarning)]
+    public async Task RecoverAsync_V0114JournalOptionalServiceRestoreFailureWarnsAndCompletes(
+        string warningCode)
+    {
+        using var folder = new TemporaryFolder();
+        var fixture = CreateUpgradeFixture(folder);
+        var journalStore = WritePendingJournal(
+            fixture,
+            "service-stop-pending",
+            mutationStarted: true,
+            installMovedToBackup: false,
+            stagingActivated: false,
+            formatVersion: DeploymentJournalStore.CurrentFormatVersion);
+        var pending = journalStore.Read();
+        journalStore.Write(pending with { PackageVersion = "0.11.4-poc" });
+        Directory.CreateDirectory(pending.StagingDirectory);
+        fixture.Services.RestoreWarningCodes.Add(warningCode);
+
+        var result = await fixture.CreateOrchestrator(ready: true)
+            .RecoverAsync(CancellationToken.None);
+
+        Assert.True(result.Succeeded);
+        var warning = Assert.Single(
+            result.Steps,
+            step => step.Code == warningCode);
+        Assert.Equal(SetupStepState.Warning, warning.State);
+        Assert.DoesNotContain(
+            result.Steps,
+            step => step.Code == SetupErrorCodes.RollbackServiceRestoreFailed);
+        Assert.Equal("old-agent", File.ReadAllText(fixture.Paths.AgentExecutablePath));
+        Assert.True(fixture.Services.State.Running);
+        Assert.False(journalStore.Exists);
+        Assert.False(Directory.Exists(pending.StagingDirectory));
+        Assert.Contains(
+            result.Steps,
+            step => step.Code == "ROLLBACK_COMPLETED");
+    }
+
+    [Fact]
     public async Task DeployAsync_FirewallRollbackAttemptsHttpsAndLegacyIndependently()
     {
         using var folder = new TemporaryFolder();

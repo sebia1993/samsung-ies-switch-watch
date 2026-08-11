@@ -3,7 +3,7 @@
 원격 PC의 숨겨진 Windows 서비스가 삼성 iES 스위치에 Telnet으로 접속하고, 운영자 PC의
 Viewer가 장비 등록·조회 명령·결과 확인·주기 감시를 담당하는 Windows 전용 POC입니다.
 
-현재 버전은 `v0.11.4-poc`입니다. IES4224GP, IES4028XP, IES4226XP의 실제 펌웨어별
+현재 버전은 `v0.11.5-poc`입니다. IES4224GP, IES4028XP, IES4226XP의 실제 펌웨어별
 명령과 출력은 사내 현장 검증 전까지 확정된 것으로 간주하지 않습니다.
 
 ## 한눈에 보는 구조
@@ -30,8 +30,8 @@ SamsungSwitchWatch.Viewer.exe              SamsungSwitchWatchAgent 서비스
 
 공식 GitHub Release Assets에서 다음 두 ZIP만 받습니다.
 
-- `SamsungSwitchWatch-Agent-0.11.4-poc-win-x64.zip`
-- `SamsungSwitchWatch-Viewer-0.11.4-poc-win-x64.zip`
+- `SamsungSwitchWatch-Agent-0.11.5-poc-win-x64.zip`
+- `SamsungSwitchWatch-Viewer-0.11.5-poc-win-x64.zip`
 
 두 패키지는 Windows x64용 self-contained 빌드이므로 Python이나 .NET을 별도로 설치하지
 않습니다. API v4가 호환되면 버전 차이는 경고 후 연결되지만, 운영에는 같은 Release 조합을
@@ -69,6 +69,13 @@ staging·backup·failed·journal 중 어느 안전 단계에서 실패했는지
 `AGENT_LOCAL_CONNECTION_UNCONFIRMED` 또는 방화벽 경고와 다음 확인 절차를 표시하며 Agent
 서비스는 유지합니다. 이 변경으로 로컬 HTTPS 진단 실패가 반복 설치와 복구 실패로 확대되는
 문제를 막습니다.
+
+`0.11.5-poc`는 이전 상태 복구 중 서비스 설명, 자동 복구 정책 또는 DACL 같은 선택적
+메타데이터를 복원하지 못한 경우 이를 경고로 분리합니다. 서비스 실행 파일 경로, 시작 유형,
+계정, 표시 이름, 서비스 SID와 이전 실행 상태 같은 핵심 구성을 복원하지 못하면 기존처럼
+복구를 실패 처리하고 작업 기록과 이전 파일을 보존합니다. 핵심 상태 확인은 선택적
+메타데이터 조회와 분리했으며, Windows 서비스 삭제 대기 상태는 최대 20초 동안 제한적으로
+기다린 뒤 안전하게 다음 복구 단계를 판단합니다.
 
 이번 버전은 설치 버튼이 읽기 전용 진단과 실제 배포에서 같은 서비스 상태를 연속 두 번 조회하던
 흐름을 하나의 트랜잭션 설치로 단순화합니다. 초기 서비스 조회가 일시적으로 실패하면 200ms 뒤
@@ -203,7 +210,7 @@ dotnet restore SamsungSwitchWatch.sln --locked-mode
 dotnet build SamsungSwitchWatch.sln -c Release --no-restore
 dotnet test SamsungSwitchWatch.sln -c Release --no-build
 .\scripts\validate.ps1 -Configuration Release
-.\scripts\build-release.ps1 -Version 0.11.4-poc
+.\scripts\build-release.ps1 -Version 0.11.5-poc
 ```
 
 실제 장비 대신 합성 Telnet 서버와 비식별 Fixture를 사용합니다. Mock 통과를 실제 펌웨어
@@ -225,6 +232,7 @@ ZIP 정확히 두 개입니다.
 - [보안 모델](docs/SECURITY.md)
 - [현장 POC 점검표](docs/FIELD_POC_CHECKLIST_KO.md)
 - [릴리스 절차](docs/RELEASE_PROCESS_KO.md)
+- [0.11.5-poc 릴리스 노트](docs/RELEASE_NOTES_0.11.5_POC_KO.md)
 - [0.11.4-poc 릴리스 노트](docs/RELEASE_NOTES_0.11.4_POC_KO.md)
 - [0.11.3-poc 릴리스 노트](docs/RELEASE_NOTES_0.11.3_POC_KO.md)
 - [0.11.2-poc 릴리스 노트](docs/RELEASE_NOTES_0.11.2_POC_KO.md)

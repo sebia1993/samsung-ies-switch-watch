@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the Korean Samsung Switch Watch v0.11.4 operator manual.
+"""Build the Korean Samsung Switch Watch v0.11.5 operator manual.
 
 The manual is intentionally generated from sanitized, deterministic WPF
 screenshots. It never needs a company switch, a real IP address, or a secret.
@@ -20,8 +20,8 @@ from docx.oxml.ns import qn
 from docx.shared import Inches, Pt, RGBColor
 
 
-VERSION = "0.11.4-poc"
-DOCUMENT_DATE = "2026-08-05"
+VERSION = "0.11.5-poc"
+DOCUMENT_DATE = "2026-08-11"
 FONT = "맑은 고딕"
 MONO = "Consolas"
 
@@ -1424,7 +1424,8 @@ Viewer 허용 범위      : 10/8, 172.16/12, 192.168/16
             ("ROLLBACK_STATE_MISMATCH", "복구 기록과 현재 설치 상태가 다름. 복구·설치 재시도와 파일 수동 정리를 중지"),
             ("ROLLBACK_SERVICE_STOP_FAILED", "SamsungSwitchWatchAgent 중지 상태와 서비스 제어 권한 확인"),
             ("ROLLBACK_FILE_RESTORE_FAILED / ROLLBACK_DATA_CLEANUP_FAILED", "Program Files·ProgramData 권한, 파일 잠금, 백신·EDR 격리 확인. 증거 폴더는 보존"),
-            ("ROLLBACK_SERVICE_RESTORE_FAILED", "파일 복구 완료 여부를 먼저 확인한 뒤 기존 서비스 설정·시작 실패를 Windows 관리자에게 전달"),
+            ("ROLLBACK_SERVICE_RESTORE_FAILED", "파일 복구 완료 여부를 먼저 확인한 뒤 기존 서비스 핵심 설정·시작 실패를 Windows 관리자에게 전달"),
+            ("ROLLBACK_SERVICE_*_RESTORE_WARNING", "서비스 설명·자동 복구 정책·접근 권한의 부가 설정만 복구되지 않은 경고. Agent 핵심 구성과 실행 상태가 정상이라면 복구는 완료됨"),
             ("ROLLBACK_HTTPS_FIREWALL_RESTORE_FAILED / ROLLBACK_LEGACY_FIREWALL_RESTORE_FAILED", "제품 HTTPS 규칙과 이전 legacy 규칙의 개별 복원 실패. 규칙 범위를 수동 확대하지 않음"),
             ("ROLLBACK_JOURNAL_WRITE_FAILED / ROLLBACK_EVIDENCE_CLEANUP_FAILED", "journal 또는 복구 증거 정리 단계 실패. 아래 대상별 안전 코드를 확인하고 남은 기록·폴더는 보존"),
             ("ROLLBACK_STAGING_CLEANUP_FAILED / ROLLBACK_BACKUP_CLEANUP_FAILED", "현재 작업의 staging 또는 backup 자료 정리 실패. 수동 삭제 없이 익명 진단 전달"),

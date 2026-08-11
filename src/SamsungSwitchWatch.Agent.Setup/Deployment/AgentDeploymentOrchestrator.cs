@@ -1430,9 +1430,17 @@ public sealed class AgentDeploymentOrchestrator(
             {
                 if (previousService is not null)
                 {
-                    serviceManager.Restore(
+                    var serviceRestore = serviceManager.RestoreWithResult(
                         SetupConstants.ServiceName,
                         previousService);
+                    foreach (var warning in serviceRestore.Warnings)
+                    {
+                        steps.Add(new SetupStepResult(
+                            warning.Code,
+                            "Agent 서비스 복구",
+                            SetupStepState.Warning,
+                            warning.Message));
+                    }
                 }
                 serviceRestored = true;
             }

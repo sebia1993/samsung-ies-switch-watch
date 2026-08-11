@@ -60,6 +60,12 @@ public sealed partial class WindowsServiceManager : IServiceManager
                     return ServiceSnapshot.Missing;
                 }
 
+                if (IsServiceDeletionPendingError(error))
+                {
+                    WaitForServiceDeletion(serviceName, TimeSpan.FromSeconds(20));
+                    return ServiceSnapshot.Missing;
+                }
+
                 ThrowServiceFailure();
             }
 
@@ -273,14 +279,21 @@ public sealed partial class WindowsServiceManager : IServiceManager
         });
     }
 
-    public void Restore(string serviceName, ServiceSnapshot snapshot)
+    public void Restore(string serviceName, ServiceSnapshot snapshot) =>
+        _ = RestoreWithResult(serviceName, snapshot);
+
+    public ServiceRestoreResult RestoreWithResult(
+        string serviceName,
+        ServiceSnapshot snapshot)
     {
-        var current = Capture(serviceName);
+        ArgumentNullException.ThrowIfNull(snapshot);
+        var warnings = new List<ServiceRestoreWarning>();
+        var current = CaptureCoreServiceState(serviceName);
         if (!snapshot.Exists)
         {
             if (!current.Exists)
             {
-                return;
+                return ServiceRestoreResult.Completed;
             }
 
             if (current.Running)
@@ -296,73 +309,143 @@ public sealed partial class WindowsServiceManager : IServiceManager
                 }
             });
             WaitForServiceDeletion(serviceName, TimeSpan.FromSeconds(20));
-            return;
+            return ServiceRestoreResult.Completed;
         }
 
-        if (!current.Exists && snapshot.SecurityDescriptor is null)
+        var coreConfigurationMatches =
+            current.Exists &&
+            string.Equals(current.BinaryPath, snapshot.BinaryPath, StringComparison.Ordinal) &&
+            current.StartType == snapshot.StartType &&
+            string.Equals(
+                current.AccountName,
+                snapshot.AccountName,
+                StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(current.DisplayName, snapshot.DisplayName, StringComparison.Ordinal);
+        if (!coreConfigurationMatches)
+        {
+            RestoreCoreConfiguration(serviceName, snapshot);
+        }
+
+        if (!current.Exists || current.ServiceSidType != snapshot.ServiceSidType)
+        {
+            WithService(
+                serviceName,
+                ServiceChangeConfigAccess,
+                service => SetServiceSidType(service, snapshot.ServiceSidType));
+        }
+
+        TryRestoreOptional(
+            warnings,
+            SetupErrorCodes.RollbackServiceDescriptionRestoreWarning,
+            "이전 Agent 서비스 설명을 복구하지 못했지만 핵심 서비스 구성 복구는 계속합니다.",
+            () => WithService(
+                serviceName,
+                ServiceChangeConfigAccess,
+                service => SetDescription(service, snapshot.Description)));
+
+        ValidateRecoverySnapshotForRestore(snapshot.Recovery);
+        TryRestoreOptional(
+            warnings,
+            SetupErrorCodes.RollbackServiceRecoveryPolicyRestoreWarning,
+            "이전 Agent 서비스 자동 복구 정책을 복구하지 못했지만 핵심 서비스 구성 복구는 계속합니다.",
+            () => WithService(
+                serviceName,
+                ServiceChangeConfigAccess,
+                service => SetRecovery(service, snapshot.Recovery)));
+
+        if (snapshot.Running && !current.Running)
+        {
+            Start(serviceName, TimeSpan.FromSeconds(30));
+        }
+        else if (!snapshot.Running && current.Running)
+        {
+            Stop(serviceName, TimeSpan.FromSeconds(20));
+        }
+
+        if (snapshot.SecurityDescriptor is not null)
+        {
+            TryRestoreOptional(
+                warnings,
+                SetupErrorCodes.RollbackServiceDaclRestoreWarning,
+                "이전 Agent 서비스 접근 권한을 복구하지 못했지만 핵심 서비스 구성 복구는 계속합니다.",
+                () => WithService(serviceName, ServiceWriteDacAccess, service =>
+                    ApplyServiceSecurityDescriptor(service, snapshot.SecurityDescriptor)));
+        }
+
+        var restored = CaptureCoreServiceState(serviceName);
+        if (!CoreServiceStateMatches(restored, snapshot))
         {
             throw new SetupException(
                 SetupErrorCodes.ServiceFailed,
-                "기존 Agent 서비스가 사라졌고 이전 보안 설정을 확보하지 못해 자동 복구를 중단했습니다.");
+                "이전 Agent 서비스의 핵심 구성 또는 실행 상태를 확인하지 못했습니다.");
         }
 
+        return warnings.Count == 0
+            ? ServiceRestoreResult.Completed
+            : new ServiceRestoreResult(warnings.ToArray());
+    }
+
+    private static bool CoreServiceStateMatches(
+        CoreServiceState current,
+        ServiceSnapshot expected) =>
+        current.Exists == expected.Exists &&
+        (!expected.Exists ||
+         (current.Running == expected.Running &&
+          string.Equals(current.BinaryPath, expected.BinaryPath, StringComparison.Ordinal) &&
+          current.StartType == expected.StartType &&
+          string.Equals(
+              current.AccountName,
+              expected.AccountName,
+              StringComparison.OrdinalIgnoreCase) &&
+          string.Equals(current.DisplayName, expected.DisplayName, StringComparison.Ordinal) &&
+          current.ServiceSidType == expected.ServiceSidType));
+
+    private static void ValidateRecoverySnapshotForRestore(
+        ServiceRecoverySnapshot recovery)
+    {
+        if (recovery.Actions is null || recovery.Actions.Count > 64)
+        {
+            throw new InvalidDataException(
+                "The saved Agent service recovery policy is invalid.");
+        }
+    }
+
+    private static CoreServiceState CaptureCoreServiceState(string serviceName)
+    {
         EnsureWindows();
-        var scm = OpenScManager(
-            ScManagerConnectAccess | ScManagerCreateServiceAccess);
+        var scm = OpenScManager(ScManagerConnectAccess);
         try
         {
-            var service = NativeMethods.OpenService(
-                scm,
-                serviceName,
-                ServiceChangeConfigAccess);
+            var service = NativeMethods.OpenService(scm, serviceName, ServiceCaptureAccess);
             if (service == IntPtr.Zero)
             {
-                if (Marshal.GetLastWin32Error() != ErrorServiceDoesNotExist)
+                var error = Marshal.GetLastWin32Error();
+                if (IsServiceDeletionCompleteError(error))
                 {
-                    ThrowServiceFailure();
+                    return CoreServiceState.Missing;
                 }
 
-                service = NativeMethods.CreateService(
-                    scm,
-                    serviceName,
-                    snapshot.DisplayName,
-                    ServiceChangeConfigAccess,
-                    ServiceWin32OwnProcess,
-                    snapshot.StartType,
-                    ServiceErrorNormal,
-                    snapshot.BinaryPath,
-                    null,
-                    IntPtr.Zero,
-                    null,
-                    snapshot.AccountName,
-                    null);
-                if (service == IntPtr.Zero)
+                if (IsServiceDeletionPendingError(error))
                 {
-                    ThrowServiceFailure();
+                    WaitForServiceDeletion(serviceName, TimeSpan.FromSeconds(20));
+                    return CoreServiceState.Missing;
                 }
-            }
-            else if (!NativeMethods.ChangeServiceConfig(
-                         service,
-                         ServiceNoChange,
-                         snapshot.StartType,
-                         ServiceNoChange,
-                         snapshot.BinaryPath,
-                         null,
-                         IntPtr.Zero,
-                         null,
-                         snapshot.AccountName,
-                         null,
-                         snapshot.DisplayName))
-            {
-                NativeMethods.CloseServiceHandle(service);
-                ThrowServiceFailure();
+
+                ThrowServiceFailure(error);
             }
 
             try
             {
-                SetDescription(service, snapshot.Description);
-                SetServiceSidType(service, snapshot.ServiceSidType);
-                SetRecovery(service, snapshot.Recovery);
+                var config = QueryConfig(service);
+                var status = QueryStatus(service);
+                return new CoreServiceState(
+                    true,
+                    status.CurrentState == ServiceRunning,
+                    config.BinaryPath,
+                    config.StartType,
+                    config.AccountName,
+                    config.DisplayName,
+                    QueryServiceSidType(service));
             }
             finally
             {
@@ -373,16 +456,123 @@ public sealed partial class WindowsServiceManager : IServiceManager
         {
             NativeMethods.CloseServiceHandle(scm);
         }
+    }
 
-        if (snapshot.Running)
+    private sealed record CoreServiceState(
+        bool Exists,
+        bool Running,
+        string BinaryPath,
+        uint StartType,
+        string AccountName,
+        string DisplayName,
+        uint ServiceSidType)
+    {
+        public static CoreServiceState Missing { get; } = new(
+            false,
+            false,
+            string.Empty,
+            0,
+            string.Empty,
+            string.Empty,
+            0);
+    }
+
+    private static void TryRestoreOptional(
+        List<ServiceRestoreWarning> warnings,
+        string code,
+        string message,
+        Action restore)
+    {
+        try
         {
-            Start(serviceName, TimeSpan.FromSeconds(30));
+            restore();
         }
-
-        if (snapshot.SecurityDescriptor is not null)
+        catch (Exception exception) when (
+            IsOptionalServiceRestoreFailure(exception))
         {
-            WithService(serviceName, ServiceWriteDacAccess, service =>
-                ApplyServiceSecurityDescriptor(service, snapshot.SecurityDescriptor));
+            if (!warnings.Any(warning =>
+                    string.Equals(warning.Code, code, StringComparison.Ordinal)))
+            {
+                warnings.Add(new ServiceRestoreWarning(code, message));
+            }
+        }
+    }
+
+    private static bool IsOptionalServiceRestoreFailure(Exception exception) =>
+        exception is SetupException or
+            Win32Exception or
+            UnauthorizedAccessException or
+            System.Security.SecurityException or
+            IOException;
+
+    private static void RestoreCoreConfiguration(
+        string serviceName,
+        ServiceSnapshot snapshot)
+    {
+        EnsureWindows();
+        var scm = OpenScManager(
+            ScManagerConnectAccess | ScManagerCreateServiceAccess);
+        try
+        {
+            var service = NativeMethods.OpenService(
+                scm,
+                serviceName,
+                ServiceChangeConfigAccess);
+            try
+            {
+                if (service == IntPtr.Zero)
+                {
+                    if (Marshal.GetLastWin32Error() != ErrorServiceDoesNotExist)
+                    {
+                        ThrowServiceFailure();
+                    }
+
+                    service = NativeMethods.CreateService(
+                        scm,
+                        serviceName,
+                        snapshot.DisplayName,
+                        ServiceChangeConfigAccess,
+                        ServiceWin32OwnProcess,
+                        snapshot.StartType,
+                        ServiceErrorNormal,
+                        snapshot.BinaryPath,
+                        null,
+                        IntPtr.Zero,
+                        null,
+                        snapshot.AccountName,
+                        null);
+                    if (service == IntPtr.Zero)
+                    {
+                        ThrowServiceFailure();
+                    }
+                }
+                else if (!NativeMethods.ChangeServiceConfig(
+                             service,
+                             ServiceNoChange,
+                             snapshot.StartType,
+                             ServiceNoChange,
+                             snapshot.BinaryPath,
+                             null,
+                             IntPtr.Zero,
+                             null,
+                             snapshot.AccountName,
+                             null,
+                             snapshot.DisplayName))
+                {
+                    ThrowServiceFailure();
+                }
+            }
+            finally
+            {
+                if (service != IntPtr.Zero)
+                {
+                    NativeMethods.CloseServiceHandle(service);
+                }
+            }
+        }
+        finally
+        {
+            NativeMethods.CloseServiceHandle(scm);
         }
     }
 

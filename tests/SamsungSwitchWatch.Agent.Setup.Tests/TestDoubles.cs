@@ -344,6 +344,8 @@ internal sealed class FakeServiceManager(ServiceSnapshot initial) : IServiceMana
     public int StopFailureOccurrence { get; set; } = 1;
     public ServiceSnapshot? StateAfterStopFailure { get; set; }
     public int RestoreFailuresRemaining { get; set; }
+    public HashSet<string> RestoreWarningCodes { get; } =
+        new(StringComparer.Ordinal);
     public Exception? CaptureException { get; set; }
     public int CaptureFailuresRemaining { get; set; } = int.MaxValue;
     public Action? CaptureAction { get; set; }
@@ -491,6 +493,22 @@ internal sealed class FakeServiceManager(ServiceSnapshot initial) : IServiceMana
         }
 
         State = Clone(snapshot);
+    }
+
+    public ServiceRestoreResult RestoreWithResult(
+        string serviceName,
+        ServiceSnapshot snapshot)
+    {
+        Restore(serviceName, snapshot);
+        return RestoreWarningCodes.Count == 0
+            ? ServiceRestoreResult.Completed
+            : new ServiceRestoreResult(
+                RestoreWarningCodes
+                    .Order(StringComparer.Ordinal)
+                    .Select(code => new ServiceRestoreWarning(
+                        code,
+                        "simulated optional service restore warning"))
+                    .ToArray());
     }
 
     private static ServiceSnapshot Clone(ServiceSnapshot value) =>
