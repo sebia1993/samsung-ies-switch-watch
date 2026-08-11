@@ -481,9 +481,15 @@ Assert-OnlyActiveVersion $workflow $workflowVersion 'Release workflow'
 Assert-OnlyActiveVersion $windowsCi $workflowVersion 'Windows CI workflow'
 Assert-OnlyActiveVersion $buildScript $workflowVersion 'Release build script'
 Assert-OnlyActiveVersion $agents $workflowVersion 'Repository instructions'
-Assert-OnlyActiveVersion $install $workflowVersion 'Installation guide' @('0.11.3-poc')
+Assert-OnlyActiveVersion $install $workflowVersion 'Installation guide' @(
+    '0.11.3-poc',
+    '0.11.4-poc'
+)
 Assert-OnlyActiveVersion $releaseProcess $workflowVersion 'Release process'
-Assert-OnlyActiveVersion $manualBuilder $workflowVersion 'User manual builder' @('0.11.3-poc')
+Assert-OnlyActiveVersion $manualBuilder $workflowVersion 'User manual builder' @(
+    '0.11.3-poc',
+    '0.11.4-poc'
+)
 
 Assert-Pattern $buildScript "\[string\]\`$Version\s*=\s*'$escapedVersion'" `
     'Release build default must match the release workflow version.'

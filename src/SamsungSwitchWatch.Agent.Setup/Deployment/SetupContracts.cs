@@ -64,6 +64,12 @@ public static class SetupErrorCodes
     public const string RollbackFileRestoreFailed = "ROLLBACK_FILE_RESTORE_FAILED";
     public const string RollbackDataCleanupFailed = "ROLLBACK_DATA_CLEANUP_FAILED";
     public const string RollbackServiceRestoreFailed = "ROLLBACK_SERVICE_RESTORE_FAILED";
+    public const string RollbackServiceDescriptionRestoreWarning =
+        "ROLLBACK_SERVICE_DESCRIPTION_RESTORE_WARNING";
+    public const string RollbackServiceRecoveryPolicyRestoreWarning =
+        "ROLLBACK_SERVICE_RECOVERY_POLICY_RESTORE_WARNING";
+    public const string RollbackServiceDaclRestoreWarning =
+        "ROLLBACK_SERVICE_DACL_RESTORE_WARNING";
     public const string RollbackHttpsFirewallRestoreFailed =
         "ROLLBACK_HTTPS_FIREWALL_RESTORE_FAILED";
     public const string RollbackLegacyFirewallRestoreFailed =
@@ -429,6 +435,14 @@ public sealed record ServiceRecoverySnapshot(
 
 public sealed record ServiceFailureActionSnapshot(int Type, uint Delay);
 
+public sealed record ServiceRestoreWarning(string Code, string Message);
+
+public sealed record ServiceRestoreResult(
+    IReadOnlyList<ServiceRestoreWarning> Warnings)
+{
+    public static ServiceRestoreResult Completed { get; } = new([]);
+}
+
 public static class ServiceAccountContract
 {
     public static bool IsLegacyLocalService(ServiceSnapshot service) =>
@@ -536,6 +550,13 @@ public interface IServiceManager
     void DisableRecovery(string serviceName);
     void Start(string serviceName, TimeSpan timeout);
     void Restore(string serviceName, ServiceSnapshot snapshot);
+    ServiceRestoreResult RestoreWithResult(
+        string serviceName,
+        ServiceSnapshot snapshot)
+    {
+        Restore(serviceName, snapshot);
+        return ServiceRestoreResult.Completed;
+    }
 }
 
 public interface IFirewallManager

@@ -725,7 +725,10 @@ internal static class SetupFieldDiagnosticFormatter
             "RECOVERY_NOT_REQUIRED",
             "ROLLBACK_COMPLETED",
             "ROLLBACK_RECOVERY_CLEANED",
-            "COMMITTED_TRANSACTION_CLEANED"
+            "COMMITTED_TRANSACTION_CLEANED",
+            SetupErrorCodes.RollbackServiceDescriptionRestoreWarning,
+            SetupErrorCodes.RollbackServiceRecoveryPolicyRestoreWarning,
+            SetupErrorCodes.RollbackServiceDaclRestoreWarning
         };
 
     private static readonly HashSet<string> AllowedFirewallDecisionCodes =
