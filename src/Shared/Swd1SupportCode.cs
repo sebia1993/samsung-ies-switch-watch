@@ -835,7 +835,9 @@ internal static class Swd1MappingTables
         "SETUP_ALREADY_RUNNING",
         "SETUP_CANCELLED",
         "SETUP_UNEXPECTED",
-        "DIAGNOSTIC_WRITE_FAILED"
+        "DIAGNOSTIC_WRITE_FAILED",
+        "SETUP_BACKUP_MOVE_FAILED",
+        "SETUP_FILE_ACTIVATION_FAILED"
     ];
 
     // Numeric positions are protocol values. Append only; never reorder.

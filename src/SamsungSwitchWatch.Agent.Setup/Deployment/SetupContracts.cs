@@ -50,6 +50,9 @@ public static class SetupErrorCodes
     public const string PathUntrusted = "SETUP_PATH_UNTRUSTED";
     public const string PathNotWritable = "SETUP_PATH_NOT_WRITABLE";
     public const string ConfigurationInvalid = "SETUP_CONFIGURATION_INVALID";
+    public const string BackupMoveFailed = "SETUP_BACKUP_MOVE_FAILED";
+    public const string FileActivationFailed = "SETUP_FILE_ACTIVATION_FAILED";
+    public const string BackupAccessWarning = "SETUP_BACKUP_ACCESS_WARNING";
     public const string ServiceFailed = "SETUP_SERVICE_FAILED";
     public const string FirewallFailed = "SETUP_FIREWALL_FAILED";
     public const string FirewallRemoteAccessUnconfirmed =

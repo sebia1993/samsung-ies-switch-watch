@@ -6,7 +6,7 @@
 ## 1. 반입 파일과 버전
 
 - [ ] 동일 GitHub Release에서 Agent ZIP과 Viewer ZIP을 받음
-- [ ] Agent와 Viewer 파일명이 같은 `0.11.5-poc` 버전을 표시함
+- [ ] Agent와 Viewer 파일명이 같은 `0.11.6-poc` 버전을 표시함
 - [ ] 두 ZIP의 SHA-256을 해당 GitHub Release 본문에 표시된 값과 비교함
 - [ ] Agent ZIP에 `SamsungSwitchWatch.Agent.Setup.exe`와 Agent 런타임 파일이 있음
 - [ ] Viewer ZIP에 `SamsungSwitchWatch.Viewer.Setup.exe`, `SamsungSwitchWatch.Viewer.exe`와 Viewer 런타임 파일이 있음
@@ -244,6 +244,11 @@ Viewer가 종료되면 감시도 중단되는 구조가 현장 운영 요구와 
 - [ ] `이전 상태 복구` 성공 뒤 설치 버튼은 다시 활성화되지만 설치가 자동으로 시작되지 않음
 - [ ] 복구 성공 뒤 운영자가 `설치/업데이트`를 한 번 눌러 같은 설치 작업의 내부 검사부터 새 작업을
       실행함
+- [ ] 기존 Agent→backup과 staging→설치 위치 이동을 각각 최대 5회만 시도하고 실패 사이 250ms 대기함
+- [ ] 지속 이동 실패가 `SETUP_BACKUP_MOVE_FAILED`와 `SETUP_FILE_ACTIVATION_FAILED`로 구분되고
+      새 Agent를 실행하지 않은 채 기존 rollback 결과를 명확히 표시함
+- [ ] backup 관리자 전용 ACL 강화만 실패하면 `SETUP_BACKUP_ACCESS_WARNING` 경고를 남기고,
+      새 Agent 파일·서비스·준비 상태가 정상이면 설치 성공을 유지함
 - [ ] staging·backup·failed·journal 정리는 정확한 검증 대상만 최대 3회 시도하고 실패한 시도 사이 250ms 대기함
 - [ ] 삭제 API가 성공해도 대상이 남아 있으면 복구 성공으로 표시하지 않음
 - [ ] 복구 호출 성공 뒤 새 작업 기록 검사에서 journal이 남아 있으면 설치 버튼이 계속 비활성화됨
@@ -257,7 +262,7 @@ Viewer가 종료되면 감시도 중단되는 구조가 현장 운영 요구와 
       핵심 서비스 상태가 확인된 복구는 완료되며 작업 기록이 정리됨
 - [ ] 서비스 실행 파일 경로·시작 유형·계정·표시 이름·서비스 SID·이전 실행 상태 중 하나라도
       복원하지 못하면 `ROLLBACK_SERVICE_RESTORE_FAILED`로 중단하고 journal과 이전 파일을 보존함
-- [ ] `0.11.4-poc`에서 남은 현재 형식의 journal을 `0.11.5-poc` Setup이 읽고 안전하게 복구함
+- [ ] `0.11.4-poc`·`0.11.5-poc`에서 남은 호환 journal을 `0.11.6-poc` Setup이 읽고 안전하게 복구함
 - [ ] 서비스 삭제 대기 상태에서는 최대 20초 안에 완료를 기다린 뒤 복구가 진행되거나 명확한
       실패로 끝나며, Setup이 무한 대기하지 않음
 - [ ] 서비스 중지 뒤 관찰한 서비스 프로세스 종료가 확인되기 전에는 프로그램 폴더를 이동하지 않음

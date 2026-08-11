@@ -668,7 +668,9 @@ function Get-SswAgentV2ErrorCodes {
         'SETUP_ALREADY_RUNNING',
         'SETUP_CANCELLED',
         'SETUP_UNEXPECTED',
-        'DIAGNOSTIC_WRITE_FAILED'
+        'DIAGNOSTIC_WRITE_FAILED',
+        'SETUP_BACKUP_MOVE_FAILED',
+        'SETUP_FILE_ACTIVATION_FAILED'
     )
 }
 
@@ -698,6 +700,7 @@ function Get-SswAgentV2StageCodes {
         'ROLLBACK_COMPLETED',
         'ROLLBACK_RECOVERY_CLEANED',
         'COMMITTED_TRANSACTION_CLEANED',
+        'SETUP_BACKUP_ACCESS_WARNING',
         'UNAVAILABLE'
     )
 }
@@ -735,6 +738,11 @@ function Resolve-SswAgentV2Action {
     }
     if ($ErrorCode -ceq 'SETUP_CONFIGURATION_INVALID') {
         return 'REVIEW_CONFIGURATION'
+    }
+    if ($ErrorCode -cin @(
+            'SETUP_BACKUP_MOVE_FAILED',
+            'SETUP_FILE_ACTIVATION_FAILED')) {
+        return 'RETRY_OR_CHECK_INSTALL_FILES'
     }
     if ($ErrorCode -ceq 'SETUP_SERVICE_FAILED') {
         return 'CHECK_WINDOWS_SERVICE'
@@ -1173,6 +1181,10 @@ function Resolve-SswFieldDiagnosticScenario {
             'AgentDeploymentOrchestratorTests.DeployAsync_RollbackServiceStopFailureBlocksFileAndServiceRestore'
         'AGENT_SETUP|SETUP_UNEXPECTED|UNKNOWN' =
             'AgentDeploymentOrchestratorTests.RecoverAsync_UnexpectedWindowsFailureReturnsStableResult'
+        'AGENT_SETUP|SETUP_BACKUP_MOVE_FAILED|FILE_ACTIVATION' =
+            'AgentDeploymentOrchestratorTests.DeployAsync_PersistentBackupMoveFailureRestoresServiceAndCleansTransaction'
+        'AGENT_SETUP|SETUP_FILE_ACTIVATION_FAILED|FILE_ACTIVATION' =
+            'AgentDeploymentOrchestratorTests.DeployAsync_PersistentStagingActivationFailureRestoresPreviousAgent'
         'VIEWER|AGENT_DNS_FAILED|DNS' =
             'AgentConnectionProbeTests.ProbeAsync_DnsFailureStopsBeforeTcpAndUsesStableCode'
         'VIEWER|AGENT_CONNECTION_REFUSED|TCP' =

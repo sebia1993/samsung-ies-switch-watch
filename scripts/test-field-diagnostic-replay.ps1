@@ -292,6 +292,39 @@ function New-SswAgentSetupWarningV2Diagnostic {
     ) -join "`r`n"
 }
 
+function New-SswAgentSetupFileActivationV2Diagnostic {
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateSet(
+            'SETUP_BACKUP_MOVE_FAILED',
+            'SETUP_FILE_ACTIVATION_FAILED')]
+        [string]$ErrorCode,
+        [bool]$IncludeBackupAccessWarning = $false
+    )
+
+    $stages = if ($IncludeBackupAccessWarning) {
+        'Stages=3|PACKAGE_VALID:S>SETUP_BACKUP_ACCESS_WARNING:W>' +
+            $ErrorCode + ':F'
+    }
+    else {
+        'Stages=2|PACKAGE_VALID:S>' + $ErrorCode + ':F'
+    }
+    return @(
+        'SSW_FIELD_DIAGNOSTIC/2',
+        'Component=AGENT_SETUP',
+        'ProductVersion=0.11.6-poc',
+        'Environment=20260811T010203000Z|WIN_10_0_26100_0|X64',
+        'Run=INSTALL|FAILURE|1200',
+        'FailedStage=FILE_ACTIVATION',
+        ('ErrorCode=' + $ErrorCode),
+        ('Failure=' + $ErrorCode + '|IO|100'),
+        'Action=RETRY_OR_CHECK_INSTALL_FILES',
+        'State=PASS|NONE|RUNNING|NONE|NOT_RUN|NOT_RUN',
+        'Health=NOT_RUN|FFF|0|NOT_STARTED',
+        $stages
+    ) -join "`r`n"
+}
+
 function Invoke-SswReplay {
     param(
         [Parameter(Mandatory = $true)]
@@ -538,6 +571,38 @@ try {
         -Actual $agentFirewallWarningResult.Output `
         -Message 'Agent Setup firewall warning selected the wrong fake scenario.'
 
+    $backupMoveScenario =
+        'AgentDeploymentOrchestratorTests.DeployAsync_PersistentBackupMoveFailureRestoresServiceAndCleansTransaction'
+    $backupMoveFixture = Write-SswFixture `
+        -Name 'agent-v2-backup-move-failure-valid.txt' `
+        -Bom $true `
+        -Content (New-SswAgentSetupFileActivationV2Diagnostic `
+            -ErrorCode 'SETUP_BACKUP_MOVE_FAILED' `
+            -IncludeBackupAccessWarning $true)
+    $backupMoveResult = Invoke-SswReplay -FixturePath $backupMoveFixture
+    Assert-SswEqual -Expected 0 -Actual $backupMoveResult.ExitCode `
+        -Message 'Agent Setup backup move failure v2 input must succeed.'
+    Assert-SswEqual `
+        -Expected $backupMoveScenario `
+        -Actual $backupMoveResult.Output `
+        -Message 'Backup move failure selected the wrong fake scenario.'
+
+    $fileActivationScenario =
+        'AgentDeploymentOrchestratorTests.DeployAsync_PersistentStagingActivationFailureRestoresPreviousAgent'
+    $fileActivationFixture = Write-SswFixture `
+        -Name 'agent-v2-file-activation-failure-valid.txt' `
+        -Bom $true `
+        -Content (New-SswAgentSetupFileActivationV2Diagnostic `
+            -ErrorCode 'SETUP_FILE_ACTIVATION_FAILED')
+    $fileActivationResult = Invoke-SswReplay `
+        -FixturePath $fileActivationFixture
+    Assert-SswEqual -Expected 0 -Actual $fileActivationResult.ExitCode `
+        -Message 'Agent Setup file activation failure v2 input must succeed.'
+    Assert-SswEqual `
+        -Expected $fileActivationScenario `
+        -Actual $fileActivationResult.Output `
+        -Message 'File activation failure selected the wrong fake scenario.'
+
     $settingsScenario =
         'ViewerSettingsTests.SaveCoordinator_SaveOrThrowPreservesFailClosedConnectionFlow'
     $settingsFixture = Write-SswFixture `
@@ -606,7 +671,7 @@ try {
         "ViewerSettingsTests)" +
         "\.[A-Za-z0-9_]+)'"
     ) | ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique
-    Assert-SswEqual -Expected 15 -Actual $scenarioNames.Count `
+    Assert-SswEqual -Expected 17 -Actual $scenarioNames.Count `
         -Message 'The replay scenario allowlist changed without a contract update.'
     foreach ($scenario in $scenarioNames) {
         $className = $scenario.Substring(0, $scenario.IndexOf('.'))

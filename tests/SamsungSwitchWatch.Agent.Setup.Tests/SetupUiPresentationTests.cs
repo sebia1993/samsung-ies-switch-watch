@@ -1116,6 +1116,85 @@ public sealed class SetupUiPresentationTests
     }
 
     [Theory]
+    [InlineData(SetupErrorCodes.BackupMoveFailed)]
+    [InlineData(SetupErrorCodes.FileActivationFailed)]
+    public void FileActivationFailuresKeepStableDiagnosticAndSupportCode(
+        string errorCode)
+    {
+        var steps = new SetupStepRecorder();
+        steps.MarkActiveStage(SetupFailureStage.FileActivation);
+        steps.Add(new SetupStepResult(
+            errorCode,
+            "file activation",
+            SetupStepState.Failed,
+            "private path detail"));
+        var result = SetupOperationResult.Failure(
+            errorCode,
+            "private path detail",
+            steps) with
+        {
+            PrimaryFailureCode = errorCode
+        };
+        var context = new SetupFieldDiagnosticContext(
+            "0.11.6-poc",
+            DateTimeOffset.UnixEpoch,
+            "10.0.26100.0",
+            "X64",
+            "install",
+            TimeSpan.Zero,
+            result,
+            PendingRecoveryInspection.None);
+
+        var text = SetupFieldDiagnosticFormatter.Format(context);
+        var supportCode = SetupFieldDiagnosticFormatter.CreateSupportCode(context);
+
+        AssertCompactFieldDiagnostic(text);
+        Assert.Contains("FailedStage=FILE_ACTIVATION", text);
+        Assert.Contains($"ErrorCode={errorCode}", text);
+        Assert.Contains($"Failure={errorCode}|CLASSIFIED|unknown", text);
+        Assert.Contains("Action=RETRY_OR_CHECK_INSTALL_FILES", text);
+        Assert.Contains($"Stages=1|{errorCode}:F", text);
+        Assert.DoesNotContain("private path detail", text);
+        Assert.True(Swd1SupportCode.TryDecode(supportCode, out var decoded));
+        Assert.Equal(errorCode, decoded!.Common.ResultCodeName);
+        Assert.Equal(errorCode, decoded.Common.PrimaryCodeName);
+    }
+
+    [Fact]
+    public void BackupAccessWarningRemainsVisibleAsSanitizedStageEvidence()
+    {
+        var result = SetupOperationResult.Success(
+            "installed with warning",
+            [
+                new SetupStepResult(
+                    SetupErrorCodes.BackupAccessWarning,
+                    "backup access",
+                    SetupStepState.Warning,
+                    "private ACL detail")
+            ]);
+
+        var text = SetupFieldDiagnosticFormatter.Format(
+            new SetupFieldDiagnosticContext(
+                "0.11.6-poc",
+                DateTimeOffset.UnixEpoch,
+                "10.0.26100.0",
+                "X64",
+                "install",
+                TimeSpan.Zero,
+                result,
+                PendingRecoveryInspection.None));
+
+        AssertCompactFieldDiagnostic(text);
+        Assert.Contains("ErrorCode=OK", text);
+        Assert.Contains("Action=NONE", text);
+        Assert.Contains(
+            $"Stages=1|{SetupErrorCodes.BackupAccessWarning}:W",
+            text);
+        Assert.DoesNotContain("private ACL detail", text);
+        Assert.DoesNotContain("UNAVAILABLE", text);
+    }
+
+    [Theory]
     [InlineData(AgentHealthProbeCode.HttpsTlsFailed, "HTTPS_TLS_FAILED")]
     [InlineData(
         AgentHealthProbeCode.HttpsRequestTimeout,
