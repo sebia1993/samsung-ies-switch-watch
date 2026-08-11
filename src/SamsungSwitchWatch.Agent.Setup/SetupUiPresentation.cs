@@ -428,6 +428,8 @@ internal readonly record struct SetupFailureDiagnosticProjection(
             SetupErrorCodes.PathUntrusted or
             SetupErrorCodes.PathNotWritable => "FILESYSTEM",
             SetupErrorCodes.ConfigurationInvalid => "CONFIGURATION",
+            SetupErrorCodes.BackupMoveFailed or
+            SetupErrorCodes.FileActivationFailed => "FILE_ACTIVATION",
             SetupErrorCodes.ServiceFailed => "SERVICE",
             SetupErrorCodes.FirewallFailed => "FIREWALL",
             SetupErrorCodes.HealthFailed => "READINESS",
@@ -672,6 +674,8 @@ internal static class SetupFieldDiagnosticFormatter
             SetupErrorCodes.PathUntrusted,
             SetupErrorCodes.PathNotWritable,
             SetupErrorCodes.ConfigurationInvalid,
+            SetupErrorCodes.BackupMoveFailed,
+            SetupErrorCodes.FileActivationFailed,
             SetupErrorCodes.ServiceFailed,
             SetupErrorCodes.FirewallFailed,
             SetupErrorCodes.FirewallRemoteAccessUnconfirmed,
@@ -728,7 +732,8 @@ internal static class SetupFieldDiagnosticFormatter
             "COMMITTED_TRANSACTION_CLEANED",
             SetupErrorCodes.RollbackServiceDescriptionRestoreWarning,
             SetupErrorCodes.RollbackServiceRecoveryPolicyRestoreWarning,
-            SetupErrorCodes.RollbackServiceDaclRestoreWarning
+            SetupErrorCodes.RollbackServiceDaclRestoreWarning,
+            SetupErrorCodes.BackupAccessWarning
         };
 
     private static readonly HashSet<string> AllowedFirewallDecisionCodes =
@@ -1223,6 +1228,9 @@ internal static class SetupFieldDiagnosticFormatter
             SetupErrorCodes.PathUntrusted or
             SetupErrorCodes.PathNotWritable => "CHECK_INSTALL_PERMISSIONS",
             SetupErrorCodes.ConfigurationInvalid => "REVIEW_CONFIGURATION",
+            SetupErrorCodes.BackupMoveFailed or
+            SetupErrorCodes.FileActivationFailed =>
+                "RETRY_OR_CHECK_INSTALL_FILES",
             SetupErrorCodes.ServiceFailed => "CHECK_WINDOWS_SERVICE",
             SetupErrorCodes.FirewallFailed or
             SetupErrorCodes.FirewallRemoteAccessUnconfirmed =>

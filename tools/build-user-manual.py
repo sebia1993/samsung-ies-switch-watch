@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the Korean Samsung Switch Watch v0.11.5 operator manual.
+"""Build the Korean Samsung Switch Watch v0.11.6 operator manual.
 
 The manual is intentionally generated from sanitized, deterministic WPF
 screenshots. It never needs a company switch, a real IP address, or a secret.
@@ -20,7 +20,7 @@ from docx.oxml.ns import qn
 from docx.shared import Inches, Pt, RGBColor
 
 
-VERSION = "0.11.5-poc"
+VERSION = "0.11.6-poc"
 DOCUMENT_DATE = "2026-08-11"
 FONT = "맑은 고딕"
 MONO = "Consolas"
@@ -899,6 +899,18 @@ Viewer 허용 범위      : 10/8, 172.16/12, 192.168/16
     )
     add_callout(
         doc,
+        "Agent 파일 활성화가 잠시 막힌 경우",
+        "업데이트 중 기존 Agent 폴더를 backup으로 옮기는 단계와 검증된 staging을 설치 위치로 "
+        "활성화하는 단계는 각각 최대 5회만 시도하고, 실패한 시도 사이에만 250ms 대기합니다. "
+        "계속 실패하면 SETUP_BACKUP_MOVE_FAILED 또는 SETUP_FILE_ACTIVATION_FAILED로 구분하고 "
+        "기존 rollback을 수행합니다. 제품 폴더를 수동으로 이동·삭제하지 말고 화면의 rollback "
+        "또는 '이전 상태 복구' 결과를 먼저 확인하세요. backup 이동 뒤 관리자 전용 ACL 강화만 "
+        "실패한 SETUP_BACKUP_ACCESS_WARNING은 설치를 중단하지 않는 경고입니다. 새 Agent 실행과 "
+        "준비 상태를 확인하고 backup 권한을 임의로 넓히지 마세요.",
+        "warning",
+    )
+    add_callout(
+        doc,
         "서비스 조회는 한 번만 짧게 재시도",
         "설치/업데이트는 별도 사전 점검과 배포에서 같은 서비스 정보를 중복 조회하지 않습니다. "
         "초기 조회가 일시적으로 실패하면 200ms 뒤 한 번만 다시 확인합니다. 계속 실패하면 "
@@ -1414,6 +1426,9 @@ Viewer 허용 범위      : 10/8, 172.16/12, 192.168/16
             ("SETUP_PACKAGE_NOT_FOUND", "Agent ZIP 전체 압축 해제 → Setup과 Agent EXE·BUILD-MANIFEST 존재 확인"),
             ("SETUP_PACKAGE_HASH_MISMATCH", "실행 중지 → 공식 ZIP을 새 폴더에 다시 압축 해제 → EDR 격리 기록"),
             ("SETUP_SERVICE_FAILED", "Windows 서비스 관리 권한 → 기존 SamsungSwitchWatchAgent 상태"),
+            ("SETUP_BACKUP_MOVE_FAILED", "기존 Agent→backup 이동이 5회 안에 끝나지 않음 → rollback 결과 확인 → 제품 폴더 수동 이동·삭제 금지"),
+            ("SETUP_FILE_ACTIVATION_FAILED", "staging→설치 위치 활성화가 5회 안에 끝나지 않음 → 이전 Agent 복원 또는 이전 상태 복구 결과 확인"),
+            ("SETUP_BACKUP_ACCESS_WARNING", "backup 관리자 전용 ACL 강화만 실패한 경고 → 설치 성공과 새 Agent 실행 확인 → backup 권한 임의 확대 금지"),
             ("SETUP_PATH_NOT_WRITABLE", "제품 폴더 권한·파일 상태 확인 실패 → 잠시 후 한 번만 재시도 → 반복되면 지원 코드 전달"),
             ("SETUP_PATH_INVALID / SETUP_PATH_UNTRUSTED", "반복 설치와 폴더·ACL 수동 변경 중지 → 지원 코드 전달"),
             ("FIREWALL_OVERLAP_PROTECTED", "외부 규칙은 보존됨 → 설치 계속 → Viewer 연결 테스트"),
@@ -1474,6 +1489,17 @@ Viewer 허용 범위      : 10/8, 172.16/12, 192.168/16
     )
     spacer = doc.add_paragraph()
     spacer.paragraph_format.space_after = Pt(2)
+    add_callout(
+        doc,
+        "Agent 파일 이동 실패",
+        "SETUP_BACKUP_MOVE_FAILED와 SETUP_FILE_ACTIVATION_FAILED는 방화벽이나 로컬 HTTPS가 아니라 "
+        "업데이트 파일 이동 단계가 제한된 5회 시도 안에 완료되지 않았다는 뜻입니다. Setup의 "
+        "rollback 결과와 미완료 journal 표시를 확인하고, 복구 필요 상태이면 '이전 상태 복구'를 "
+        "먼저 실행하세요. 반복 설치, Agent 폴더 수동 삭제·이동 또는 ACL 변경으로 우회하지 말고 "
+        "지원 코드와 익명 진단을 Windows 관리자에게 전달합니다. SETUP_BACKUP_ACCESS_WARNING만 "
+        "표시되고 설치가 완료됐다면 Agent 실행을 확인하되 backup 폴더 권한을 임의로 넓히지 마세요.",
+        "warning",
+    )
     add_callout(
         doc,
         "이전 상태 복구가 필요한 경우",

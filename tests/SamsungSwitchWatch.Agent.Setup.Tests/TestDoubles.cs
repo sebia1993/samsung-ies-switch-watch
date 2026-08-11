@@ -24,6 +24,7 @@ internal sealed class TestFileSystem : ISetupFileSystem
     public int JournalDeleteAttempts { get; private set; }
     public int JournalUpgradeWriteFailuresRemaining { get; set; }
     public int RollbackMarkerWriteFailuresRemaining { get; set; }
+    public Action<string, string>? BeforeAtomicWrite { get; set; }
     public int StagingDirectoryCleanupFailuresRemaining { get; set; }
     public int StagingDirectoryCleanupAttempts { get; private set; }
     public int BackupDirectoryCleanupFailuresRemaining { get; set; }
@@ -38,6 +39,14 @@ internal sealed class TestFileSystem : ISetupFileSystem
     public int ActivationMoveFailuresRemaining { get; set; }
     public Func<string, string, bool>? MoveFailurePredicate { get; set; }
     public int MoveFailuresRemaining { get; set; }
+    public Action<string, string>? MoveFailureObserved { get; set; }
+    public Func<string, string, bool>? MoveThenFailPredicate { get; set; }
+    public int MoveThenFailFailuresRemaining { get; set; }
+    public Func<string, string, bool>? CreateDestinationThenFailPredicate { get; set; }
+    public int CreateDestinationThenFailFailuresRemaining { get; set; }
+    public List<(string Source, string Destination)> MoveRequests { get; } = [];
+    public Func<string, DirectoryAccessKind, bool>? AccessFailurePredicate { get; set; }
+    public int AccessFailuresRemaining { get; set; }
     private int MatchingAccessRequests { get; set; }
     private string? JournalReappearancePath { get; set; }
     private string? JournalReappearanceContents { get; set; }
@@ -86,6 +95,7 @@ internal sealed class TestFileSystem : ISetupFileSystem
     public string ReadAllText(string path) => _inner.ReadAllText(path);
     public void WriteAllTextAtomic(string path, string contents)
     {
+        BeforeAtomicWrite?.Invoke(path, contents);
         if (JournalUpgradeWriteFailuresRemaining > 0 &&
             contents.Contains("\"FormatVersion\": 2", StringComparison.Ordinal) &&
             File.Exists(path) &&
@@ -110,10 +120,30 @@ internal sealed class TestFileSystem : ISetupFileSystem
         _inner.CopyFile(source, destination, overwrite);
     public void MoveDirectory(string source, string destination)
     {
+        MoveRequests.Add((source, destination));
+        if (MoveThenFailFailuresRemaining > 0 &&
+            MoveThenFailPredicate?.Invoke(source, destination) == true)
+        {
+            MoveThenFailFailuresRemaining--;
+            _inner.MoveDirectory(source, destination);
+            MoveFailureObserved?.Invoke(source, destination);
+            throw new IOException("simulated directory move completion race");
+        }
+
+        if (CreateDestinationThenFailFailuresRemaining > 0 &&
+            CreateDestinationThenFailPredicate?.Invoke(source, destination) == true)
+        {
+            CreateDestinationThenFailFailuresRemaining--;
+            Directory.CreateDirectory(destination);
+            MoveFailureObserved?.Invoke(source, destination);
+            throw new IOException("simulated ambiguous directory move failure");
+        }
+
         if (MoveFailuresRemaining > 0 &&
             MoveFailurePredicate?.Invoke(source, destination) == true)
         {
             MoveFailuresRemaining--;
+            MoveFailureObserved?.Invoke(source, destination);
             throw new IOException("simulated directory move failure");
         }
 
@@ -121,6 +151,7 @@ internal sealed class TestFileSystem : ISetupFileSystem
             Path.GetFileName(source).Contains(".__staging_", StringComparison.Ordinal))
         {
             ActivationMoveFailuresRemaining--;
+            MoveFailureObserved?.Invoke(source, destination);
             throw new IOException("simulated activation move failure");
         }
 
@@ -179,6 +210,13 @@ internal sealed class TestFileSystem : ISetupFileSystem
     public void EnsureDirectoryAccess(string path, DirectoryAccessKind accessKind)
     {
         AccessRequests.Add((path, accessKind));
+        if (AccessFailuresRemaining > 0 &&
+            AccessFailurePredicate?.Invoke(path, accessKind) == true)
+        {
+            AccessFailuresRemaining--;
+            throw new IOException("simulated directory access failure");
+        }
+
         if (AccessFailurePath is not null &&
             PhysicalSetupFileSystem.SamePath(path, AccessFailurePath) &&
             AccessFailureKind == accessKind &&

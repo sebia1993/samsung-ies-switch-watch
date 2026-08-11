@@ -2,23 +2,23 @@
 
 ## 1. 준비
 
-공식 GitHub `v0.11.5-poc` Release의 Assets에서 다음 두 파일만 받습니다.
+공식 GitHub `v0.11.6-poc` Release의 Assets에서 다음 두 파일만 받습니다.
 
-- `SamsungSwitchWatch-Agent-0.11.5-poc-win-x64.zip`
-- `SamsungSwitchWatch-Viewer-0.11.5-poc-win-x64.zip`
+- `SamsungSwitchWatch-Agent-0.11.6-poc-win-x64.zip`
+- `SamsungSwitchWatch-Viewer-0.11.6-poc-win-x64.zip`
 
 GitHub가 자동 표시하는 Source code ZIP과 tar.gz는 실행 패키지가 아닙니다. 두 ZIP은 Windows
 x64용 self-contained 빌드이므로 Python, PowerShell 모듈 또는 .NET을 온라인으로 설치하지
 않습니다. API v4가 호환되면 버전이 달라도 경고 후 연결하지만, 기능 차이와 운영 혼동을 줄이기
 위해 Agent와 Viewer는 같은 Release 조합을 권장합니다.
 
-`0.11.5-poc`는 코드 서명되지 않은 시험판입니다. SmartScreen, EDR, AppLocker 또는 WDAC가
+`0.11.6-poc`는 코드 서명되지 않은 시험판입니다. SmartScreen, EDR, AppLocker 또는 WDAC가
 경고하거나 차단할 수 있으며, 보안 정책을 우회하지 말고 공식 Release와 파일 해시를 확인한
 뒤 사내 보안 담당자의 승인 절차를 따르십시오.
 
 Agent 설치·업데이트 실패 뒤 미완료 작업이 감지되면 Setup은 상태를 읽기 전용으로 확인하고
 `설치/업데이트`를 비활성화합니다. 구형 Setup을 실행하거나 설치를 반복하지 말고, 같은
-`0.11.5-poc` Agent ZIP의 Setup에서 별도의 `이전 상태 복구`를 사용하십시오. 복구 성공 뒤에는
+`0.11.6-poc` Agent ZIP의 Setup에서 별도의 `이전 상태 복구`를 사용하십시오. 복구 성공 뒤에는
 운영자가 `설치/업데이트`를 한 번 눌러 같은 설치 작업의 내부 검사부터 새 작업을 시작해야 합니다.
 복구가 자동으로 설치를 이어서 실행하지는 않습니다.
 
@@ -162,6 +162,14 @@ Setup은 시작할 때 미완료 설치·업데이트 작업 기록을 변경하
 - 검증된 staging·backup·failed·journal 경로의 정리가 잠시 실패하면 Setup이 최대 3회
   시도하고, 실패한 시도 사이에만 250ms 대기합니다. 다른 경로나 넓은 상위 폴더는 정리하지
   않습니다.
+- 업데이트에서 기존 Agent 폴더를 backup으로 옮기거나 검증된 staging을 설치 위치로
+  활성화할 때는 각 이동을 최대 5회만 시도하고 실패한 시도 사이에만 250ms 대기합니다.
+  반복 실패는 각각 `SETUP_BACKUP_MOVE_FAILED`, `SETUP_FILE_ACTIVATION_FAILED`로 표시하며
+  기존 rollback 절차로 이전 Agent를 복원합니다. 해당 코드가 나오면 제품 폴더를 수동으로
+  이동·삭제하지 말고 rollback 또는 `이전 상태 복구` 결과부터 확인하십시오.
+- backup 이동 후 관리자 전용 ACL 강화만 실패하면 `SETUP_BACKUP_ACCESS_WARNING` 경고를
+  남기고 설치를 계속합니다. 설치 성공 여부와 새 Agent 실행 상태를 확인하고, backup 폴더를
+  다른 위치로 복사하거나 권한을 임의로 넓히지 마십시오.
 - 각 정리 대상이 실제로 사라졌고 새로 검사한 작업 기록에도 미완료 상태가 없을 때만 복구
   성공과 설치 버튼 활성화를 표시합니다. 설치를 자동으로 시작하지 않으며, 운영자가
   `설치/업데이트`를 다시 한 번 눌러 같은 설치 작업의 내부 검사부터 새 작업을 실행합니다.
@@ -230,7 +238,7 @@ PC·사용자명, 계정, 인증서 정보, 절대 경로, 방화벽 원문, 예
 
 복구 완료 메시지가 나타났다면 같은 실패 화면에서 설치를 자동으로 다시 시작하지 않습니다.
 Setup을 닫지 않아도 되지만, 상태가 `복구 필요 없음`으로 바뀌고 설치 버튼이 다시 활성화됐는지
-확인한 뒤 `0.11.5-poc` 패키지의 `설치/업데이트`를 한 번만 다시 실행하십시오. Setup이 내부
+확인한 뒤 `0.11.6-poc` 패키지의 `설치/업데이트`를 한 번만 다시 실행하십시오. Setup이 내부
 사전 점검부터 새 설치를 수행합니다. 같은 readiness 분류가 반복되면 재설치를 계속 반복하지
 말고 SWD1 코드 또는 `진단정보 복사` 결과를 전달하십시오.
 

@@ -1041,11 +1041,360 @@ public sealed class AgentDeploymentOrchestratorTests
     }
 
     [Fact]
-    public async Task DeployAsync_ActivationAndMarkerWriteFailuresPreserveStagingForSafeResume()
+    public async Task DeployAsync_TransientBackupMoveFailureRetriesAndSucceeds()
+    {
+        using var folder = new TemporaryFolder();
+        var fixture = CreateUpgradeFixture(folder);
+        fixture.FileSystem.MoveFailuresRemaining = 1;
+        fixture.FileSystem.MoveFailurePredicate = (source, destination) =>
+            PhysicalSetupFileSystem.SamePath(source, fixture.Paths.InstallDirectory) &&
+            Path.GetFileName(destination)
+                .Contains(".__backup_", StringComparison.Ordinal);
+
+        var result = await fixture.CreateOrchestrator(ready: true).DeployAsync(
+            new SetupRequest("192.168.1.20", ["192.168.40.0/24"]),
+            CancellationToken.None);
+
+        Assert.True(result.Succeeded);
+        Assert.Equal("new-agent", File.ReadAllText(fixture.Paths.AgentExecutablePath));
+        Assert.True(fixture.Services.State.Running);
+        Assert.True(
+            fixture.FileSystem.MoveRequests.Count(request =>
+                PhysicalSetupFileSystem.SamePath(
+                    request.Source,
+                    fixture.Paths.InstallDirectory) &&
+                Path.GetFileName(request.Destination)
+                    .Contains(".__backup_", StringComparison.Ordinal)) >= 2);
+        Assert.False(new DeploymentJournalStore(
+            fixture.FileSystem,
+            fixture.Paths).Exists);
+    }
+
+    [Fact]
+    public async Task DeployAsync_TransientStagingActivationMoveFailureRetriesAndSucceeds()
     {
         using var folder = new TemporaryFolder();
         var fixture = CreateUpgradeFixture(folder);
         fixture.FileSystem.ActivationMoveFailuresRemaining = 1;
+
+        var result = await fixture.CreateOrchestrator(ready: true).DeployAsync(
+            new SetupRequest("192.168.1.20", ["192.168.40.0/24"]),
+            CancellationToken.None);
+
+        Assert.True(result.Succeeded);
+        Assert.Equal("new-agent", File.ReadAllText(fixture.Paths.AgentExecutablePath));
+        Assert.True(fixture.Services.State.Running);
+        Assert.True(
+            fixture.FileSystem.MoveRequests.Count(request =>
+                Path.GetFileName(request.Source)
+                    .Contains(".__staging_", StringComparison.Ordinal) &&
+                PhysicalSetupFileSystem.SamePath(
+                    request.Destination,
+                    fixture.Paths.InstallDirectory)) >= 2);
+        Assert.False(new DeploymentJournalStore(
+            fixture.FileSystem,
+            fixture.Paths).Exists);
+    }
+
+    [Fact]
+    public async Task DeployAsync_PersistentBackupMoveFailureRestoresServiceAndCleansTransaction()
+    {
+        using var folder = new TemporaryFolder();
+        var fixture = CreateUpgradeFixture(folder);
+        fixture.FileSystem.MoveFailuresRemaining = 10;
+        fixture.FileSystem.MoveFailurePredicate = (source, destination) =>
+            PhysicalSetupFileSystem.SamePath(source, fixture.Paths.InstallDirectory) &&
+            Path.GetFileName(destination)
+                .Contains(".__backup_", StringComparison.Ordinal);
+
+        var result = await fixture.CreateOrchestrator(ready: true).DeployAsync(
+            new SetupRequest("192.168.1.20", ["192.168.40.0/24"]),
+            CancellationToken.None);
+
+        Assert.False(result.Succeeded);
+        Assert.Equal(SetupErrorCodes.BackupMoveFailed, result.Code);
+        Assert.Equal(SetupErrorCodes.BackupMoveFailed, result.PrimaryFailureCode);
+        Assert.Equal("old-agent", File.ReadAllText(fixture.Paths.AgentExecutablePath));
+        Assert.True(fixture.Services.State.Running);
+        Assert.True(
+            fixture.FileSystem.MoveRequests.Count(request =>
+                Path.GetFileName(request.Destination)
+                    .Contains(".__backup_", StringComparison.Ordinal)) >= 2);
+        Assert.False(new DeploymentJournalStore(
+            fixture.FileSystem,
+            fixture.Paths).Exists);
+        var transactionParent = Path.GetDirectoryName(fixture.Paths.InstallDirectory)!;
+        var transactionPrefix = Path.GetFileName(fixture.Paths.InstallDirectory);
+        Assert.Empty(Directory.GetDirectories(
+            transactionParent,
+            $"{transactionPrefix}.__staging_*"));
+        Assert.Empty(Directory.GetDirectories(
+            transactionParent,
+            $"{transactionPrefix}.__backup_*"));
+        Assert.Empty(Directory.GetDirectories(
+            transactionParent,
+            $"{transactionPrefix}.__failed_*"));
+    }
+
+    [Fact]
+    public async Task DeployAsync_PersistentStagingActivationFailureRestoresPreviousAgent()
+    {
+        using var folder = new TemporaryFolder();
+        var fixture = CreateUpgradeFixture(folder);
+        fixture.FileSystem.ActivationMoveFailuresRemaining = 10;
+
+        var result = await fixture.CreateOrchestrator(ready: true).DeployAsync(
+            new SetupRequest("192.168.1.20", ["192.168.40.0/24"]),
+            CancellationToken.None);
+
+        Assert.False(result.Succeeded);
+        Assert.Equal(SetupErrorCodes.FileActivationFailed, result.Code);
+        Assert.Equal(SetupErrorCodes.FileActivationFailed, result.PrimaryFailureCode);
+        Assert.Equal("old-agent", File.ReadAllText(fixture.Paths.AgentExecutablePath));
+        Assert.True(fixture.Services.State.Running);
+        Assert.True(
+            fixture.FileSystem.MoveRequests.Count(request =>
+                Path.GetFileName(request.Source)
+                    .Contains(".__staging_", StringComparison.Ordinal) &&
+                PhysicalSetupFileSystem.SamePath(
+                    request.Destination,
+                    fixture.Paths.InstallDirectory)) >= 2);
+        Assert.False(new DeploymentJournalStore(
+            fixture.FileSystem,
+            fixture.Paths).Exists);
+    }
+
+    [Fact]
+    public async Task DeployAsync_CompletedStagingMoveWithLateIOExceptionIsReconciledAsSuccess()
+    {
+        using var folder = new TemporaryFolder();
+        var fixture = CreateUpgradeFixture(folder);
+        fixture.FileSystem.MoveThenFailFailuresRemaining = 1;
+        fixture.FileSystem.MoveThenFailPredicate = (source, destination) =>
+            Path.GetFileName(source)
+                .Contains(".__staging_", StringComparison.Ordinal) &&
+            PhysicalSetupFileSystem.SamePath(
+                destination,
+                fixture.Paths.InstallDirectory);
+
+        var result = await fixture.CreateOrchestrator(ready: true).DeployAsync(
+            new SetupRequest("192.168.1.20", ["192.168.40.0/24"]),
+            CancellationToken.None);
+
+        Assert.True(result.Succeeded);
+        Assert.Equal("new-agent", File.ReadAllText(fixture.Paths.AgentExecutablePath));
+        Assert.True(fixture.Services.State.Running);
+        Assert.False(new DeploymentJournalStore(
+            fixture.FileSystem,
+            fixture.Paths).Exists);
+    }
+
+    [Fact]
+    public async Task DeployAsync_StagingMoveCompletedOnFinalRetryIsReconciledAsSuccess()
+    {
+        using var folder = new TemporaryFolder();
+        var fixture = CreateUpgradeFixture(folder);
+        var matchingAttempt = 0;
+        fixture.FileSystem.MoveFailuresRemaining = 4;
+        fixture.FileSystem.MoveFailurePredicate = (source, destination) =>
+            Path.GetFileName(source)
+                .Contains(".__staging_", StringComparison.Ordinal) &&
+            PhysicalSetupFileSystem.SamePath(
+                destination,
+                fixture.Paths.InstallDirectory);
+        fixture.FileSystem.MoveThenFailFailuresRemaining = 1;
+        fixture.FileSystem.MoveThenFailPredicate = (source, destination) =>
+        {
+            if (!Path.GetFileName(source)
+                    .Contains(".__staging_", StringComparison.Ordinal) ||
+                !PhysicalSetupFileSystem.SamePath(
+                    destination,
+                    fixture.Paths.InstallDirectory))
+            {
+                return false;
+            }
+
+            matchingAttempt++;
+            return matchingAttempt == 5;
+        };
+
+        var result = await fixture.CreateOrchestrator(ready: true).DeployAsync(
+            new SetupRequest("192.168.1.20", ["192.168.40.0/24"]),
+            CancellationToken.None);
+
+        Assert.True(result.Succeeded);
+        Assert.Equal(5, matchingAttempt);
+        Assert.Equal("new-agent", File.ReadAllText(fixture.Paths.AgentExecutablePath));
+        Assert.True(fixture.Services.State.Running);
+        Assert.False(new DeploymentJournalStore(
+            fixture.FileSystem,
+            fixture.Paths).Exists);
+    }
+
+    [Fact]
+    public async Task DeployAsync_BackupAlreadyAppearsMovedBeforeHelperFailsClosed()
+    {
+        using var folder = new TemporaryFolder();
+        var fixture = CreateUpgradeFixture(folder);
+        var injected = false;
+        fixture.FileSystem.BeforeAtomicWrite = (_, contents) =>
+        {
+            if (injected)
+            {
+                return;
+            }
+
+            var journal = JsonNode.Parse(contents);
+            if (journal?[nameof(DeploymentJournal.Stage)]?.GetValue<string>() !=
+                "backup-move-pending")
+            {
+                return;
+            }
+
+            injected = true;
+            Directory.Move(
+                fixture.Paths.InstallDirectory,
+                journal[nameof(DeploymentJournal.BackupDirectory)]!.GetValue<string>());
+        };
+
+        var result = await fixture.CreateOrchestrator(ready: true).DeployAsync(
+            new SetupRequest("192.168.1.20", ["192.168.40.0/24"]),
+            CancellationToken.None);
+
+        Assert.True(injected);
+        Assert.False(result.Succeeded);
+        Assert.Equal(SetupErrorCodes.BackupMoveFailed, result.Code);
+        Assert.Equal(SetupErrorCodes.BackupMoveFailed, result.PrimaryFailureCode);
+        Assert.Equal("old-agent", File.ReadAllText(fixture.Paths.AgentExecutablePath));
+        Assert.True(fixture.Services.State.Running);
+        Assert.DoesNotContain("install", fixture.Services.Operations);
+        Assert.False(new DeploymentJournalStore(
+            fixture.FileSystem,
+            fixture.Paths).Exists);
+    }
+
+    [Fact]
+    public async Task DeployAsync_StagingAlreadyAppearsActivatedBeforeHelperFailsClosed()
+    {
+        using var folder = new TemporaryFolder();
+        var fixture = CreateUpgradeFixture(folder);
+        var injected = false;
+        fixture.FileSystem.BeforeAtomicWrite = (_, contents) =>
+        {
+            if (injected)
+            {
+                return;
+            }
+
+            var journal = JsonNode.Parse(contents);
+            if (journal?[nameof(DeploymentJournal.Stage)]?.GetValue<string>() !=
+                "activation-pending")
+            {
+                return;
+            }
+
+            injected = true;
+            Directory.Move(
+                journal[nameof(DeploymentJournal.StagingDirectory)]!.GetValue<string>(),
+                fixture.Paths.InstallDirectory);
+        };
+
+        var result = await fixture.CreateOrchestrator(ready: true).DeployAsync(
+            new SetupRequest("192.168.1.20", ["192.168.40.0/24"]),
+            CancellationToken.None);
+
+        Assert.True(injected);
+        Assert.False(result.Succeeded);
+        Assert.Equal(SetupErrorCodes.FileActivationFailed, result.Code);
+        Assert.Equal(SetupErrorCodes.FileActivationFailed, result.PrimaryFailureCode);
+        Assert.Equal("old-agent", File.ReadAllText(fixture.Paths.AgentExecutablePath));
+        Assert.True(fixture.Services.State.Running);
+        Assert.DoesNotContain("install", fixture.Services.Operations);
+        Assert.False(new DeploymentJournalStore(
+            fixture.FileSystem,
+            fixture.Paths).Exists);
+    }
+
+    [Fact]
+    public async Task DeployAsync_CancellationDuringActivationRetryRestoresPreviousAgent()
+    {
+        using var folder = new TemporaryFolder();
+        var fixture = CreateUpgradeFixture(folder);
+        using var cancellation = new CancellationTokenSource();
+        fixture.FileSystem.ActivationMoveFailuresRemaining = 1;
+        fixture.FileSystem.MoveFailureObserved = (_, _) => cancellation.Cancel();
+
+        var result = await fixture.CreateOrchestrator(ready: true).DeployAsync(
+            new SetupRequest("192.168.1.20", ["192.168.40.0/24"]),
+            cancellation.Token);
+
+        Assert.False(result.Succeeded);
+        Assert.Equal(SetupErrorCodes.Cancelled, result.Code);
+        Assert.Equal("old-agent", File.ReadAllText(fixture.Paths.AgentExecutablePath));
+        Assert.True(fixture.Services.State.Running);
+        Assert.False(new DeploymentJournalStore(
+            fixture.FileSystem,
+            fixture.Paths).Exists);
+    }
+
+    [Fact]
+    public async Task DeployAsync_AmbiguousBackupMoveFailureFailsClosedWithoutActivatingNewAgent()
+    {
+        using var folder = new TemporaryFolder();
+        var fixture = CreateUpgradeFixture(folder);
+        fixture.FileSystem.CreateDestinationThenFailFailuresRemaining = 1;
+        fixture.FileSystem.CreateDestinationThenFailPredicate = (source, destination) =>
+            PhysicalSetupFileSystem.SamePath(source, fixture.Paths.InstallDirectory) &&
+            Path.GetFileName(destination)
+                .Contains(".__backup_", StringComparison.Ordinal);
+
+        var result = await fixture.CreateOrchestrator(ready: true).DeployAsync(
+            new SetupRequest("192.168.1.20", ["192.168.40.0/24"]),
+            CancellationToken.None);
+
+        Assert.False(result.Succeeded);
+        Assert.Equal(SetupErrorCodes.RollbackFailed, result.Code);
+        Assert.Equal(SetupErrorCodes.BackupMoveFailed, result.PrimaryFailureCode);
+        Assert.Equal("old-agent", File.ReadAllText(fixture.Paths.AgentExecutablePath));
+        Assert.DoesNotContain("install", fixture.Services.Operations);
+        Assert.True(new DeploymentJournalStore(
+            fixture.FileSystem,
+            fixture.Paths).Exists);
+    }
+
+    [Fact]
+    public async Task DeployAsync_BackupAclNormalizationFailureWarnsAndKeepsSuccessfulUpgrade()
+    {
+        using var folder = new TemporaryFolder();
+        var fixture = CreateUpgradeFixture(folder);
+        fixture.FileSystem.AccessFailuresRemaining = 1;
+        fixture.FileSystem.AccessFailurePredicate = (path, kind) =>
+            kind == DirectoryAccessKind.AdministratorOnly &&
+            Path.GetFileName(path)
+                .Contains(".__backup_", StringComparison.Ordinal);
+
+        var result = await fixture.CreateOrchestrator(ready: true).DeployAsync(
+            new SetupRequest("192.168.1.20", ["192.168.40.0/24"]),
+            CancellationToken.None);
+
+        Assert.True(result.Succeeded);
+        Assert.Equal("new-agent", File.ReadAllText(fixture.Paths.AgentExecutablePath));
+        Assert.True(fixture.Services.State.Running);
+        Assert.Contains(
+            result.Steps,
+            step => step.Code == SetupErrorCodes.BackupAccessWarning &&
+                    step.State == SetupStepState.Warning);
+        Assert.False(new DeploymentJournalStore(
+            fixture.FileSystem,
+            fixture.Paths).Exists);
+    }
+
+    [Fact]
+    public async Task DeployAsync_ActivationAndMarkerWriteFailuresPreserveStagingForSafeResume()
+    {
+        using var folder = new TemporaryFolder();
+        var fixture = CreateUpgradeFixture(folder);
+        fixture.FileSystem.ActivationMoveFailuresRemaining = 10;
         fixture.FileSystem.RollbackMarkerWriteFailuresRemaining = 1;
         var journalStore = new DeploymentJournalStore(
             fixture.FileSystem,
@@ -1074,6 +1423,7 @@ public sealed class AgentDeploymentOrchestratorTests
             transactionParent,
             $"{transactionPrefix}.__failed_*"));
 
+        fixture.FileSystem.ActivationMoveFailuresRemaining = 0;
         var orchestrator = fixture.CreateOrchestrator(ready: true);
         var recovery = await orchestrator.RecoverAsync(CancellationToken.None);
         Assert.True(recovery.Succeeded);

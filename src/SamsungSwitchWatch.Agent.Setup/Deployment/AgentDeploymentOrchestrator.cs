@@ -18,6 +18,9 @@ public sealed class AgentDeploymentOrchestrator(
     private const int RollbackMoveMaxAttempts = 5;
     private static readonly TimeSpan RollbackMoveRetryDelay =
         TimeSpan.FromMilliseconds(250);
+    private const int ForwardMoveMaxAttempts = 5;
+    private static readonly TimeSpan ForwardMoveRetryDelay =
+        TimeSpan.FromMilliseconds(250);
     private const int FirewallVerificationRetryCount = 10;
     private static readonly TimeSpan FirewallVerificationRetryDelay =
         TimeSpan.FromMilliseconds(200);
@@ -497,10 +500,27 @@ public sealed class AgentDeploymentOrchestrator(
                     InstallMovedToBackup = true
                 };
                 journalStore.Write(journal);
-                fileSystem.MoveDirectory(paths.InstallDirectory, backupDirectory);
-                fileSystem.EnsureDirectoryAccess(
+                await MoveDirectoryForActivationAsync(
+                    paths.InstallDirectory,
                     backupDirectory,
-                    DirectoryAccessKind.AdministratorOnly);
+                    SetupErrorCodes.BackupMoveFailed,
+                    "기존 Agent 파일을 백업 위치로 이동하지 못했습니다.",
+                    cancellationToken);
+                try
+                {
+                    fileSystem.EnsureDirectoryAccess(
+                        backupDirectory,
+                        DirectoryAccessKind.AdministratorOnly);
+                }
+                catch (Exception exception) when (
+                    IsOptionalBackupAccessFailure(exception))
+                {
+                    steps.Add(new SetupStepResult(
+                        SetupErrorCodes.BackupAccessWarning,
+                        "이전 파일 보호",
+                        SetupStepState.Warning,
+                        "기존 Agent 백업 폴더의 보호 권한을 강화하지 못했지만 설치를 계속합니다."));
+                }
             }
 
             VerifyStagedRuntime(package, stagingDirectory);
@@ -511,7 +531,12 @@ public sealed class AgentDeploymentOrchestrator(
                 StagingActivated = true
             };
             journalStore.Write(journal);
-            fileSystem.MoveDirectory(stagingDirectory, paths.InstallDirectory);
+            await MoveDirectoryForActivationAsync(
+                stagingDirectory,
+                paths.InstallDirectory,
+                SetupErrorCodes.FileActivationFailed,
+                "새 Agent 파일을 설치 위치로 이동하지 못했습니다.",
+                cancellationToken);
 
             steps.MarkActiveStage(SetupFailureStage.ServiceConfiguration);
             var serviceBinaryPath = $"\"{paths.AgentExecutablePath}\" --service";
@@ -1733,6 +1758,83 @@ public sealed class AgentDeploymentOrchestrator(
 
         throw new IOException("Rollback directory move attempts were exhausted.");
     }
+
+    private async Task MoveDirectoryForActivationAsync(
+        string source,
+        string destination,
+        string failureCode,
+        string safeMessage,
+        CancellationToken cancellationToken)
+    {
+        var moveAttempted = false;
+        for (var attempt = 1; attempt <= ForwardMoveMaxAttempts; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var sourceExists = fileSystem.DirectoryExists(source);
+            var destinationExists = fileSystem.DirectoryExists(destination);
+
+            // Directory.Move can complete before Windows reports a transient
+            // close/scan error. Accept only the exact completed topology and
+            // fail closed for every ambiguous state.
+            if (!sourceExists && destinationExists)
+            {
+                if (moveAttempted)
+                {
+                    return;
+                }
+
+                throw new SetupException(failureCode, safeMessage);
+            }
+            if (!sourceExists || destinationExists)
+            {
+                throw new SetupException(failureCode, safeMessage);
+            }
+
+            try
+            {
+                moveAttempted = true;
+                fileSystem.MoveDirectory(source, destination);
+            }
+            catch (Exception exception)
+                when (exception is IOException or UnauthorizedAccessException)
+            {
+                sourceExists = fileSystem.DirectoryExists(source);
+                destinationExists = fileSystem.DirectoryExists(destination);
+                if (!sourceExists && destinationExists)
+                {
+                    return;
+                }
+                if (!sourceExists || destinationExists)
+                {
+                    throw new SetupException(failureCode, safeMessage, exception);
+                }
+
+                if (attempt == ForwardMoveMaxAttempts)
+                {
+                    throw new SetupException(failureCode, safeMessage, exception);
+                }
+
+                await Task.Delay(ForwardMoveRetryDelay, cancellationToken);
+                continue;
+            }
+
+            if (!fileSystem.DirectoryExists(source) &&
+                fileSystem.DirectoryExists(destination))
+            {
+                return;
+            }
+
+            throw new SetupException(failureCode, safeMessage);
+        }
+
+        throw new SetupException(failureCode, safeMessage);
+    }
+
+    private static bool IsOptionalBackupAccessFailure(Exception exception) =>
+        exception is IOException or
+            UnauthorizedAccessException or
+            System.Security.SecurityException or
+            System.ComponentModel.Win32Exception;
 
     private static void AddRollbackFailure(
         List<string> failureCodes,

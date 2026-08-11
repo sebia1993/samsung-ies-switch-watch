@@ -23,6 +23,35 @@ public sealed class Swd1SupportCodeTests
             decoded.Common.PrimaryCodeName);
     }
 
+    [Theory]
+    [InlineData("SETUP_BACKUP_MOVE_FAILED", 34)]
+    [InlineData("SETUP_FILE_ACTIVATION_FAILED", 35)]
+    public void AgentPayload_RoundTripsAppendedFileActivationFailures(
+        string errorCode,
+        int expectedProtocolCode)
+    {
+        var payload = Swd1AgentPayloadBuilder.Build(
+            "0.11.6-poc",
+            "install",
+            errorCode,
+            errorCode,
+            [],
+            "NONE",
+            "RUNNING",
+            "NOT_RUN",
+            "NOT_RUN",
+            "PASS",
+            []);
+
+        var code = Swd1SupportCode.Encode(payload);
+
+        Assert.Equal((byte)expectedProtocolCode, payload.Common.ResultCode);
+        Assert.Equal((byte)expectedProtocolCode, payload.Common.PrimaryCode);
+        Assert.True(Swd1SupportCode.TryDecode(code, out var decoded));
+        Assert.Equal(errorCode, decoded!.Common.ResultCodeName);
+        Assert.Equal(errorCode, decoded.Common.PrimaryCodeName);
+    }
+
     [Fact]
     public void ViewerPayload_RoundTripsAllAllocatedFields()
     {
