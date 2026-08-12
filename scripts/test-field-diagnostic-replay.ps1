@@ -325,6 +325,42 @@ function New-SswAgentSetupFileActivationV2Diagnostic {
     ) -join "`r`n"
 }
 
+function New-SswAgentSetupServiceV2Diagnostic {
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateSet(
+            'SETUP_SERVICE_CAPTURE_FAILED',
+            'SETUP_SERVICE_CONTRACT_FAILED',
+            'SETUP_SERVICE_STOP_FAILED',
+            'SETUP_SERVICE_CONFIG_FAILED',
+            'SETUP_SERVICE_START_FAILED')]
+        [string]$ErrorCode,
+        [Parameter(Mandatory = $true)]
+        [ValidateSet(
+            'SERVICE_CAPTURE',
+            'SERVICE_CONTRACT',
+            'SERVICE_STOP',
+            'SERVICE_CONFIGURATION',
+            'SERVICE_START')]
+        [string]$FailedStage
+    )
+
+    return @(
+        'SSW_FIELD_DIAGNOSTIC/2',
+        'Component=AGENT_SETUP',
+        'ProductVersion=0.11.7-poc',
+        'Environment=20260812T010203000Z|WIN_10_0_26100_0|X64',
+        'Run=INSTALL|FAILURE|1200',
+        ('FailedStage=' + $FailedStage),
+        ('ErrorCode=' + $ErrorCode),
+        ('Failure=' + $ErrorCode + '|WINDOWS_API|100'),
+        'Action=CHECK_WINDOWS_SERVICE',
+        'State=PASS|NONE|UNKNOWN|NONE|NOT_RUN|NOT_RUN',
+        'Health=NOT_RUN|FFF|0|NOT_STARTED',
+        ('Stages=2|PACKAGE_VALID:S>' + $ErrorCode + ':F')
+    ) -join "`r`n"
+}
+
 function Invoke-SswReplay {
     param(
         [Parameter(Mandatory = $true)]
@@ -603,6 +639,63 @@ try {
         -Actual $fileActivationResult.Output `
         -Message 'File activation failure selected the wrong fake scenario.'
 
+    $serviceScenarios = @(
+        @(
+            'SETUP_SERVICE_CAPTURE_FAILED',
+            'SERVICE_CAPTURE',
+            'AgentDeploymentOrchestratorTests.DeployAsync_PersistentServiceCaptureFailureIsClassifiedBeforeMutation'),
+        @(
+            'SETUP_SERVICE_CONTRACT_FAILED',
+            'SERVICE_CONTRACT',
+            'AgentDeploymentOrchestratorTests.DeployAsync_RejectsRunningLegacyLocalServiceBeforeMutation'),
+        @(
+            'SETUP_SERVICE_STOP_FAILED',
+            'SERVICE_STOP',
+            'AgentDeploymentOrchestratorTests.DeployAsync_FirstStopFailureWithRunningServiceRunsRollbackStopBarrier'),
+        @(
+            'SETUP_SERVICE_CONFIG_FAILED',
+            'SERVICE_CONFIGURATION',
+            'AgentDeploymentOrchestratorTests.DeployAsync_ServiceConfigurationFailureReportsStableCodeAndRollsBack'),
+        @(
+            'SETUP_SERVICE_START_FAILED',
+            'SERVICE_START',
+            'AgentDeploymentOrchestratorTests.DeployAsync_UnexpectedServiceStartFailurePreservesSafeDiagnosticsAndRollsBack')
+    )
+    foreach ($serviceScenario in $serviceScenarios) {
+        $errorCode = $serviceScenario[0]
+        $failedStage = $serviceScenario[1]
+        $expectedScenario = $serviceScenario[2]
+        $fixture = Write-SswFixture `
+            -Name ('agent-v2-' + $errorCode.ToLowerInvariant() + '.txt') `
+            -Bom $true `
+            -Content (New-SswAgentSetupServiceV2Diagnostic `
+                -ErrorCode $errorCode `
+                -FailedStage $failedStage)
+        $result = Invoke-SswReplay -FixturePath $fixture
+        Assert-SswEqual -Expected 0 -Actual $result.ExitCode `
+            -Message ($errorCode + ' v2 input must succeed.')
+        Assert-SswEqual -Expected $expectedScenario -Actual $result.Output `
+            -Message ($errorCode + ' selected the wrong fake scenario.')
+    }
+
+    $securityPreservedFixture = Write-SswFixture `
+        -Name 'agent-v2-service-security-preserved-valid.txt' `
+        -Bom $true `
+        -Content ((New-SswAgentSetupServiceV2Diagnostic `
+            -ErrorCode 'SETUP_SERVICE_START_FAILED' `
+            -FailedStage 'SERVICE_START') -replace
+            'Stages=2\|PACKAGE_VALID:S>SETUP_SERVICE_START_FAILED:F',
+            ('Stages=3|PACKAGE_VALID:S>SERVICE_SECURITY_PRESERVED:W>' +
+             'SETUP_SERVICE_START_FAILED:F'))
+    $securityPreservedResult = Invoke-SswReplay `
+        -FixturePath $securityPreservedFixture
+    Assert-SswEqual -Expected 0 -Actual $securityPreservedResult.ExitCode `
+        -Message 'SERVICE_SECURITY_PRESERVED v2 input must succeed.'
+    Assert-SswEqual `
+        -Expected 'AgentDeploymentOrchestratorTests.DeployAsync_UnexpectedServiceStartFailurePreservesSafeDiagnosticsAndRollsBack' `
+        -Actual $securityPreservedResult.Output `
+        -Message 'SERVICE_SECURITY_PRESERVED selected the wrong fake scenario.'
+
     $settingsScenario =
         'ViewerSettingsTests.SaveCoordinator_SaveOrThrowPreservesFailClosedConnectionFlow'
     $settingsFixture = Write-SswFixture `
@@ -671,7 +764,7 @@ try {
         "ViewerSettingsTests)" +
         "\.[A-Za-z0-9_]+)'"
     ) | ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique
-    Assert-SswEqual -Expected 17 -Actual $scenarioNames.Count `
+    Assert-SswEqual -Expected 22 -Actual $scenarioNames.Count `
         -Message 'The replay scenario allowlist changed without a contract update.'
     foreach ($scenario in $scenarioNames) {
         $className = $scenario.Substring(0, $scenario.IndexOf('.'))

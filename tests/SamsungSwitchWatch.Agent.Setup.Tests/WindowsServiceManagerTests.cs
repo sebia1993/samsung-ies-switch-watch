@@ -11,6 +11,84 @@ public sealed class WindowsServiceManagerTests
     private const uint ServiceRunning = 0x00000004;
 
     [Fact]
+    public void ServiceSnapshot_LegacyOptionalMarkersPreserveKnownValues()
+    {
+        var snapshot = new ServiceSnapshot(
+            true,
+            false,
+            "\"agent.exe\" --service",
+            2,
+            @"NT SERVICE\SamsungSwitchWatchAgent",
+            SetupConstants.ServiceDisplayName,
+            "legacy description",
+            1,
+            WindowsServiceManager.CreateAutomaticRecoveryPolicy(),
+            [1, 2, 3],
+            0);
+
+        Assert.True(snapshot.HasKnownDescription);
+        Assert.True(snapshot.HasKnownRecovery);
+        Assert.True(snapshot.HasKnownSecurityDescriptor);
+    }
+
+    [Fact]
+    public void ServiceSnapshot_ExplicitUnknownOptionalMarkersStayUnknown()
+    {
+        var snapshot = ServiceSnapshot.Missing with
+        {
+            Exists = true,
+            DescriptionCaptured = false,
+            RecoveryCaptured = false,
+            SecurityDescriptorCaptured = false
+        };
+
+        Assert.False(snapshot.HasKnownDescription);
+        Assert.False(snapshot.HasKnownRecovery);
+        Assert.False(snapshot.HasKnownSecurityDescriptor);
+    }
+
+    [Fact]
+    public void ServiceTimeoutException_PreservesTimeoutAsClassifiableCause()
+    {
+        var exception = WindowsServiceManager.CreateServiceTimeoutException(
+            "safe service timeout");
+
+        Assert.Equal(SetupErrorCodes.ServiceFailed, exception.Code);
+        Assert.IsType<TimeoutException>(exception.InnerException);
+    }
+
+    [Fact]
+    public void ServiceSnapshotStep_ReportsOnlySanitizedOptionalMetadataWarnings()
+    {
+        var steps = new SetupStepRecorder();
+        var snapshot = ServiceSnapshot.Missing with
+        {
+            Exists = true,
+            DescriptionCaptured = false,
+            RecoveryCaptured = false,
+            SecurityDescriptorCaptured = false
+        };
+
+        SetupDiagnosticsService.AddServiceSnapshotStep(steps, snapshot);
+
+        Assert.Contains(
+            steps,
+            step => step.Code == SetupErrorCodes.ServiceDescriptionWarning &&
+                    step.State == SetupStepState.Warning);
+        Assert.Contains(
+            steps,
+            step => step.Code == SetupErrorCodes.ServiceRecoveryPolicyWarning &&
+                    step.State == SetupStepState.Warning);
+        Assert.Contains(
+            steps,
+            step => step.Code == "SERVICE_SECURITY_PRESERVED" &&
+                    step.State == SetupStepState.Warning);
+        Assert.DoesNotContain(
+            steps,
+            step => step.Message.Contains("agent.exe", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
     public void CaptureAccess_UsesReadOnlyScmAndServiceRights()
     {
         Assert.Equal(0x00000001u, WindowsServiceManager.ScManagerConnectAccess);

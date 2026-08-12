@@ -55,6 +55,7 @@ public sealed class AgentDeploymentOrchestrator(
         }
         catch (SetupException exception)
         {
+            steps.RecordUnexpectedFailure(exception);
             steps.Add(Failed(
                 exception.Code,
                 "설치",
@@ -193,6 +194,7 @@ public sealed class AgentDeploymentOrchestrator(
         }
         catch (SetupException exception)
         {
+            steps.RecordUnexpectedFailure(exception);
             var hasRollbackStageFailure = steps.Any(step =>
                 step.State == SetupStepState.Failed &&
                 IsRollbackStageFailure(step.Code));
@@ -354,20 +356,17 @@ public sealed class AgentDeploymentOrchestrator(
             backupDirectory = $"{paths.InstallDirectory}.__backup_{transactionId}";
             failedDirectory = $"{paths.InstallDirectory}.__failed_{transactionId}";
 
-            steps.MarkActiveStage(SetupFailureStage.FileSystem);
+            steps.MarkActiveStage(SetupFailureStage.ServiceCapture);
             previousService = await SetupDiagnosticsService.CaptureServiceSnapshotAsync(
                 serviceManager,
                 cancellationToken);
             SetupDiagnosticsService.AddServiceSnapshotStep(steps, previousService);
-            ValidateExistingServiceContract(previousService);
-            if (previousService.Exists && previousService.SecurityDescriptor is null)
-            {
-                steps.Add(new SetupStepResult(
-                    "SERVICE_SECURITY_PRESERVED",
-                    "서비스 보안 설정 유지",
-                    SetupStepState.Warning,
-                    "기존 Agent 서비스의 보안 설명자를 읽지 못해 해당 보안 설정은 변경하지 않고 유지합니다."));
-            }
+            steps.MarkActiveStage(SetupFailureStage.ServiceContract);
+            RunServiceOperation(
+                () => ValidateExistingServiceContract(previousService),
+                SetupErrorCodes.ServiceContractFailed,
+                "기존 Agent 서비스 구성이 설치 계약과 일치하지 않습니다.");
+            steps.MarkActiveStage(SetupFailureStage.FileSystem);
             dataDirectoryExistedBefore =
                 fileSystem.DirectoryExists(paths.DataDirectory);
             SetupDiagnosticsService.ValidateDeploymentPathsForInstall(
@@ -485,9 +484,12 @@ public sealed class AgentDeploymentOrchestrator(
             // pending states can still own a live process/file handle.
             if (previousService.Exists)
             {
-                serviceManager.Stop(
-                    SetupConstants.ServiceName,
-                    TimeSpan.FromSeconds(20));
+                RunServiceOperation(
+                    () => serviceManager.Stop(
+                        SetupConstants.ServiceName,
+                        TimeSpan.FromSeconds(20)),
+                    SetupErrorCodes.ServiceStopFailed,
+                    "기존 Agent 서비스를 중지하지 못했습니다.");
             }
 
             steps.MarkActiveStage(SetupFailureStage.FileActivation);
@@ -540,19 +542,39 @@ public sealed class AgentDeploymentOrchestrator(
 
             steps.MarkActiveStage(SetupFailureStage.ServiceConfiguration);
             var serviceBinaryPath = $"\"{paths.AgentExecutablePath}\" --service";
-            serviceManager.InstallOrUpdate(
-                SetupConstants.ServiceName,
-                SetupConstants.ServiceDisplayName,
-                serviceBinaryPath,
-                $@"NT SERVICE\{SetupConstants.ServiceName}",
-                existingServiceExpected: previousService.Exists,
-                updateServiceSecurity:
-                    !previousService.Exists ||
-                    previousService.SecurityDescriptor is not null);
+            var updateServiceRecovery =
+                !previousService.Exists ||
+                previousService.HasKnownRecovery;
+            AddServiceConfigurationWarnings(
+                steps,
+                RunServiceOperation(
+                    () => serviceManager.InstallOrUpdateWithResult(
+                        SetupConstants.ServiceName,
+                        SetupConstants.ServiceDisplayName,
+                        serviceBinaryPath,
+                        $@"NT SERVICE\{SetupConstants.ServiceName}",
+                        existingServiceExpected: previousService.Exists,
+                        updateServiceSecurity:
+                            !previousService.Exists ||
+                            previousService.HasKnownSecurityDescriptor,
+                        updateServiceDescription:
+                            !previousService.Exists ||
+                            previousService.HasKnownDescription),
+                    SetupErrorCodes.ServiceConfigFailed,
+                    "Agent 서비스의 핵심 구성을 적용하지 못했습니다."));
             // A recovery restart during readiness can replace the service PID
             // and race the rollback file moves. Recovery is restored/enabled
             // only after this version has passed the bounded readiness gate.
-            serviceManager.DisableRecovery(SetupConstants.ServiceName);
+            if (updateServiceRecovery)
+            {
+                AddServiceConfigurationWarnings(
+                    steps,
+                    RunServiceOperation(
+                        () => serviceManager.DisableRecoveryWithResult(
+                            SetupConstants.ServiceName),
+                        SetupErrorCodes.ServiceConfigFailed,
+                        "설치 중 Agent 서비스의 자동 복구 정책을 조정하지 못했습니다."));
+            }
             if (!dataDirectoryExistedBefore)
             {
                 dataDirectoryCreated = true;
@@ -579,7 +601,12 @@ public sealed class AgentDeploymentOrchestrator(
                 "창 없는 Agent 자동 시작 서비스를 구성했습니다."));
 
             steps.MarkActiveStage(SetupFailureStage.ServiceStart);
-            serviceManager.Start(SetupConstants.ServiceName, TimeSpan.FromSeconds(30));
+            RunServiceOperation(
+                () => serviceManager.Start(
+                    SetupConstants.ServiceName,
+                    TimeSpan.FromSeconds(30)),
+                SetupErrorCodes.ServiceStartFailed,
+                "Agent 서비스를 시작하지 못했습니다.");
             journal = journal with { Stage = "service-started" };
             journalStore.Write(journal);
             steps.Add(Succeeded(
@@ -593,7 +620,16 @@ public sealed class AgentDeploymentOrchestrator(
                 // transactional install and must restore the previous state.
                 cancellationToken.ThrowIfCancellationRequested();
                 steps.MarkActiveStage(SetupFailureStage.ServiceConfiguration);
-                serviceManager.ConfigureRecovery(SetupConstants.ServiceName);
+                if (updateServiceRecovery)
+                {
+                    AddServiceConfigurationWarnings(
+                        steps,
+                        RunServiceOperation(
+                            () => serviceManager.ConfigureRecoveryWithResult(
+                                SetupConstants.ServiceName),
+                            SetupErrorCodes.ServiceConfigFailed,
+                            "Agent 서비스의 자동 복구 정책을 적용하지 못했습니다."));
+                }
                 cancellationToken.ThrowIfCancellationRequested();
 
                 // File and service mutation is complete here. Connectivity
@@ -689,7 +725,16 @@ public sealed class AgentDeploymentOrchestrator(
             if (!automaticRequest)
             {
                 steps.MarkActiveStage(SetupFailureStage.ServiceConfiguration);
-                serviceManager.ConfigureRecovery(SetupConstants.ServiceName);
+                if (updateServiceRecovery)
+                {
+                    AddServiceConfigurationWarnings(
+                        steps,
+                        RunServiceOperation(
+                            () => serviceManager.ConfigureRecoveryWithResult(
+                                SetupConstants.ServiceName),
+                            SetupErrorCodes.ServiceConfigFailed,
+                            "Agent 서비스의 자동 복구 정책을 적용하지 못했습니다."));
+                }
             }
 
             if (postCommitCancellationRequested)
@@ -941,6 +986,7 @@ public sealed class AgentDeploymentOrchestrator(
         }
         catch (SetupException exception)
         {
+            steps.RecordUnexpectedFailure(exception);
             RecordPrimaryFailureBeforeRollback(
                 steps,
                 exception.Code,
@@ -2845,6 +2891,80 @@ public sealed class AgentDeploymentOrchestrator(
 
     private static SetupStepResult Failed(string code, string label, string message) =>
         new(code, label, SetupStepState.Failed, message);
+
+    private static void RunServiceOperation(
+        Action operation,
+        string failureCode,
+        string safeMessage) =>
+        _ = RunServiceOperation(
+            () =>
+            {
+                operation();
+                return true;
+            },
+            failureCode,
+            safeMessage);
+
+    private static T RunServiceOperation<T>(
+        Func<T> operation,
+        string failureCode,
+        string safeMessage)
+    {
+        try
+        {
+            return operation();
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception exception) when (
+            IsExpectedServiceOperationFailure(exception))
+        {
+            throw new SetupException(failureCode, safeMessage, exception);
+        }
+    }
+
+    private static bool IsExpectedServiceOperationFailure(Exception exception) =>
+        exception is SetupException or
+            System.ComponentModel.Win32Exception or
+            UnauthorizedAccessException or
+            System.Security.SecurityException or
+            IOException or
+            TimeoutException;
+
+    private static void AddServiceConfigurationWarnings(
+        SetupStepRecorder steps,
+        ServiceConfigurationResult result)
+    {
+        foreach (var warning in result.Warnings)
+        {
+            if (steps.Any(step =>
+                    step.State == SetupStepState.Warning &&
+                    string.Equals(step.Code, warning.Code, StringComparison.Ordinal)))
+            {
+                continue;
+            }
+
+            steps.Add(new SetupStepResult(
+                warning.Code,
+                "선택 서비스 설정",
+                SetupStepState.Warning,
+                ServiceConfigurationWarningMessage(warning.Code)));
+        }
+    }
+
+    private static string ServiceConfigurationWarningMessage(string code) =>
+        code switch
+        {
+            SetupErrorCodes.ServiceDescriptionWarning =>
+                "Agent 서비스 설명을 적용하지 못했지만 핵심 서비스 구성은 완료했습니다.",
+            SetupErrorCodes.ServiceDaclWarning =>
+                "Agent 서비스의 선택적 제어 권한 강화를 적용하지 못했지만 설치를 계속합니다.",
+            SetupErrorCodes.ServiceRecoveryPolicyWarning =>
+                "Agent 서비스 자동 복구 정책을 적용하지 못했습니다. 현재 실행은 유지되지만 장애 후 자동 재시작 정책은 별도 확인이 필요합니다.",
+            _ => "선택 서비스 설정을 적용하지 못했지만 핵심 설치를 계속합니다."
+        };
 
     private static bool IsAgentRuntimeFile(PackageFile file)
     {

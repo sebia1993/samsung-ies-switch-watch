@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the Korean Samsung Switch Watch v0.11.6 operator manual.
+"""Build the Korean Samsung Switch Watch v0.11.7 operator manual.
 
 The manual is intentionally generated from sanitized, deterministic WPF
 screenshots. It never needs a company switch, a real IP address, or a secret.
@@ -20,8 +20,8 @@ from docx.oxml.ns import qn
 from docx.shared import Inches, Pt, RGBColor
 
 
-VERSION = "0.11.6-poc"
-DOCUMENT_DATE = "2026-08-11"
+VERSION = "0.11.7-poc"
+DOCUMENT_DATE = "2026-08-12"
 FONT = "맑은 고딕"
 MONO = "Consolas"
 
@@ -911,12 +911,18 @@ Viewer 허용 범위      : 10/8, 172.16/12, 192.168/16
     )
     add_callout(
         doc,
-        "서비스 조회는 한 번만 짧게 재시도",
+        "서비스 핵심 실패와 부가 설정 경고",
         "설치/업데이트는 별도 사전 점검과 배포에서 같은 서비스 정보를 중복 조회하지 않습니다. "
         "초기 조회가 일시적으로 실패하면 200ms 뒤 한 번만 다시 확인합니다. 계속 실패하면 "
-        "파일·서비스·방화벽 변경 전에 SETUP_SERVICE_FAILED로 중단합니다. 기존 서비스의 보안 "
-        "설명자만 읽을 수 없는 경우에는 조회 가능한 구성과 상태로 설치를 계속하되 기존 DACL은 "
-        "변경하지 않습니다. 설명자를 확보한 경우에만 새 제한 DACL을 적용하고 실패 시 복원합니다.",
+        "파일·서비스·방화벽 변경 전에 SETUP_SERVICE_CAPTURE_FAILED로 중단합니다. 기존 서비스의 "
+        "실행 경로·시작 유형·계정 계약 불일치는 SETUP_SERVICE_CONTRACT_FAILED, 기존 서비스 중지는 "
+        "SETUP_SERVICE_STOP_FAILED, "
+        "실행 경로·자동 시작·가상 계정 같은 핵심 구성은 SETUP_SERVICE_CONFIG_FAILED, 실제 시작은 "
+        "SETUP_SERVICE_START_FAILED로 구분합니다. 이 단계들은 Agent 구동에 필요하므로 실패하면 "
+        "fail-closed로 중단합니다. 서비스 설명, 자동 복구 정책 또는 제한 DACL 적용만 실패하면 "
+        "SETUP_SERVICE_DESCRIPTION_WARNING, SETUP_SERVICE_RECOVERY_POLICY_WARNING 또는 "
+        "SETUP_SERVICE_DACL_WARNING을 남기고 계속합니다. 이 경우에도 핵심 구성과 Running 상태는 "
+        "반드시 확인합니다.",
         "info",
     )
     add_callout(
@@ -1425,7 +1431,15 @@ Viewer 허용 범위      : 10/8, 172.16/12, 192.168/16
             ("AGENT_PROTOCOL_MISMATCH", "Agent API가 v4인지 확인하고 같은 Release로 업데이트"),
             ("SETUP_PACKAGE_NOT_FOUND", "Agent ZIP 전체 압축 해제 → Setup과 Agent EXE·BUILD-MANIFEST 존재 확인"),
             ("SETUP_PACKAGE_HASH_MISMATCH", "실행 중지 → 공식 ZIP을 새 폴더에 다시 압축 해제 → EDR 격리 기록"),
-            ("SETUP_SERVICE_FAILED", "Windows 서비스 관리 권한 → 기존 SamsungSwitchWatchAgent 상태"),
+            ("SETUP_SERVICE_CAPTURE_FAILED", "설치 전 서비스 상태 snapshot 조회 → Windows 서비스 관리 권한"),
+            ("SETUP_SERVICE_CONTRACT_FAILED", "다른 설치·관리 작업이 같은 서비스를 변경했는지 확인"),
+            ("SETUP_SERVICE_STOP_FAILED", "기존 Agent 서비스 상태 → EDR의 프로세스 종료 차단"),
+            ("SETUP_SERVICE_CONFIG_FAILED", "SCM 권한 → 실행 경로·자동 시작·가상 서비스 계정 정책"),
+            ("SETUP_SERVICE_START_FAILED", "Windows 서비스 이벤트 → EDR 격리·실행 차단"),
+            ("SETUP_SERVICE_DESCRIPTION_WARNING", "서비스 설명만 실패한 경고 → 핵심 서비스 Running과 Viewer 연결 확인"),
+            ("SETUP_SERVICE_RECOVERY_POLICY_WARNING", "자동 복구 정책만 실패한 경고 → 핵심 서비스 Running과 Viewer 연결 확인"),
+            ("SETUP_SERVICE_DACL_WARNING", "제한 DACL만 실패한 경고 → 핵심 서비스 Running과 사내 SCM 정책 확인"),
+            ("SETUP_SERVICE_FAILED", "구버전 호환 서비스 오류 → 새 버전으로 맞춘 뒤 Windows 서비스 상태 확인"),
             ("SETUP_BACKUP_MOVE_FAILED", "기존 Agent→backup 이동이 5회 안에 끝나지 않음 → rollback 결과 확인 → 제품 폴더 수동 이동·삭제 금지"),
             ("SETUP_FILE_ACTIVATION_FAILED", "staging→설치 위치 활성화가 5회 안에 끝나지 않음 → 이전 Agent 복원 또는 이전 상태 복구 결과 확인"),
             ("SETUP_BACKUP_ACCESS_WARNING", "backup 관리자 전용 ACL 강화만 실패한 경고 → 설치 성공과 새 Agent 실행 확인 → backup 권한 임의 확대 금지"),

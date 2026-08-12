@@ -729,7 +729,7 @@ public sealed class SetupUiPresentationTests
             "Action=CHECK_FIREWALL_POLICY",
             text);
         Assert.Contains(
-            "State=PASS|PENDING_RECOVERABLE|CONFIGURED|FAIL|NOT_RUN|NOT_RUN",
+            "State=PASS|PENDING_RECOVERABLE|STOPPED|FAIL|NOT_RUN|NOT_RUN",
             text);
         Assert.Contains("Health=NOT_RUN|FFF|0|NOT_STARTED", text);
         Assert.Contains(
@@ -1160,6 +1160,221 @@ public sealed class SetupUiPresentationTests
         Assert.Equal(errorCode, decoded.Common.PrimaryCodeName);
     }
 
+    [Theory]
+    [InlineData(
+        SetupErrorCodes.ServiceCaptureFailed,
+        "ServiceCapture",
+        "SERVICE_CAPTURE")]
+    [InlineData(
+        SetupErrorCodes.ServiceContractFailed,
+        "ServiceContract",
+        "SERVICE_CONTRACT")]
+    [InlineData(
+        SetupErrorCodes.ServiceStopFailed,
+        "ServiceStop",
+        "SERVICE_STOP")]
+    [InlineData(
+        SetupErrorCodes.ServiceConfigFailed,
+        "ServiceConfiguration",
+        "SERVICE_CONFIGURATION")]
+    [InlineData(
+        SetupErrorCodes.ServiceStartFailed,
+        "ServiceStart",
+        "SERVICE_START")]
+    public void ServiceFailuresKeepStableStageCategoryAndSupportCode(
+        string errorCode,
+        string stageName,
+        string stageToken)
+    {
+        var steps = new SetupStepRecorder();
+        steps.MarkActiveStage(Enum.Parse<SetupFailureStage>(stageName));
+        steps.RecordUnexpectedFailure(new SetupException(
+            errorCode,
+            "safe",
+            new System.ComponentModel.Win32Exception(5)));
+        steps.Add(new SetupStepResult(
+            errorCode,
+            "service",
+            SetupStepState.Failed,
+            "private service detail"));
+        var result = SetupOperationResult.Failure(
+            errorCode,
+            "private service detail",
+            steps) with
+        {
+            PrimaryFailureCode = errorCode
+        };
+        var context = new SetupFieldDiagnosticContext(
+            "0.11.7-poc",
+            DateTimeOffset.UnixEpoch,
+            "10.0.26100.0",
+            "X64",
+            "install",
+            TimeSpan.Zero,
+            result,
+            PendingRecoveryInspection.None);
+
+        var text = SetupFieldDiagnosticFormatter.Format(context);
+        var supportCode = SetupFieldDiagnosticFormatter.CreateSupportCode(context);
+
+        AssertCompactFieldDiagnostic(text);
+        Assert.Contains($"FailedStage={stageToken}", text);
+        Assert.Matches(
+            $@"Failure={errorCode}\|WINDOWS_API\|\d+",
+            text);
+        Assert.Contains("Action=CHECK_WINDOWS_SERVICE", text);
+        Assert.DoesNotContain("private service detail", text);
+        Assert.True(Swd1SupportCode.TryDecode(supportCode, out var decoded));
+        Assert.Equal(errorCode, decoded!.Common.ResultCodeName);
+        Assert.Equal(errorCode, decoded.Common.PrimaryCodeName);
+    }
+
+    [Theory]
+    [InlineData("running", "RUNNING", Swd1AgentServiceState.Running)]
+    [InlineData("stopped", "STOPPED", Swd1AgentServiceState.Stopped)]
+    [InlineData(
+        "missing",
+        "NOT_INSTALLED",
+        Swd1AgentServiceState.NotInstalled)]
+    public void ServiceFailure_PrefersObservedServiceState(
+        string serviceState,
+        string diagnosticToken,
+        Swd1AgentServiceState expectedSupportState)
+    {
+        var result = SetupOperationResult.Failure(
+            SetupErrorCodes.ServiceStartFailed,
+            "private service detail",
+            [
+                new SetupStepResult(
+                    SetupErrorCodes.ServiceStartFailed,
+                    "service start",
+                    SetupStepState.Failed,
+                    "private service detail")
+            ]) with
+        {
+            PrimaryFailureCode = SetupErrorCodes.ServiceStartFailed
+        };
+        var recovery = PendingRecoveryInspection.None with
+        {
+            ServiceState = serviceState,
+            EvidenceStateKnown = true
+        };
+        var context = new SetupFieldDiagnosticContext(
+            "0.11.7-poc",
+            DateTimeOffset.UnixEpoch,
+            "10.0.26100.0",
+            "X64",
+            "install",
+            TimeSpan.Zero,
+            result,
+            recovery);
+
+        var text = SetupFieldDiagnosticFormatter.Format(context);
+        var supportCode = SetupFieldDiagnosticFormatter.CreateSupportCode(context);
+
+        Assert.Contains($"State=NOT_RUN|NONE|{diagnosticToken}|", text);
+        Assert.True(Swd1SupportCode.TryDecode(supportCode, out var decoded));
+        Assert.Equal(expectedSupportState, decoded!.Agent!.Value.ServiceState);
+    }
+
+    [Theory]
+    [InlineData("SERVICE_RUNNING", "RUNNING", Swd1AgentServiceState.Running)]
+    [InlineData("SERVICE_STOPPED", "STOPPED", Swd1AgentServiceState.Stopped)]
+    [InlineData(
+        "SERVICE_NOT_INSTALLED",
+        "NOT_INSTALLED",
+        Swd1AgentServiceState.NotInstalled)]
+    public void ServiceFailure_AfterSuccessfulRollbackReportsRestoredOriginalState(
+        string originalStateCode,
+        string diagnosticToken,
+        Swd1AgentServiceState expectedSupportState)
+    {
+        var result = SetupOperationResult.Failure(
+            SetupErrorCodes.ServiceConfigFailed,
+            "private service detail",
+            [
+                new SetupStepResult(
+                    originalStateCode,
+                    "original service state",
+                    SetupStepState.Information,
+                    "captured"),
+                new SetupStepResult(
+                    SetupErrorCodes.ServiceConfigFailed,
+                    "service configuration",
+                    SetupStepState.Failed,
+                    "private service detail"),
+                new SetupStepResult(
+                    "ROLLBACK_COMPLETED",
+                    "rollback",
+                    SetupStepState.Succeeded,
+                    "restored")
+            ]) with
+        {
+            PrimaryFailureCode = SetupErrorCodes.ServiceConfigFailed
+        };
+        var context = new SetupFieldDiagnosticContext(
+            "0.11.7-poc",
+            DateTimeOffset.UnixEpoch,
+            "10.0.26100.0",
+            "X64",
+            "install",
+            TimeSpan.Zero,
+            result,
+            PendingRecoveryInspection.None);
+
+        var text = SetupFieldDiagnosticFormatter.Format(context);
+        var supportCode = SetupFieldDiagnosticFormatter.CreateSupportCode(context);
+
+        Assert.Contains($"State=NOT_RUN|NONE|{diagnosticToken}|", text);
+        Assert.True(Swd1SupportCode.TryDecode(supportCode, out var decoded));
+        Assert.Equal(expectedSupportState, decoded!.Agent!.Value.ServiceState);
+    }
+
+    [Fact]
+    public void UnresolvedServiceFailureStillReportsFailedServiceState()
+    {
+        var result = SetupOperationResult.Failure(
+            SetupErrorCodes.ServiceConfigFailed,
+            "private service detail",
+            [
+                new SetupStepResult(
+                    "SERVICE_RUNNING",
+                    "original service state",
+                    SetupStepState.Information,
+                    "captured"),
+                new SetupStepResult(
+                    SetupErrorCodes.ServiceConfigFailed,
+                    "service configuration",
+                    SetupStepState.Failed,
+                    "private service detail")
+            ]) with
+        {
+            PrimaryFailureCode = SetupErrorCodes.ServiceConfigFailed
+        };
+        var context = new SetupFieldDiagnosticContext(
+            "0.11.7-poc",
+            DateTimeOffset.UnixEpoch,
+            "10.0.26100.0",
+            "X64",
+            "install",
+            TimeSpan.Zero,
+            result,
+            PendingRecoveryInspection.None with
+            {
+                ServiceState = "running",
+                EvidenceStateKnown = false
+            });
+
+        var text = SetupFieldDiagnosticFormatter.Format(context);
+        var supportCode = SetupFieldDiagnosticFormatter.CreateSupportCode(context);
+
+        Assert.Contains("State=NOT_RUN|NONE|FAIL|", text);
+        Assert.True(Swd1SupportCode.TryDecode(supportCode, out var decoded));
+        Assert.Equal(
+            Swd1AgentServiceState.Failed,
+            decoded!.Agent!.Value.ServiceState);
+    }
+
     [Fact]
     public void BackupAccessWarningRemainsVisibleAsSanitizedStageEvidence()
     {
@@ -1191,6 +1406,41 @@ public sealed class SetupUiPresentationTests
             $"Stages=1|{SetupErrorCodes.BackupAccessWarning}:W",
             text);
         Assert.DoesNotContain("private ACL detail", text);
+        Assert.DoesNotContain("UNAVAILABLE", text);
+    }
+
+    [Theory]
+    [InlineData(SetupErrorCodes.ServiceDescriptionWarning)]
+    [InlineData(SetupErrorCodes.ServiceDaclWarning)]
+    [InlineData(SetupErrorCodes.ServiceRecoveryPolicyWarning)]
+    [InlineData("SERVICE_SECURITY_PRESERVED")]
+    public void OptionalServiceWarningsRemainVisibleAsSanitizedStageEvidence(
+        string warningCode)
+    {
+        var result = SetupOperationResult.Success(
+            "installed with warning",
+            [
+                new SetupStepResult(
+                    warningCode,
+                    "optional service setting",
+                    SetupStepState.Warning,
+                    "private service detail")
+            ]);
+
+        var text = SetupFieldDiagnosticFormatter.Format(
+            new SetupFieldDiagnosticContext(
+                "0.11.7-poc",
+                DateTimeOffset.UnixEpoch,
+                "10.0.26100.0",
+                "X64",
+                "install",
+                TimeSpan.Zero,
+                result,
+                PendingRecoveryInspection.None));
+
+        AssertCompactFieldDiagnostic(text);
+        Assert.Contains($"Stages=1|{warningCode}:W", text);
+        Assert.DoesNotContain("private service detail", text);
         Assert.DoesNotContain("UNAVAILABLE", text);
     }
 

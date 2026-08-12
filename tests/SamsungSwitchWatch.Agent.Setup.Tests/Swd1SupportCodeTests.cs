@@ -26,7 +26,12 @@ public sealed class Swd1SupportCodeTests
     [Theory]
     [InlineData("SETUP_BACKUP_MOVE_FAILED", 34)]
     [InlineData("SETUP_FILE_ACTIVATION_FAILED", 35)]
-    public void AgentPayload_RoundTripsAppendedFileActivationFailures(
+    [InlineData("SETUP_SERVICE_CAPTURE_FAILED", 36)]
+    [InlineData("SETUP_SERVICE_CONTRACT_FAILED", 37)]
+    [InlineData("SETUP_SERVICE_STOP_FAILED", 38)]
+    [InlineData("SETUP_SERVICE_CONFIG_FAILED", 39)]
+    [InlineData("SETUP_SERVICE_START_FAILED", 40)]
+    public void AgentPayload_RoundTripsAppendedSetupFailures(
         string errorCode,
         int expectedProtocolCode)
     {
@@ -45,6 +50,7 @@ public sealed class Swd1SupportCodeTests
 
         var code = Swd1SupportCode.Encode(payload);
 
+        Assert.Equal(24, code.Length);
         Assert.Equal((byte)expectedProtocolCode, payload.Common.ResultCode);
         Assert.Equal((byte)expectedProtocolCode, payload.Common.PrimaryCode);
         Assert.True(Swd1SupportCode.TryDecode(code, out var decoded));

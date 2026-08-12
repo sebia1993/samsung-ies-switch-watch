@@ -2,8 +2,8 @@
 
 ## 릴리스 계약
 
-- 현재 버전: `0.11.6-poc`
-- 태그: annotated tag `v0.11.6-poc`
+- 현재 버전: `0.11.7-poc`
+- 태그: annotated tag `v0.11.7-poc`
 - 대상: Windows x64, self-contained, single-file managed publish, untrimmed
 - GitHub Release 사용자 정의 Asset: Agent ZIP과 Viewer ZIP 정확히 두 개
 - 공개 패키지: PowerShell·CMD·개발 설정·DB·인증정보 제외
@@ -12,15 +12,15 @@
 공개 Asset:
 
 ```text
-SamsungSwitchWatch-Agent-0.11.6-poc-win-x64.zip
-SamsungSwitchWatch-Viewer-0.11.6-poc-win-x64.zip
+SamsungSwitchWatch-Agent-0.11.7-poc-win-x64.zip
+SamsungSwitchWatch-Viewer-0.11.7-poc-win-x64.zip
 ```
 
 내부 검증 파일:
 
 ```text
-SamsungSwitchWatch-Agent-0.11.6-poc-win-x64.zip
-SamsungSwitchWatch-Viewer-0.11.6-poc-win-x64.zip
+SamsungSwitchWatch-Agent-0.11.7-poc-win-x64.zip
+SamsungSwitchWatch-Viewer-0.11.7-poc-win-x64.zip
 BUILD-MANIFEST.json
 SBOM.spdx.json
 SBOM.cdx.json
@@ -65,6 +65,13 @@ dotnet test SamsungSwitchWatch.sln -c Release --no-build
   `SETUP_FILE_ACTIVATION_FAILED`로 안정적으로 분류되고 기존 rollback을 수행함
 - backup 관리자 전용 ACL 강화 실패는 `SETUP_BACKUP_ACCESS_WARNING` 경고로 남기되
   파일·서비스·준비 상태가 정상인 설치를 실패로 바꾸지 않음
+- 서비스 상태 snapshot 실패가 `SETUP_SERVICE_CAPTURE_FAILED`, 기존 서비스 계약 불일치가
+  `SETUP_SERVICE_CONTRACT_FAILED`, 중지 실패가 `SETUP_SERVICE_STOP_FAILED`, 핵심 구성 실패가
+  `SETUP_SERVICE_CONFIG_FAILED`, 시작 실패가 `SETUP_SERVICE_START_FAILED`로 구분됨
+- 서비스 실행 파일 경로·자동 시작 유형·가상 계정과 실제 Running 확인은 fail-closed로 유지됨
+- 서비스 설명·자동 복구 정책·제한 DACL 적용만 실패하면
+  `SETUP_SERVICE_DESCRIPTION_WARNING`, `SETUP_SERVICE_RECOVERY_POLICY_WARNING`,
+  `SETUP_SERVICE_DACL_WARNING`으로 구분하고 핵심 서비스 구동이 확인된 설치를 되돌리지 않음
 - 복구 정리는 검증된 staging·backup·failed·journal 경로만 최대 3회 시도하고 실패한 시도 사이 250ms 대기함
 - 각 정리 대상 삭제와 새 작업 기록 검사가 모두 통과해야만 복구 성공과 설치 활성화로 표시됨
 - 복구 성공 뒤 설치가 자동 실행되지 않고, 실패 시 최초 원인과 복구 대상별 단계 원인이 분리됨
@@ -154,7 +161,7 @@ python .\tools\build-user-manual.py `
 python .\tools\render-user-manual-pdf.py `
   --input .\docs\SamsungSwitchWatch_User_Manual_KO.docx `
   --output .\docs\SamsungSwitchWatch_User_Manual_KO.pdf `
-  --render-dir .\tmp\manual-render-0.11.6
+  --render-dir .\tmp\manual-render-0.11.7
 ```
 
 DOCX는 저장소 편집 원본이고 공개 패키지에는 넣지 않습니다. PDF는 두 ZIP에 포함합니다.
@@ -163,13 +170,13 @@ QA 페이지 PNG는 시각 검사 후 임시 폴더에만 두며 커밋하지 �
 ## 로컬 패키지 생성
 
 ```powershell
-.\scripts\build-release.ps1 -Version 0.11.6-poc
+.\scripts\build-release.ps1 -Version 0.11.7-poc
 ```
 
 진단용 dirty 빌드는 게시하지 않습니다.
 
 ```powershell
-.\scripts\build-release.ps1 -Version 0.11.6-poc -AllowDirty
+.\scripts\build-release.ps1 -Version 0.11.7-poc -AllowDirty
 ```
 
 빌드 스크립트는 다음 순서로 실행됩니다.
@@ -200,7 +207,7 @@ vcruntime140_cor3.dll
 wpfgfx_cor3.dll
 INSTALL_KO.md
 SamsungSwitchWatch_User_Manual_KO.pdf
-RELEASE_NOTES_0.11.6_POC_KO.md
+RELEASE_NOTES_0.11.7_POC_KO.md
 BUILD-MANIFEST.json
 SBOM.spdx.json
 SBOM.cdx.json
@@ -227,7 +234,7 @@ vcruntime140_cor3.dll
 wpfgfx_cor3.dll
 INSTALL_KO.md
 SamsungSwitchWatch_User_Manual_KO.pdf
-RELEASE_NOTES_0.11.6_POC_KO.md
+RELEASE_NOTES_0.11.7_POC_KO.md
 BUILD-MANIFEST.json
 SBOM.spdx.json
 SBOM.cdx.json
@@ -246,7 +253,7 @@ Viewer Setup은 UAC 없이 `%LOCALAPPDATA%\Programs\SamsungSwitchWatch\Viewer`�
 $commit = (git rev-parse HEAD).Trim()
 .\scripts\test-package-contract.ps1 `
   -ReleaseDirectory .\artifacts\release `
-  -Version 0.11.6-poc `
+  -Version 0.11.7-poc `
   -ExpectedSourceCommit $commit
 .\scripts\test-release-workflow-contract.ps1
 ```
@@ -256,7 +263,7 @@ $commit = (git rev-parse HEAD).Trim()
 ```powershell
 .\scripts\test-release-executable-smoke.ps1 `
   -ReleaseDirectory .\artifacts\release `
-  -Version 0.11.6-poc
+  -Version 0.11.7-poc
 ```
 
 검사는 다음 조건을 fail-closed로 확인합니다.
@@ -279,8 +286,8 @@ $commit = (git rev-parse HEAD).Trim()
 ## 태그와 게시
 
 ```powershell
-git tag -a v0.11.6-poc -m "Samsung Switch Watch v0.11.6-poc"
-git push origin v0.11.6-poc
+git tag -a v0.11.7-poc -m "Samsung Switch Watch v0.11.7-poc"
+git push origin v0.11.7-poc
 ```
 
 Release workflow는 태그가 `origin/main`에 포함되고 annotated tag의 객체와 peeled commit이
@@ -293,10 +300,10 @@ Release workflow는 태그가 `origin/main`에 포함되고 annotated tag의 객
 ## 게시 후 확인
 
 ```powershell
-$tag = 'v0.11.6-poc'
+$tag = 'v0.11.7-poc'
 $expected = @(
-  'SamsungSwitchWatch-Agent-0.11.6-poc-win-x64.zip',
-  'SamsungSwitchWatch-Viewer-0.11.6-poc-win-x64.zip'
+  'SamsungSwitchWatch-Agent-0.11.7-poc-win-x64.zip',
+  'SamsungSwitchWatch-Viewer-0.11.7-poc-win-x64.zip'
 ) | Sort-Object
 $release = gh release view $tag --json isDraft,isPrerelease,assets,url | ConvertFrom-Json
 $actual = @($release.assets | ForEach-Object { $_.name } | Sort-Object)

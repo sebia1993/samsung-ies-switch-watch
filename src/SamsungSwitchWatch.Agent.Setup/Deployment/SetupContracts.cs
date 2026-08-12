@@ -53,7 +53,17 @@ public static class SetupErrorCodes
     public const string BackupMoveFailed = "SETUP_BACKUP_MOVE_FAILED";
     public const string FileActivationFailed = "SETUP_FILE_ACTIVATION_FAILED";
     public const string BackupAccessWarning = "SETUP_BACKUP_ACCESS_WARNING";
+    public const string ServiceDescriptionWarning =
+        "SETUP_SERVICE_DESCRIPTION_WARNING";
+    public const string ServiceDaclWarning = "SETUP_SERVICE_DACL_WARNING";
+    public const string ServiceRecoveryPolicyWarning =
+        "SETUP_SERVICE_RECOVERY_POLICY_WARNING";
     public const string ServiceFailed = "SETUP_SERVICE_FAILED";
+    public const string ServiceCaptureFailed = "SETUP_SERVICE_CAPTURE_FAILED";
+    public const string ServiceContractFailed = "SETUP_SERVICE_CONTRACT_FAILED";
+    public const string ServiceStopFailed = "SETUP_SERVICE_STOP_FAILED";
+    public const string ServiceConfigFailed = "SETUP_SERVICE_CONFIG_FAILED";
+    public const string ServiceStartFailed = "SETUP_SERVICE_START_FAILED";
     public const string FirewallFailed = "SETUP_FIREWALL_FAILED";
     public const string FirewallRemoteAccessUnconfirmed =
         "FIREWALL_REMOTE_ACCESS_UNCONFIRMED";
@@ -186,7 +196,9 @@ internal enum SetupFailureStage
     Readiness,
     CommitCleanup,
     Recovery,
-    UiOperation
+    UiOperation,
+    ServiceCapture,
+    ServiceContract
 }
 
 internal enum SetupFailureCategory
@@ -315,6 +327,9 @@ internal sealed class SetupStepRecorder : IReadOnlyList<SetupStepResult>
     private static SetupFailureCategory ClassifyFailure(Exception exception) =>
         exception switch
         {
+            SetupException { InnerException: { } innerException } =>
+                ClassifyFailure(innerException),
+            SetupException => SetupFailureCategory.InvalidState,
             UnauthorizedAccessException or SecurityException =>
                 SetupFailureCategory.AccessDenied,
             IOException => SetupFailureCategory.Io,
@@ -410,6 +425,18 @@ public sealed record ServiceSnapshot(
     byte[]? SecurityDescriptor,
     int ProcessId)
 {
+    // Nullable capture markers preserve journals written before these fields
+    // existed. A missing legacy marker means that the old snapshot value was
+    // captured; an explicit false means that optional metadata was unavailable.
+    public bool? DescriptionCaptured { get; init; }
+    public bool? RecoveryCaptured { get; init; }
+    public bool? SecurityDescriptorCaptured { get; init; }
+
+    internal bool HasKnownDescription => DescriptionCaptured != false;
+    internal bool HasKnownRecovery => RecoveryCaptured != false;
+    internal bool HasKnownSecurityDescriptor =>
+        SecurityDescriptorCaptured ?? SecurityDescriptor is not null;
+
     public static ServiceSnapshot Missing { get; } =
         new(
             false,
@@ -422,7 +449,12 @@ public sealed record ServiceSnapshot(
             0,
             ServiceRecoverySnapshot.Empty,
             null,
-            0);
+            0)
+        {
+            DescriptionCaptured = true,
+            RecoveryCaptured = true,
+            SecurityDescriptorCaptured = true
+        };
 }
 
 public sealed record ServiceRecoverySnapshot(
@@ -444,6 +476,14 @@ public sealed record ServiceRestoreResult(
     IReadOnlyList<ServiceRestoreWarning> Warnings)
 {
     public static ServiceRestoreResult Completed { get; } = new([]);
+}
+
+public sealed record ServiceConfigurationWarning(string Code, string Message);
+
+public sealed record ServiceConfigurationResult(
+    IReadOnlyList<ServiceConfigurationWarning> Warnings)
+{
+    public static ServiceConfigurationResult Completed { get; } = new([]);
 }
 
 public static class ServiceAccountContract
@@ -549,8 +589,50 @@ public interface IServiceManager
         string accountName,
         bool existingServiceExpected,
         bool updateServiceSecurity);
+    ServiceConfigurationResult InstallOrUpdateWithResult(
+        string serviceName,
+        string displayName,
+        string binaryPath,
+        string accountName,
+        bool existingServiceExpected,
+        bool updateServiceSecurity)
+    {
+        InstallOrUpdate(
+            serviceName,
+            displayName,
+            binaryPath,
+            accountName,
+            existingServiceExpected,
+            updateServiceSecurity);
+        return ServiceConfigurationResult.Completed;
+    }
+    ServiceConfigurationResult InstallOrUpdateWithResult(
+        string serviceName,
+        string displayName,
+        string binaryPath,
+        string accountName,
+        bool existingServiceExpected,
+        bool updateServiceSecurity,
+        bool updateServiceDescription) =>
+        InstallOrUpdateWithResult(
+            serviceName,
+            displayName,
+            binaryPath,
+            accountName,
+            existingServiceExpected,
+            updateServiceSecurity);
     void ConfigureRecovery(string serviceName);
+    ServiceConfigurationResult ConfigureRecoveryWithResult(string serviceName)
+    {
+        ConfigureRecovery(serviceName);
+        return ServiceConfigurationResult.Completed;
+    }
     void DisableRecovery(string serviceName);
+    ServiceConfigurationResult DisableRecoveryWithResult(string serviceName)
+    {
+        DisableRecovery(serviceName);
+        return ServiceConfigurationResult.Completed;
+    }
     void Start(string serviceName, TimeSpan timeout);
     void Restore(string serviceName, ServiceSnapshot snapshot);
     ServiceRestoreResult RestoreWithResult(
