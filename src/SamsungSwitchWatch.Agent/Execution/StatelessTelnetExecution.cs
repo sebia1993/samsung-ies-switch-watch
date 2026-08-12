@@ -2,9 +2,11 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Net;
 using System.Text;
+using System.Text.Json.Serialization;
 using SamsungSwitchWatch.Agent.Configuration;
 using SamsungSwitchWatch.Agent.Domain;
 using SamsungSwitchWatch.Core.Diagnostics;
+using SamsungSwitchWatch.Core.Parsing;
 using SamsungSwitchWatch.Core.Profiles;
 using SamsungSwitchWatch.Core.Telnet;
 
@@ -49,6 +51,9 @@ public sealed record TelnetApiResult(
     int ReconnectCount,
     IReadOnlyList<TelnetApiCommandResult> Commands)
 {
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? DetectedModel { get; init; }
+
     public override string ToString() =>
         "TelnetApiResult { Commands = [REDACTED] }";
 }
@@ -84,29 +89,61 @@ public sealed class CoreStatelessTelnetExecutor(
     DeviceProfileRegistry profiles,
     AgentOptions options) : IStatelessTelnetExecutor
 {
+    private const string ModelDetectionCommand = "show version";
+
     public async Task<TelnetApiResult> ExecuteAsync(
         StatelessTelnetRequest request,
         CancellationToken cancellationToken = default)
     {
         var profile = profiles.GetRequired(request.Model);
+        var isModelDetection = request.Purpose.Equals(
+            "test",
+            StringComparison.OrdinalIgnoreCase);
+        IReadOnlyList<string> commands = isModelDetection
+            ? [ModelDetectionCommand]
+            : request.Commands;
         var stopwatch = Stopwatch.StartNew();
         var session = await telnet.ExecuteAsync(
                 new TelnetEndpoint(request.Address.ToString(), 23),
                 request.Credentials,
                 profile.Telnet,
-                request.Commands,
+                commands,
                 cancellationToken)
             .ConfigureAwait(false);
 
-        var outputs = new List<TelnetApiCommandResult>(session.Outputs.Count);
-        foreach (var output in session.Outputs)
+        string? detectedModel = null;
+        var outputs = new List<TelnetApiCommandResult>(
+            isModelDetection ? 0 : session.Outputs.Count);
+        if (isModelDetection)
         {
-            var truncated = Utf8OutputLimiter.Limit(output.NormalizedOutput, options.MaxOutputBytes);
-            outputs.Add(new TelnetApiCommandResult(
-                output.Command,
-                truncated.Value,
-                truncated.Truncated,
-                output.CollectedAt));
+            var detection = SwitchModelDetector.Detect(
+                session.Outputs.FirstOrDefault()?.NormalizedOutput,
+                profiles.Models);
+            if (detection.Status != SwitchModelDetectionStatus.Detected)
+            {
+                throw new AgentOperationException(
+                    detection.Status == SwitchModelDetectionStatus.Ambiguous
+                        ? AgentErrorCodes.ModelAmbiguous
+                        : AgentErrorCodes.ModelNotDetected,
+                    detection.Status == SwitchModelDetectionStatus.Ambiguous
+                        ? "Multiple supported switch models were detected."
+                        : "A supported switch model was not detected.",
+                    StatusCodes.Status422UnprocessableEntity);
+            }
+
+            detectedModel = detection.Model;
+        }
+        else
+        {
+            foreach (var output in session.Outputs)
+            {
+                var truncated = Utf8OutputLimiter.Limit(output.NormalizedOutput, options.MaxOutputBytes);
+                outputs.Add(new TelnetApiCommandResult(
+                    output.Command,
+                    truncated.Value,
+                    truncated.Truncated,
+                    output.CollectedAt));
+            }
         }
 
         return new TelnetApiResult(
@@ -120,7 +157,10 @@ public sealed class CoreStatelessTelnetExecutor(
             stopwatch.ElapsedMilliseconds,
             session.SessionCount,
             session.ReconnectCount,
-            outputs);
+            outputs)
+        {
+            DetectedModel = detectedModel
+        };
     }
 }
 
@@ -135,11 +175,16 @@ public sealed class MockStatelessTelnetExecutor(TimeProvider? timeProvider = nul
         cancellationToken.ThrowIfCancellationRequested();
         var now = _timeProvider.GetUtcNow();
         var privilege = request.Credentials.EnablePassword is null ? "user" : "privileged";
-        var outputs = request.Commands.Select(command => new TelnetApiCommandResult(
-            command,
-            "Synthetic mock Telnet output.",
-            false,
-            now)).ToArray();
+        var isModelDetection = request.Purpose.Equals(
+            "test",
+            StringComparison.OrdinalIgnoreCase);
+        var outputs = isModelDetection
+            ? []
+            : request.Commands.Select(command => new TelnetApiCommandResult(
+                command,
+                "Synthetic mock Telnet output.",
+                false,
+                now)).ToArray();
         return Task.FromResult(new TelnetApiResult(
             4,
             request.RequestId,
@@ -151,7 +196,10 @@ public sealed class MockStatelessTelnetExecutor(TimeProvider? timeProvider = nul
             0,
             1,
             0,
-            outputs));
+            outputs)
+        {
+            DetectedModel = isModelDetection ? request.Model : null
+        });
     }
 }
 

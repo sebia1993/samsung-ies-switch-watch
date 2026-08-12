@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the Korean Samsung Switch Watch v0.11.8 operator manual.
+"""Build the Korean Samsung Switch Watch v0.11.9 operator manual.
 
 The manual is intentionally generated from sanitized, deterministic WPF
 screenshots. It never needs a company switch, a real IP address, or a secret.
@@ -20,7 +20,7 @@ from docx.oxml.ns import qn
 from docx.shared import Inches, Pt, RGBColor
 
 
-VERSION = "0.11.8-poc"
+VERSION = "0.11.9-poc"
 DOCUMENT_DATE = "2026-08-12"
 FONT = "맑은 고딕"
 MONO = "Consolas"
@@ -1177,7 +1177,7 @@ Viewer 허용 범위      : 10/8, 172.16/12, 192.168/16
         images_dir / "03-device-management.png",
         width=5.5,
         title="장비 관리 창",
-        alt_text="장비명, 모델, IPv4, 계정 ID, 로그인 비밀번호, enable 비밀번호와 감시 설정을 입력하는 창",
+        alt_text="장비명, IPv4, 계정 ID와 비밀번호를 입력하고 자동 판별된 모델과 감시 설정을 확인하는 창",
         caption="그림 6. Viewer가 보관하는 장비 및 계정 입력 화면",
     )
     add_callout(
@@ -1199,7 +1199,7 @@ Viewer 허용 범위      : 10/8, 172.16/12, 192.168/16
         ["입력 항목", "필수", "설명"],
         [
             ("장비명", "예", "운영자가 구분하기 쉬운 표시 이름"),
-            ("모델", "예", "IES4224GP, IES4028XP, IES4226XP"),
+            ("모델 (자동)", "자동", "로그인 확인에서 IES4224GP, IES4028XP, IES4226XP 중 판별"),
             ("장비 IPv4", "예", "10/8, 172.16/12 또는 192.168/16의 스위치 관리 IPv4"),
             ("계정 ID", "예", "Telnet 로그인 계정"),
             ("로그인 PW", "예", "현재 Windows 사용자 DPAPI로 보호"),
@@ -1211,8 +1211,11 @@ Viewer 허용 범위      : 10/8, 172.16/12, 192.168/16
     add_callout(
         doc,
         "로그인 확인 실패",
-        "실패한 장비도 저장할 수 있지만 '로그인 미확인'으로 표시되고 주기 감시는 강제로 꺼집니다. "
-        "주소가 사설 대역인지, ID/PW와 enable 필요 여부를 바로잡은 뒤 다시 확인하세요. 성공해도 "
+        "새 장비는 로그인과 모델 자동 판별이 성공한 뒤 저장할 수 있습니다. 기존 장비의 재확인이 "
+        "실패하면 기존 모델은 유지되지만 주기 감시는 강제로 꺼집니다. 주소가 사설 대역인지, "
+        "ID/PW와 enable 필요 여부를 바로잡은 뒤 다시 확인하세요. MODEL_NOT_DETECTED 또는 "
+        "MODEL_AMBIGUOUS이면 실제 show version과 지원 범위를 확인하고, "
+        "MODEL_DETECTION_UNAVAILABLE이면 Agent와 Viewer를 같은 최신 버전으로 맞추세요. 성공해도 "
         "조회 명령까지 검증된 것은 아니므로 수집 진단을 이어서 실행합니다.",
         "warning",
     )
@@ -1484,6 +1487,9 @@ Viewer 허용 범위      : 10/8, 172.16/12, 192.168/16
             ("TCP_TIMEOUT", "Agent PC에서 장비 TCP/23 경로, ACL, 장비 Telnet 상태 확인"),
             ("AUTH_FAILED", "감시를 즉시 차단함. ID/PW와 login local 적용 여부 확인"),
             ("ENABLE_FAILED", "enable 필요 여부와 enable PW, 로그인 직후 프롬프트 확인"),
+            ("MODEL_NOT_DETECTED", "show version에서 지원 모델을 찾지 못함. 장비 전면 모델명과 실제 출력·지원 범위 확인"),
+            ("MODEL_AMBIGUOUS", "둘 이상의 지원 모델 토큰이 확인됨. 임의 선택 없이 실제 장비와 출력 형식 확인"),
+            ("MODEL_DETECTION_UNAVAILABLE", "구형 Agent 응답에 자동 판별값이 없음. Agent와 Viewer를 같은 최신 Release로 업데이트"),
             ("QUERY_COMMAND_BLOCKED", "한 줄 show 형식, 줄바꿈/구분자 포함 여부 확인"),
             ("COMMAND_TIMEOUT", "30초 무응답 또는 90초 전체 제한. 실패한 수집 항목과 안전한 단계 확인"),
             ("TELNET_SESSION_CLOSED", "재연결 1회 뒤에도 종료됨. 완료된 결과와 남은 명령을 확인"),

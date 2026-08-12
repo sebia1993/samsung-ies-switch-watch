@@ -232,7 +232,9 @@ internal static class AgentClientErrors
         "TELNET_NEGOTIATION_FAILED" or
         "TELNET_SESSION_CLOSED" or
         "COMMAND_TIMEOUT" or
-        "SESSION_CLOSED";
+        "SESSION_CLOSED" or
+        "MODEL_NOT_DETECTED" or
+        "MODEL_AMBIGUOUS";
 }
 
 internal static class ViewerConnectionMessages
@@ -337,6 +339,9 @@ internal static class ViewerConnectionMessages
         "OUTPUT_TRUNCATED" => "장비 출력이 안전 제한에서 잘렸습니다. 기존 감시 기준은 유지되며 다음 점검에서 다시 확인합니다.",
         "COMMAND_OUTPUT_MISSING" or "COMMAND_OUTPUT_EMPTY" => "장비 명령 결과가 완전하게 도착하지 않았습니다. 기존 상태를 유지하고 다음 점검에서 다시 확인합니다.",
         "COMMAND_UNSUPPORTED" => "이 장비 또는 펌웨어가 등록된 조회 명령을 지원하지 않습니다.",
+        "MODEL_NOT_DETECTED" => "장비 응답에서 지원 모델을 확인하지 못했습니다. 장비에서 show version이 정상 응답하는지 확인해 주세요.",
+        "MODEL_AMBIGUOUS" => "장비 응답에서 여러 지원 모델명이 확인되어 자동 판별을 중단했습니다. 장비 버전 출력을 확인해 주세요.",
+        "MODEL_DETECTION_UNAVAILABLE" => "현재 Agent가 자동 모델 판별 결과를 제공하지 않습니다. Agent와 Viewer를 같은 최신 버전으로 업데이트해 주세요.",
         "PARSER_UNSUPPORTED" => "장비 출력 형식을 아직 해석하지 못했습니다. 원문 결과와 모델·펌웨어를 확인해 주세요.",
         "INCOMPLETE_OUTPUT" => "장비 출력이 완전하지 않아 상태를 갱신하지 않았습니다. 다음 점검에서 다시 확인합니다.",
         "VIEWER_MONITOR_STATE_CORRUPT" => "Viewer 감시 이력 파일이 손상되어 이번 실행의 자동 감시를 중지했습니다. 격리된 원본을 보존하고 Viewer를 다시 시작하면 새 기준선으로 시작합니다.",

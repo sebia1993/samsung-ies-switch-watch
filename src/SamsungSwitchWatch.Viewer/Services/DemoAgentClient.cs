@@ -50,7 +50,15 @@ public sealed class DemoAgentClient : IAgentClient
         return new TelnetExecutionResultDto(
             4, target.RequestId, true, string.IsNullOrEmpty(target.EnablePassword) ? "user" : "privileged",
             string.IsNullOrEmpty(target.EnablePassword) ? ">" : "#",
-            started, DateTimeOffset.UtcNow, 180, []);
+            started, DateTimeOffset.UtcNow, 180, [])
+        {
+            DetectedModel = SupportedSwitchModels.Contains(target.Model)
+                ? SupportedSwitchModels.All.First(model =>
+                    model.Equals(
+                        target.Model,
+                        StringComparison.OrdinalIgnoreCase))
+                : SupportedSwitchModels.All[0]
+        };
     }
 
     public async Task<TelnetExecutionResultDto> ExecuteTelnetAsync(

@@ -6,7 +6,7 @@
 ## 1. 반입 파일과 버전
 
 - [ ] 동일 GitHub Release에서 Agent ZIP과 Viewer ZIP을 받음
-- [ ] Agent와 Viewer 파일명이 같은 `0.11.8-poc` 버전을 표시함
+- [ ] Agent와 Viewer 파일명이 같은 `0.11.9-poc` 버전을 표시함
 - [ ] 두 ZIP의 SHA-256을 해당 GitHub Release 본문에 표시된 값과 비교함
 - [ ] Agent ZIP에 `SamsungSwitchWatch.Agent.Setup.exe`와 Agent 런타임 파일이 있음
 - [ ] Viewer ZIP에 `SamsungSwitchWatch.Viewer.Setup.exe`, `SamsungSwitchWatch.Viewer.exe`와 Viewer 런타임 파일이 있음
@@ -165,7 +165,12 @@ HTTPS는 전송 내용을 암호화하지만 Agent 신원을 인증하지 않습
 | IES4028XP | 미검증 | 미검증 | 미검증 | |
 | IES4226XP | 미검증 | 미검증 | 미검증 | |
 
-- [ ] Viewer에서 장비명, 모델, IPv4, ID와 로그인 PW를 입력함
+- [ ] Viewer에서 장비명, IPv4, ID와 로그인 PW를 입력하고 모델은 로그인 확인에서 자동 판별됨
+- [ ] 판별 전 모델 필드는 확인 대기로 표시되며 새 장비 저장이 차단됨
+- [ ] 실제 장비의 `show version` 결과에서 올바른 모델 하나만 판별됨
+- [ ] 지원 모델이 없는 출력은 `MODEL_NOT_DETECTED`로 저장을 막고 임의 모델을 선택하지 않음
+- [ ] 둘 이상의 지원 모델 토큰이 있는 출력은 `MODEL_AMBIGUOUS`로 저장을 막음
+- [ ] 구형 Agent의 판별값 없는 응답은 `MODEL_DETECTION_UNAVAILABLE`로 동일 최신 버전 사용을 안내함
 - [ ] 필요한 장비에만 enable PW를 입력함
 - [ ] enable PW가 없는 장비의 로그인 확인이 성공함
 - [ ] enable PW가 필요한 장비에서 `>` → `enable` → `#`를 확인함
@@ -277,7 +282,7 @@ Viewer가 종료되면 감시도 중단되는 구조가 현장 운영 요구와 
       핵심 서비스 상태가 확인된 복구는 완료되며 작업 기록이 정리됨
 - [ ] 서비스 실행 파일 경로·시작 유형·계정·표시 이름·서비스 SID·이전 실행 상태 중 하나라도
       복원하지 못하면 `ROLLBACK_SERVICE_RESTORE_FAILED`로 중단하고 journal과 이전 파일을 보존함
-- [ ] `0.11.4-poc`·`0.11.5-poc`·`0.11.6-poc`·`0.11.7-poc`에서 남은 호환 journal을 `0.11.8-poc` Setup이 읽고 안전하게 복구함
+- [ ] `0.11.4-poc`·`0.11.5-poc`·`0.11.6-poc`·`0.11.7-poc`·`0.11.8-poc`에서 남은 호환 journal을 `0.11.9-poc` Setup이 읽고 안전하게 복구함
 - [ ] 새 ProgramData 제품 루트 생성 직전에 다른 프로세스가 같은 폴더를 만들면 Setup이 해당
       폴더의 ACL·내용을 변경하거나 rollback에서 삭제하지 않음
 - [ ] journal 원자 교체가 완료된 뒤 임시 파일 정리만 실패해도 저장 완료를 실패로 바꾸지 않음

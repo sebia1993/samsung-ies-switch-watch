@@ -172,6 +172,20 @@ public static class AgentContractMapper
             throw new JsonException("TELNET_RESULT_CONTRACT_INVALID");
         }
 
+        string? detectedModel = null;
+        if (root.TryGetProperty("detectedModel", out var detectedModelProperty))
+        {
+            if (detectedModelProperty.ValueKind != JsonValueKind.String
+                || detectedModelProperty.GetString() is not { } suppliedModel
+                || !SupportedSwitchModels.Contains(suppliedModel))
+            {
+                throw new JsonException("TELNET_RESULT_CONTRACT_INVALID");
+            }
+
+            detectedModel = SupportedSwitchModels.All.First(model =>
+                model.Equals(suppliedModel.Trim(), StringComparison.OrdinalIgnoreCase));
+        }
+
         var commands = new List<TelnetCommandOutputDto>();
         var returnedSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var item in commandItems.EnumerateArray())
@@ -233,6 +247,7 @@ public static class AgentContractMapper
             durationMs,
             commands)
         {
+            DetectedModel = detectedModel,
             SessionCount = sessionCount,
             ReconnectCount = reconnectCount
         };

@@ -12,6 +12,7 @@ namespace SamsungSwitchWatch.Viewer.Views;
 
 public partial class DeviceManagementWindow : Window
 {
+    private const string PendingModelText = "로그인 확인 후 표시";
     private readonly DashboardViewModel _dashboard;
     private readonly ObservableCollection<ManagedDeviceProfile> _devices = [];
     private readonly CancellationTokenSource _lifetimeCancellation = new();
@@ -28,7 +29,6 @@ public partial class DeviceManagementWindow : Window
     {
         InitializeComponent();
         _dashboard = dashboard;
-        ModelComboBox.ItemsSource = SupportedSwitchModels.All;
         DeviceList.ItemsSource = _devices;
         Loaded += (_, _) => InitializeWindow();
         Closing += OnClosing;
@@ -125,8 +125,8 @@ public partial class DeviceManagementWindow : Window
         _lastTestUtc = null;
         FormTitleText.Text = "새 장비 등록";
         DisplayNameTextBox.Text = SuggestName();
-        ModelComboBox.SelectedItem = SupportedSwitchModels.All[0];
         HostTextBox.Clear();
+        ModelTextBox.Text = PendingModelText;
         UsernameTextBox.Clear();
         PasswordBox.Clear();
         EnablePasswordBox.Clear();
@@ -178,8 +178,8 @@ public partial class DeviceManagementWindow : Window
         _lastTestUtc = profile.LastConnectionTestUtc;
         FormTitleText.Text = "장비 수정";
         DisplayNameTextBox.Text = profile.DisplayName;
-        ModelComboBox.SelectedItem = profile.Model;
         HostTextBox.Text = profile.Host;
+        ModelTextBox.Text = profile.Model;
         UsernameTextBox.Text = editDraft.Username;
         PasswordBox.Clear();
         EnablePasswordBox.Clear();
@@ -197,6 +197,33 @@ public partial class DeviceManagementWindow : Window
             ? $"마지막 로그인 확인 성공 · {profile.LastConnectionTestUtc?.LocalDateTime:yyyy-MM-dd HH:mm:ss}"
             : $"로그인 미확인 · {profile.LastConnectionTestCode ?? "확인 필요"}";
         DeleteButton.IsEnabled = true;
+    }
+
+    private void HostTextBox_TextChanged(
+        object sender,
+        System.Windows.Controls.TextChangedEventArgs e)
+    {
+        if (_closingOrClosed || ModelTextBox is null) return;
+
+        var existing = _editingId is null
+            ? null
+            : _devices.FirstOrDefault(item => item.Id == _editingId);
+        if (existing is not null
+            && existing.Host.Equals(
+                HostTextBox.Text.Trim(),
+                StringComparison.Ordinal))
+        {
+            ModelTextBox.Text = existing.Model;
+            return;
+        }
+
+        ModelTextBox.Text = PendingModelText;
+        _successfulTestSignature = null;
+        if (MonitoringCheckBox is not null)
+        {
+            MonitoringCheckBox.IsChecked = false;
+            MonitoringCheckBox.IsEnabled = false;
+        }
     }
 
     private void RestoreSelection(string? previousId)
@@ -239,14 +266,33 @@ public partial class DeviceManagementWindow : Window
                 _lastTestCode = "CONNECTION_TEST_FAILED";
                 _lastTestUtc = DateTimeOffset.UtcNow;
                 MonitoringCheckBox.IsChecked = false;
-                ShowResult("로그인 확인이 실패했습니다. 장비는 저장할 수 있지만 감시는 꺼집니다.", false);
+                ShowResult(
+                    SupportedSwitchModels.Contains(ModelTextBox.Text)
+                        ? "로그인 확인이 실패했습니다. 기존 모델로 저장할 수 있지만 감시는 꺼집니다."
+                        : "로그인 확인이 실패해 모델을 판별하지 못했습니다. 연결 정보를 확인한 뒤 다시 시도해 주세요.",
+                    false);
                 return;
             }
+            if (!SupportedSwitchModels.Contains(result.DetectedModel))
+            {
+                throw new AgentClientException(
+                    "MODEL_DETECTION_UNAVAILABLE",
+                    AgentConnectionState.Stale);
+            }
+
+            var detectedModel = SupportedSwitchModels.All.First(model =>
+                model.Equals(
+                    result.DetectedModel!.Trim(),
+                    StringComparison.OrdinalIgnoreCase));
+            draft.Model = detectedModel;
+            ModelTextBox.Text = detectedModel;
             _successfulTestSignature = BuildConnectionSignature(draft);
             _failedTestSignature = null;
             _lastTestCode = "OK";
             _lastTestUtc = DateTimeOffset.UtcNow;
-            ShowResult($"로그인 확인 성공 · 권한 {result.Privilege} · {result.DurationMs:N0}ms", true);
+            ShowResult(
+                $"로그인 확인 성공 · {detectedModel} 자동 판별 · 권한 {result.Privilege} · {result.DurationMs:N0}ms",
+                true);
         }
         catch (OperationCanceledException) when (lifetimeToken.IsCancellationRequested)
         {
@@ -440,7 +486,9 @@ public partial class DeviceManagementWindow : Window
     {
         Id = _editingId,
         DisplayName = DisplayNameTextBox.Text,
-        Model = ModelComboBox.SelectedItem as string ?? string.Empty,
+        Model = SupportedSwitchModels.Contains(ModelTextBox.Text)
+            ? ModelTextBox.Text
+            : string.Empty,
         Host = HostTextBox.Text,
         Username = UsernameTextBox.Text,
         Password = PasswordBox.Password,
@@ -455,7 +503,10 @@ public partial class DeviceManagementWindow : Window
         {
             var existing = _editingId is not null
                            && _devices.Any(item => item.Id == _editingId);
-            return ManagedDeviceValidator.TryValidate(draft, !existing, out reason);
+            return ManagedDeviceValidator.TryValidateConnectionInput(
+                draft,
+                !existing,
+                out reason);
         }
         catch
         {

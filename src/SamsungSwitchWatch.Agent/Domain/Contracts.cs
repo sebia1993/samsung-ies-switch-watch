@@ -28,6 +28,8 @@ public static class AgentErrorCodes
     public const string Ipv6Unsupported = "IPV6_UNSUPPORTED";
     public const string QueryCommandBlocked = "QUERY_COMMAND_BLOCKED";
     public const string QueryRateLimited = "QUERY_RATE_LIMITED";
+    public const string ModelNotDetected = "MODEL_NOT_DETECTED";
+    public const string ModelAmbiguous = "MODEL_AMBIGUOUS";
 }
 
 public sealed class AgentOperationException(

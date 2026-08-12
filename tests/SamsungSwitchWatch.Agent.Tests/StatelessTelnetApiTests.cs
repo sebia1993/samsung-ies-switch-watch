@@ -52,7 +52,7 @@ public sealed class StatelessTelnetApiTests
     }
 
     [Fact]
-    public async Task Test_ConnectsWithoutExecutingACommand()
+    public async Task Test_ReturnsDetectedModelWithoutReturningRawCommandOutput()
     {
         var executor = new RecordingExecutor();
         await using var host = await TestAgentHost.StartAsync(executor);
@@ -75,6 +75,7 @@ public sealed class StatelessTelnetApiTests
         Assert.Empty(request.Commands);
         Assert.Equal("login-secret", request.Credentials.Password);
         Assert.Equal("enable-secret", request.Credentials.EnablePassword);
+        Assert.Equal("IES4224GP", body.RootElement.GetProperty("detectedModel").GetString());
         Assert.Empty(body.RootElement.GetProperty("commands").EnumerateArray());
     }
 
@@ -427,7 +428,14 @@ public sealed class StatelessTelnetApiTests
                 0,
                 1,
                 0,
-                outputs));
+                outputs)
+            {
+                DetectedModel = request.Purpose.Equals(
+                    "test",
+                    StringComparison.OrdinalIgnoreCase)
+                    ? request.Model
+                    : null
+            });
         }
     }
 
