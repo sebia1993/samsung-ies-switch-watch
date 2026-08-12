@@ -22,11 +22,13 @@ public sealed class WpfSmokeTests
     public void MainWindow_CanBeConstructedWithApplicationResources()
     {
         Exception? failure = null;
+        var phase = "thread-start";
         var thread = new Thread(() =>
         {
             var folder = Path.Combine(Path.GetTempPath(), "SamsungSwitchWatch-WpfSmoke", Guid.NewGuid().ToString("N"));
             try
             {
+                Volatile.Write(ref phase, "application-resources");
                 var app = new App();
                 app.InitializeComponent();
                 Assert.Equal(
@@ -40,6 +42,7 @@ public sealed class WpfSmokeTests
                     AgentUri = string.Empty
                 }, store, deviceStore: deviceStore);
                 viewModel.InitializeAsync().GetAwaiter().GetResult();
+                Volatile.Write(ref phase, "main-window");
                 var window = new MainWindow(viewModel);
                 window.Show();
                 window.UpdateLayout();
@@ -90,6 +93,7 @@ public sealed class WpfSmokeTests
                 Assert.Equal("AccessibilityName", AutomationNameBindingPath(window.SelectedDeviceChangesList.ItemContainerStyle));
                 Assert.Equal("Label", AutomationNameBindingPath(window.SelectedDeviceMetricsList.ItemContainerStyle));
                 Assert.Equal("Label", AutomationNameBindingPath(window.EventFilterComboBox.ItemContainerStyle));
+                Volatile.Write(ref phase, "connection-windows");
                 var connection = new ConnectionSettingsWindow(
                     new ViewerSettings { DemoMode = false, AgentUri = "https://monitor-pc:18443" },
                     (_, _) => Task.CompletedTask,
@@ -201,6 +205,7 @@ public sealed class WpfSmokeTests
                 AssertVisibleSupportCode(settingsSaveFailureConnection);
                 Assert.True(settingsSaveFailureConnection.SaveButton.IsEnabled);
                 settingsSaveFailureConnection.Close();
+                Volatile.Write(ref phase, "device-window");
                 var devices = new DeviceManagementWindow(viewModel);
                 devices.Show();
                 devices.UpdateLayout();
@@ -210,8 +215,11 @@ public sealed class WpfSmokeTests
                 Assert.Equal("로그인 _확인", devices.TestButton.Content);
                 Assert.Contains("로그인 확인", devices.ResultText.Text, StringComparison.Ordinal);
                 devices.Close();
+                Volatile.Write(ref phase, "device-storage-failures");
                 VerifyDeviceManagementFailuresStayInsideWindow(folder);
+                Volatile.Write(ref phase, "device-close-cancellation");
                 VerifyClosingDeviceWindowCancelsConnectionTest(folder);
+                Volatile.Write(ref phase, "mini-and-alert");
                 var mini = new MiniWindow(viewModel, true);
                 mini.Show();
                 mini.UpdateLayout();
@@ -227,13 +235,17 @@ public sealed class WpfSmokeTests
                 popup.Close();
                 window.AllowClose();
                 window.Close();
+                Volatile.Write(ref phase, "main-dispose");
                 viewModel.DisposeAsync().AsTask().GetAwaiter().GetResult();
                 app.Shutdown();
+                Volatile.Write(ref phase, "completed");
             }
             catch (Exception exception) { failure = exception; }
             finally
             {
+                Volatile.Write(ref phase, "cleanup");
                 if (Directory.Exists(folder)) Directory.Delete(folder, true);
+                Volatile.Write(ref phase, "thread-completed");
             }
         });
         thread.IsBackground = true;
@@ -246,7 +258,7 @@ public sealed class WpfSmokeTests
         Assert.True(
             thread.Join(timeout),
             $"WPF smoke thread did not finish within {timeout.TotalSeconds:0} seconds. "
-            + $"Thread state: {thread.ThreadState}.");
+            + $"Phase: {Volatile.Read(ref phase)}. Thread state: {thread.ThreadState}.");
         Assert.Null(failure);
     }
 
@@ -376,10 +388,32 @@ public sealed class WpfSmokeTests
     private static void DrainDispatcherQueue()
     {
         var frame = new System.Windows.Threading.DispatcherFrame();
-        System.Windows.Threading.Dispatcher.CurrentDispatcher.BeginInvoke(
-            System.Windows.Threading.DispatcherPriority.ApplicationIdle,
-            new Action(() => frame.Continue = false));
-        System.Windows.Threading.Dispatcher.PushFrame(frame);
+        var dispatcher = System.Windows.Threading.Dispatcher.CurrentDispatcher;
+        var drained = false;
+        dispatcher.BeginInvoke(
+            System.Windows.Threading.DispatcherPriority.Normal,
+            new Action(() =>
+            {
+                drained = true;
+                frame.Continue = false;
+            }));
+        var timeout = new System.Windows.Threading.DispatcherTimer(
+            System.Windows.Threading.DispatcherPriority.Send,
+            dispatcher)
+        {
+            Interval = TimeSpan.FromSeconds(5)
+        };
+        timeout.Tick += (_, _) => frame.Continue = false;
+        timeout.Start();
+        try
+        {
+            System.Windows.Threading.Dispatcher.PushFrame(frame);
+        }
+        finally
+        {
+            timeout.Stop();
+        }
+        Assert.True(drained, "WPF dispatcher queue did not drain within 5 seconds.");
     }
 
     private static void VerifyDeviceManagementFailuresStayInsideWindow(string folder)
