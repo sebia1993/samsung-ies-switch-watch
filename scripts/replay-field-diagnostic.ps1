@@ -670,7 +670,12 @@ function Get-SswAgentV2ErrorCodes {
         'SETUP_UNEXPECTED',
         'DIAGNOSTIC_WRITE_FAILED',
         'SETUP_BACKUP_MOVE_FAILED',
-        'SETUP_FILE_ACTIVATION_FAILED'
+        'SETUP_FILE_ACTIVATION_FAILED',
+        'SETUP_SERVICE_CAPTURE_FAILED',
+        'SETUP_SERVICE_CONTRACT_FAILED',
+        'SETUP_SERVICE_STOP_FAILED',
+        'SETUP_SERVICE_CONFIG_FAILED',
+        'SETUP_SERVICE_START_FAILED'
     )
 }
 
@@ -684,6 +689,7 @@ function Get-SswAgentV2StageCodes {
         'FIREWALL_OVERLAP_PROTECTED',
         'FIREWALL_GATE_READY',
         'SERVICE_FOUND',
+        'SERVICE_SECURITY_PRESERVED',
         'SERVICE_NOT_INSTALLED',
         'FIREWALL_EXACT',
         'FIREWALL_UPDATE_REQUIRED',
@@ -701,6 +707,9 @@ function Get-SswAgentV2StageCodes {
         'ROLLBACK_RECOVERY_CLEANED',
         'COMMITTED_TRANSACTION_CLEANED',
         'SETUP_BACKUP_ACCESS_WARNING',
+        'SETUP_SERVICE_DESCRIPTION_WARNING',
+        'SETUP_SERVICE_DACL_WARNING',
+        'SETUP_SERVICE_RECOVERY_POLICY_WARNING',
         'UNAVAILABLE'
     )
 }
@@ -744,7 +753,13 @@ function Resolve-SswAgentV2Action {
             'SETUP_FILE_ACTIVATION_FAILED')) {
         return 'RETRY_OR_CHECK_INSTALL_FILES'
     }
-    if ($ErrorCode -ceq 'SETUP_SERVICE_FAILED') {
+    if ($ErrorCode -cin @(
+            'SETUP_SERVICE_FAILED',
+            'SETUP_SERVICE_CAPTURE_FAILED',
+            'SETUP_SERVICE_CONTRACT_FAILED',
+            'SETUP_SERVICE_STOP_FAILED',
+            'SETUP_SERVICE_CONFIG_FAILED',
+            'SETUP_SERVICE_START_FAILED')) {
         return 'CHECK_WINDOWS_SERVICE'
     }
     if ($ErrorCode -cin @(
@@ -837,6 +852,8 @@ function Assert-SswAgentSetupV2Schema {
         'FILESYSTEM',
         'CONFIGURATION',
         'FILE_STAGING',
+        'SERVICE_CAPTURE',
+        'SERVICE_CONTRACT',
         'SERVICE_STOP',
         'FILE_ACTIVATION',
         'SERVICE_CONFIGURATION',
@@ -1185,6 +1202,16 @@ function Resolve-SswFieldDiagnosticScenario {
             'AgentDeploymentOrchestratorTests.DeployAsync_PersistentBackupMoveFailureRestoresServiceAndCleansTransaction'
         'AGENT_SETUP|SETUP_FILE_ACTIVATION_FAILED|FILE_ACTIVATION' =
             'AgentDeploymentOrchestratorTests.DeployAsync_PersistentStagingActivationFailureRestoresPreviousAgent'
+        'AGENT_SETUP|SETUP_SERVICE_CAPTURE_FAILED|SERVICE_CAPTURE' =
+            'AgentDeploymentOrchestratorTests.DeployAsync_PersistentServiceCaptureFailureIsClassifiedBeforeMutation'
+        'AGENT_SETUP|SETUP_SERVICE_CONTRACT_FAILED|SERVICE_CONTRACT' =
+            'AgentDeploymentOrchestratorTests.DeployAsync_RejectsRunningLegacyLocalServiceBeforeMutation'
+        'AGENT_SETUP|SETUP_SERVICE_STOP_FAILED|SERVICE_STOP' =
+            'AgentDeploymentOrchestratorTests.DeployAsync_FirstStopFailureWithRunningServiceRunsRollbackStopBarrier'
+        'AGENT_SETUP|SETUP_SERVICE_CONFIG_FAILED|SERVICE_CONFIGURATION' =
+            'AgentDeploymentOrchestratorTests.DeployAsync_ServiceConfigurationFailureReportsStableCodeAndRollsBack'
+        'AGENT_SETUP|SETUP_SERVICE_START_FAILED|SERVICE_START' =
+            'AgentDeploymentOrchestratorTests.DeployAsync_UnexpectedServiceStartFailurePreservesSafeDiagnosticsAndRollsBack'
         'VIEWER|AGENT_DNS_FAILED|DNS' =
             'AgentConnectionProbeTests.ProbeAsync_DnsFailureStopsBeforeTcpAndUsesStableCode'
         'VIEWER|AGENT_CONNECTION_REFUSED|TCP' =

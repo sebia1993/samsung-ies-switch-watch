@@ -70,7 +70,12 @@ internal static class SetupInstallCompletionPolicy
                 SetupErrorCodes.PathNotWritable =>
                     "기존 Agent 제품 폴더의 권한 또는 파일 상태를 확인하지 못했습니다. " +
                     "HTTPS나 방화벽 문제가 아닙니다. 잠시 후 한 번만 다시 시도하고, 반복되면 지원 코드만 전달하세요.",
-                SetupErrorCodes.ServiceFailed =>
+                SetupErrorCodes.ServiceFailed or
+                SetupErrorCodes.ServiceCaptureFailed or
+                SetupErrorCodes.ServiceContractFailed or
+                SetupErrorCodes.ServiceStopFailed or
+                SetupErrorCodes.ServiceConfigFailed or
+                SetupErrorCodes.ServiceStartFailed =>
                     "Windows 서비스 정보를 확인하거나 변경하지 못했습니다. " +
                     "설치를 반복하지 말고 지원 코드만 전달하세요.",
                 _ =>
@@ -399,6 +404,8 @@ internal readonly record struct SetupFailureDiagnosticProjection(
             SetupFailureStage.CommitCleanup => "COMMIT_CLEANUP",
             SetupFailureStage.Recovery => "RECOVERY",
             SetupFailureStage.UiOperation => "UI_OPERATION",
+            SetupFailureStage.ServiceCapture => "SERVICE_CAPTURE",
+            SetupFailureStage.ServiceContract => "SERVICE_CONTRACT",
             _ => "UNKNOWN"
         };
 
@@ -430,6 +437,11 @@ internal readonly record struct SetupFailureDiagnosticProjection(
             SetupErrorCodes.ConfigurationInvalid => "CONFIGURATION",
             SetupErrorCodes.BackupMoveFailed or
             SetupErrorCodes.FileActivationFailed => "FILE_ACTIVATION",
+            SetupErrorCodes.ServiceCaptureFailed => "SERVICE_CAPTURE",
+            SetupErrorCodes.ServiceContractFailed => "SERVICE_CONTRACT",
+            SetupErrorCodes.ServiceStopFailed => "SERVICE_STOP",
+            SetupErrorCodes.ServiceConfigFailed => "SERVICE_CONFIGURATION",
+            SetupErrorCodes.ServiceStartFailed => "SERVICE_START",
             SetupErrorCodes.ServiceFailed => "SERVICE",
             SetupErrorCodes.FirewallFailed => "FIREWALL",
             SetupErrorCodes.HealthFailed => "READINESS",
@@ -677,6 +689,11 @@ internal static class SetupFieldDiagnosticFormatter
             SetupErrorCodes.BackupMoveFailed,
             SetupErrorCodes.FileActivationFailed,
             SetupErrorCodes.ServiceFailed,
+            SetupErrorCodes.ServiceCaptureFailed,
+            SetupErrorCodes.ServiceContractFailed,
+            SetupErrorCodes.ServiceStopFailed,
+            SetupErrorCodes.ServiceConfigFailed,
+            SetupErrorCodes.ServiceStartFailed,
             SetupErrorCodes.FirewallFailed,
             SetupErrorCodes.FirewallRemoteAccessUnconfirmed,
             SetupErrorCodes.AgentLocalConnectionUnconfirmed,
@@ -715,6 +732,7 @@ internal static class SetupFieldDiagnosticFormatter
             "SERVICE_RUNNING",
             "SERVICE_STOPPED",
             "SERVICE_NOT_INSTALLED",
+            "SERVICE_SECURITY_PRESERVED",
             "FIREWALL_EXACT",
             "FIREWALL_UPDATE_REQUIRED",
             "FIREWALL_NOT_INSTALLED",
@@ -733,7 +751,10 @@ internal static class SetupFieldDiagnosticFormatter
             SetupErrorCodes.RollbackServiceDescriptionRestoreWarning,
             SetupErrorCodes.RollbackServiceRecoveryPolicyRestoreWarning,
             SetupErrorCodes.RollbackServiceDaclRestoreWarning,
-            SetupErrorCodes.BackupAccessWarning
+            SetupErrorCodes.BackupAccessWarning,
+            SetupErrorCodes.ServiceDescriptionWarning,
+            SetupErrorCodes.ServiceDaclWarning,
+            SetupErrorCodes.ServiceRecoveryPolicyWarning
         };
 
     private static readonly HashSet<string> AllowedFirewallDecisionCodes =
@@ -1114,17 +1135,42 @@ internal static class SetupFieldDiagnosticFormatter
         PendingRecoveryInspection recovery,
         IReadOnlyList<SetupStageDiagnostic> stages)
     {
-        if (result.Code is
-            SetupErrorCodes.ServiceFailed or
-            SetupErrorCodes.RollbackServiceStopFailed or
-            SetupErrorCodes.RollbackServiceRestoreFailed)
+        var observedState = recovery.EvidenceStateKnown
+            ? ServiceStateToken(recovery.ServiceState)
+            : null;
+        if (observedState is not null)
         {
-            return "FAIL";
+            return observedState;
         }
 
         if (HasStage(stages, "AGENT_READY"))
         {
             return "RUNNING_READY";
+        }
+
+        if (HasSucceededStage(stages, "ROLLBACK_COMPLETED"))
+        {
+            var restoredState = stages
+                .Where(stage => stage.State == SetupStepState.Information)
+                .Select(stage => ServiceSnapshotStateToken(stage.Code))
+                .FirstOrDefault(state => state is not null);
+            if (restoredState is not null)
+            {
+                return restoredState;
+            }
+        }
+
+        if (result.Code is
+            SetupErrorCodes.ServiceFailed or
+            SetupErrorCodes.ServiceCaptureFailed or
+            SetupErrorCodes.ServiceContractFailed or
+            SetupErrorCodes.ServiceStopFailed or
+            SetupErrorCodes.ServiceConfigFailed or
+            SetupErrorCodes.ServiceStartFailed or
+            SetupErrorCodes.RollbackServiceStopFailed or
+            SetupErrorCodes.RollbackServiceRestoreFailed)
+        {
+            return "FAIL";
         }
 
         if (HasStage(stages, "SERVICE_CONFIGURED"))
@@ -1152,14 +1198,26 @@ internal static class SetupFieldDiagnosticFormatter
             return "FOUND";
         }
 
-        return recovery.ServiceState switch
+        return "UNKNOWN";
+    }
+
+    private static string? ServiceStateToken(string? serviceState) =>
+        serviceState switch
         {
             "running" => "RUNNING",
             "stopped" => "STOPPED",
             "missing" => "NOT_INSTALLED",
-            _ => "UNKNOWN"
+            _ => null
         };
-    }
+
+    private static string? ServiceSnapshotStateToken(string? stageCode) =>
+        stageCode switch
+        {
+            "SERVICE_RUNNING" => "RUNNING",
+            "SERVICE_STOPPED" => "STOPPED",
+            "SERVICE_NOT_INSTALLED" => "NOT_INSTALLED",
+            _ => null
+        };
 
     private static string LocalTcpStatus(
         SetupOperationResult result,
@@ -1231,7 +1289,12 @@ internal static class SetupFieldDiagnosticFormatter
             SetupErrorCodes.BackupMoveFailed or
             SetupErrorCodes.FileActivationFailed =>
                 "RETRY_OR_CHECK_INSTALL_FILES",
-            SetupErrorCodes.ServiceFailed => "CHECK_WINDOWS_SERVICE",
+            SetupErrorCodes.ServiceFailed or
+            SetupErrorCodes.ServiceCaptureFailed or
+            SetupErrorCodes.ServiceContractFailed or
+            SetupErrorCodes.ServiceStopFailed or
+            SetupErrorCodes.ServiceConfigFailed or
+            SetupErrorCodes.ServiceStartFailed => "CHECK_WINDOWS_SERVICE",
             SetupErrorCodes.FirewallFailed or
             SetupErrorCodes.FirewallRemoteAccessUnconfirmed =>
                 "CHECK_FIREWALL_POLICY",
@@ -1287,6 +1350,13 @@ internal static class SetupFieldDiagnosticFormatter
         IReadOnlyList<SetupStageDiagnostic> stages,
         string code) =>
         stages.Any(stage =>
+            string.Equals(stage.Code, code, StringComparison.Ordinal));
+
+    private static bool HasSucceededStage(
+        IReadOnlyList<SetupStageDiagnostic> stages,
+        string code) =>
+        stages.Any(stage =>
+            stage.State == SetupStepState.Succeeded &&
             string.Equals(stage.Code, code, StringComparison.Ordinal));
 
     private static string StageStateToken(SetupStepState state) =>

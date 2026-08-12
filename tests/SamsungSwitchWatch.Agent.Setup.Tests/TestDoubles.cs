@@ -376,17 +376,24 @@ internal sealed class FakeServiceManager(ServiceSnapshot initial) : IServiceMana
     public List<string> Operations { get; } = [];
     public ServiceSnapshot? InstalledState { get; private set; }
     public bool? LastUpdateServiceSecurity { get; private set; }
+    public bool? LastUpdateServiceDescription { get; private set; }
     public bool? LastExistingServiceExpected { get; private set; }
     public bool DisappearBeforeInstall { get; set; }
     public int StopFailuresRemaining { get; set; }
+    public Exception? StopException { get; set; }
     public int StopFailureOccurrence { get; set; } = 1;
     public ServiceSnapshot? StateAfterStopFailure { get; set; }
     public int RestoreFailuresRemaining { get; set; }
     public HashSet<string> RestoreWarningCodes { get; } =
         new(StringComparer.Ordinal);
+    public HashSet<string> ConfigurationWarningCodes { get; } =
+        new(StringComparer.Ordinal);
+    public string ConfigurationWarningMessage { get; set; } =
+        "simulated optional service configuration warning";
     public Exception? CaptureException { get; set; }
     public int CaptureFailuresRemaining { get; set; } = int.MaxValue;
     public Action? CaptureAction { get; set; }
+    public Exception? InstallException { get; set; }
     public Exception? StartException { get; set; }
     public Action? StartCompleted { get; set; }
     private int StopCallCount { get; set; }
@@ -424,7 +431,8 @@ internal sealed class FakeServiceManager(ServiceSnapshot initial) : IServiceMana
                 State = Clone(StateAfterStopFailure);
             }
 
-            throw new InvalidOperationException("simulated service stop failure");
+            throw StopException ??
+                new IOException("simulated service stop failure");
         }
 
         State = State with { Running = false, ProcessId = 0 };
@@ -436,11 +444,75 @@ internal sealed class FakeServiceManager(ServiceSnapshot initial) : IServiceMana
         string binaryPath,
         string accountName,
         bool existingServiceExpected,
-        bool updateServiceSecurity)
+        bool updateServiceSecurity) =>
+        InstallOrUpdateCore(
+            binaryPath,
+            accountName,
+            existingServiceExpected,
+            updateServiceSecurity,
+            updateServiceDescription: true);
+
+    public ServiceConfigurationResult InstallOrUpdateWithResult(
+        string serviceName,
+        string displayName,
+        string binaryPath,
+        string accountName,
+        bool existingServiceExpected,
+        bool updateServiceSecurity) =>
+        InstallOrUpdateWithResult(
+            serviceName,
+            displayName,
+            binaryPath,
+            accountName,
+            existingServiceExpected,
+            updateServiceSecurity,
+            updateServiceDescription: true);
+
+    public ServiceConfigurationResult InstallOrUpdateWithResult(
+        string serviceName,
+        string displayName,
+        string binaryPath,
+        string accountName,
+        bool existingServiceExpected,
+        bool updateServiceSecurity,
+        bool updateServiceDescription)
+    {
+        var createdService = InstallOrUpdateCore(
+            binaryPath,
+            accountName,
+            existingServiceExpected,
+            updateServiceSecurity,
+            updateServiceDescription);
+        var applicableWarnings = new List<string>();
+        if (updateServiceDescription || createdService)
+        {
+            applicableWarnings.Add(SetupErrorCodes.ServiceDescriptionWarning);
+        }
+
+        if (updateServiceSecurity || createdService)
+        {
+            applicableWarnings.Add(SetupErrorCodes.ServiceDaclWarning);
+        }
+
+        return ConfigurationResult(applicableWarnings.ToArray());
+    }
+
+    private bool InstallOrUpdateCore(
+        string binaryPath,
+        string accountName,
+        bool existingServiceExpected,
+        bool updateServiceSecurity,
+        bool updateServiceDescription)
     {
         Operations.Add("install");
+        if (InstallException is not null)
+        {
+            throw InstallException;
+        }
+
         LastExistingServiceExpected = existingServiceExpected;
         LastUpdateServiceSecurity = updateServiceSecurity;
+        LastUpdateServiceDescription = updateServiceDescription;
         if (DisappearBeforeInstall)
         {
             State = ServiceSnapshot.Missing;
@@ -454,7 +526,12 @@ internal sealed class FakeServiceManager(ServiceSnapshot initial) : IServiceMana
         }
 
         var createdService = !State.Exists;
+        var previousDescription = State.Description;
+        var previousRecovery = State.Recovery;
         var previousSecurityDescriptor = State.SecurityDescriptor?.ToArray();
+        var previousDescriptionCaptured = State.DescriptionCaptured;
+        var previousRecoveryCaptured = State.RecoveryCaptured;
+        var previousSecurityDescriptorCaptured = State.SecurityDescriptorCaptured;
         State = new ServiceSnapshot(
             true,
             false,
@@ -462,23 +539,26 @@ internal sealed class FakeServiceManager(ServiceSnapshot initial) : IServiceMana
             2,
             accountName,
             SetupConstants.ServiceDisplayName,
-            "Windowless Samsung switch Telnet execution Agent",
+            updateServiceDescription || createdService
+                ? "Windowless Samsung switch Telnet execution Agent"
+                : previousDescription,
             1,
-            new ServiceRecoverySnapshot(
-                86400,
-                true,
-                string.Empty,
-                string.Empty,
-                [
-                    new ServiceFailureActionSnapshot(1, 5000),
-                    new ServiceFailureActionSnapshot(1, 15000),
-                    new ServiceFailureActionSnapshot(1, 60000)
-                ]),
+            previousRecovery,
             updateServiceSecurity || createdService
                 ? [1, 2, 3]
                 : previousSecurityDescriptor,
-            4321);
+            4321)
+        {
+            DescriptionCaptured = updateServiceDescription || createdService
+                ? true
+                : previousDescriptionCaptured,
+            RecoveryCaptured = previousRecoveryCaptured,
+            SecurityDescriptorCaptured = updateServiceSecurity || createdService
+                ? true
+                : previousSecurityDescriptorCaptured
+        };
         InstalledState = Clone(State);
+        return createdService;
     }
 
     public void ConfigureRecovery(string serviceName)
@@ -486,8 +566,17 @@ internal sealed class FakeServiceManager(ServiceSnapshot initial) : IServiceMana
         Operations.Add("recovery");
         State = State with
         {
-            Recovery = WindowsServiceManager.CreateAutomaticRecoveryPolicy()
+            Recovery = WindowsServiceManager.CreateAutomaticRecoveryPolicy(),
+            RecoveryCaptured = true
         };
+    }
+
+    public ServiceConfigurationResult ConfigureRecoveryWithResult(
+        string serviceName)
+    {
+        ConfigureRecovery(serviceName);
+        return ConfigurationResult(
+            SetupErrorCodes.ServiceRecoveryPolicyWarning);
     }
 
     public void DisableRecovery(string serviceName)
@@ -495,8 +584,17 @@ internal sealed class FakeServiceManager(ServiceSnapshot initial) : IServiceMana
         Operations.Add("recovery-disabled");
         State = State with
         {
-            Recovery = WindowsServiceManager.CreateDisabledRecoveryPolicy()
+            Recovery = WindowsServiceManager.CreateDisabledRecoveryPolicy(),
+            RecoveryCaptured = true
         };
+    }
+
+    public ServiceConfigurationResult DisableRecoveryWithResult(
+        string serviceName)
+    {
+        DisableRecovery(serviceName);
+        return ConfigurationResult(
+            SetupErrorCodes.ServiceRecoveryPolicyWarning);
     }
 
     public void Start(string serviceName, TimeSpan timeout)
@@ -530,7 +628,28 @@ internal sealed class FakeServiceManager(ServiceSnapshot initial) : IServiceMana
                 "simulated missing service without security snapshot");
         }
 
-        State = Clone(snapshot);
+        var current = State;
+        State = Clone(snapshot) with
+        {
+            Description = snapshot.HasKnownDescription
+                ? snapshot.Description
+                : current.Description,
+            Recovery = snapshot.HasKnownRecovery
+                ? snapshot.Recovery
+                : current.Recovery,
+            SecurityDescriptor = snapshot.HasKnownSecurityDescriptor
+                ? snapshot.SecurityDescriptor?.ToArray()
+                : current.SecurityDescriptor?.ToArray(),
+            DescriptionCaptured = snapshot.HasKnownDescription
+                ? snapshot.DescriptionCaptured
+                : current.DescriptionCaptured,
+            RecoveryCaptured = snapshot.HasKnownRecovery
+                ? snapshot.RecoveryCaptured
+                : current.RecoveryCaptured,
+            SecurityDescriptorCaptured = snapshot.HasKnownSecurityDescriptor
+                ? snapshot.SecurityDescriptorCaptured
+                : current.SecurityDescriptorCaptured
+        };
     }
 
     public ServiceRestoreResult RestoreWithResult(
@@ -554,6 +673,21 @@ internal sealed class FakeServiceManager(ServiceSnapshot initial) : IServiceMana
         {
             SecurityDescriptor = value.SecurityDescriptor?.ToArray()
         };
+
+    private ServiceConfigurationResult ConfigurationResult(
+        params string[] applicableCodes)
+    {
+        var warnings = applicableCodes
+            .Where(ConfigurationWarningCodes.Contains)
+            .Distinct(StringComparer.Ordinal)
+            .Select(code => new ServiceConfigurationWarning(
+                code,
+                ConfigurationWarningMessage))
+            .ToArray();
+        return warnings.Length == 0
+            ? ServiceConfigurationResult.Completed
+            : new ServiceConfigurationResult(warnings);
+    }
 }
 
 internal sealed class FakeFirewallManager(FirewallRuleSnapshot initial) : IFirewallManager

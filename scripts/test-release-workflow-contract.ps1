@@ -484,7 +484,8 @@ Assert-OnlyActiveVersion $agents $workflowVersion 'Repository instructions'
 Assert-OnlyActiveVersion $install $workflowVersion 'Installation guide' @(
     '0.11.3-poc',
     '0.11.4-poc',
-    '0.11.5-poc'
+    '0.11.5-poc',
+    '0.11.6-poc'
 )
 Assert-OnlyActiveVersion $releaseProcess $workflowVersion 'Release process'
 Assert-OnlyActiveVersion $manualBuilder $workflowVersion 'User manual builder' @(

@@ -3,7 +3,7 @@
 원격 PC의 숨겨진 Windows 서비스가 삼성 iES 스위치에 Telnet으로 접속하고, 운영자 PC의
 Viewer가 장비 등록·조회 명령·결과 확인·주기 감시를 담당하는 Windows 전용 POC입니다.
 
-현재 버전은 `v0.11.6-poc`입니다. IES4224GP, IES4028XP, IES4226XP의 실제 펌웨어별
+현재 버전은 `v0.11.7-poc`입니다. IES4224GP, IES4028XP, IES4226XP의 실제 펌웨어별
 명령과 출력은 사내 현장 검증 전까지 확정된 것으로 간주하지 않습니다.
 
 ## 한눈에 보는 구조
@@ -30,8 +30,8 @@ SamsungSwitchWatch.Viewer.exe              SamsungSwitchWatchAgent 서비스
 
 공식 GitHub Release Assets에서 다음 두 ZIP만 받습니다.
 
-- `SamsungSwitchWatch-Agent-0.11.6-poc-win-x64.zip`
-- `SamsungSwitchWatch-Viewer-0.11.6-poc-win-x64.zip`
+- `SamsungSwitchWatch-Agent-0.11.7-poc-win-x64.zip`
+- `SamsungSwitchWatch-Viewer-0.11.7-poc-win-x64.zip`
 
 두 패키지는 Windows x64용 self-contained 빌드이므로 Python이나 .NET을 별도로 설치하지
 않습니다. API v4가 호환되면 버전 차이는 경고 후 연결되지만, 운영에는 같은 Release 조합을
@@ -84,14 +84,16 @@ staging·backup·failed·journal 중 어느 안전 단계에서 실패했는지
 관리자 전용 ACL 강화만 실패하면 `SETUP_BACKUP_ACCESS_WARNING`을 남기고 설치는 계속합니다.
 Viewer 데이터, Agent API v4, rollback 계약과 화면 흐름은 변경하지 않습니다.
 
-이번 버전은 설치 버튼이 읽기 전용 진단과 실제 배포에서 같은 서비스 상태를 연속 두 번 조회하던
-흐름을 하나의 트랜잭션 설치로 단순화합니다. 초기 서비스 조회가 일시적으로 실패하면 200ms 뒤
-한 번만 다시 확인하며, 계속 실패하면 `SETUP_UNEXPECTED`가 아니라
-`SETUP_SERVICE_FAILED`로 표시합니다. 서비스 상태를 읽은 뒤에는 설치 결과에도
-`SERVICE_NOT_INSTALLED`, `SERVICE_RUNNING` 또는 `SERVICE_STOPPED`를 남깁니다. 기존 서비스의
-보안 설명자만 읽을 수 없는 경우에는 나머지 구성·상태를 사용해 설치를 계속하되 기존 서비스
-보안 설정은 변경하지 않습니다. 설명자를 확보한 경우에만 새 제한 DACL을 적용하고 실패 시
-원래 DACL까지 복원합니다.
+`0.11.7-poc`는 Agent 설치의 Windows 서비스 단계를 하나의 `SETUP_SERVICE_FAILED`로 묶지 않고
+`SETUP_SERVICE_CAPTURE_FAILED`, `SETUP_SERVICE_CONTRACT_FAILED`,
+`SETUP_SERVICE_STOP_FAILED`, `SETUP_SERVICE_CONFIG_FAILED`,
+`SETUP_SERVICE_START_FAILED`로 구분합니다. 서비스 실행 파일 경로, 자동 시작 유형, 가상 서비스
+계정과 실제 시작처럼 Agent 구동에 필요한 작업은 계속 fail-closed로 처리하며, 실패한 핵심 단계를
+익명 진단과 SWD1 지원 코드에서 구분합니다. 반면 서비스 설명,
+자동 복구 정책과 제한 DACL 적용만 실패하면 각각 `SETUP_SERVICE_DESCRIPTION_WARNING`,
+`SETUP_SERVICE_RECOVERY_POLICY_WARNING`, `SETUP_SERVICE_DACL_WARNING`을 남기고 설치를
+계속합니다. 경고가 있더라도 새 서비스의 핵심 구성과 Running 상태를 확인하지 못하면 성공으로
+처리하지 않습니다. Viewer 데이터, Agent API v4와 화면 흐름은 변경하지 않습니다.
 
 Agent는 시작할 때마다 새 임시 RSA 자체 서명 인증서를 만들며 영구 Agent 신원 파일은 저장하지
 않습니다. Windows Schannel 호환성을 위해 개인 키는 프로세스 수명 동안 임시 사용자 키
@@ -217,7 +219,7 @@ dotnet restore SamsungSwitchWatch.sln --locked-mode
 dotnet build SamsungSwitchWatch.sln -c Release --no-restore
 dotnet test SamsungSwitchWatch.sln -c Release --no-build
 .\scripts\validate.ps1 -Configuration Release
-.\scripts\build-release.ps1 -Version 0.11.6-poc
+.\scripts\build-release.ps1 -Version 0.11.7-poc
 ```
 
 실제 장비 대신 합성 Telnet 서버와 비식별 Fixture를 사용합니다. Mock 통과를 실제 펌웨어
@@ -239,6 +241,7 @@ ZIP 정확히 두 개입니다.
 - [보안 모델](docs/SECURITY.md)
 - [현장 POC 점검표](docs/FIELD_POC_CHECKLIST_KO.md)
 - [릴리스 절차](docs/RELEASE_PROCESS_KO.md)
+- [0.11.7-poc 릴리스 노트](docs/RELEASE_NOTES_0.11.7_POC_KO.md)
 - [0.11.6-poc 릴리스 노트](docs/RELEASE_NOTES_0.11.6_POC_KO.md)
 - [0.11.5-poc 릴리스 노트](docs/RELEASE_NOTES_0.11.5_POC_KO.md)
 - [0.11.4-poc 릴리스 노트](docs/RELEASE_NOTES_0.11.4_POC_KO.md)

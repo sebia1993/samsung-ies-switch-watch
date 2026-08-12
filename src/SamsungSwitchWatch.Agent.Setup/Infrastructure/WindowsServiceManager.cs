@@ -73,6 +73,19 @@ public sealed partial class WindowsServiceManager : IServiceManager
             {
                 var config = QueryConfig(service);
                 var status = QueryStatus(service);
+                var descriptionCaptured = TryCaptureOptional(
+                    () => QueryDescription(service),
+                    string.Empty,
+                    out var description);
+                var recoveryCaptured = TryCaptureOptional(
+                    () => QueryRecovery(service),
+                    ServiceRecoverySnapshot.Empty,
+                    out var recovery);
+                var securityDescriptorCaptured = TryCaptureOptional(
+                    () => TryQueryServiceSecurityDescriptor(scm, serviceName),
+                    default(byte[]?),
+                    out var securityDescriptor) &&
+                    securityDescriptor is not null;
                 return new ServiceSnapshot(
                     true,
                     status.CurrentState == ServiceRunning,
@@ -80,11 +93,16 @@ public sealed partial class WindowsServiceManager : IServiceManager
                     config.StartType,
                     config.AccountName,
                     config.DisplayName,
-                    QueryDescription(service),
+                    description,
                     QueryServiceSidType(service),
-                    QueryRecovery(service),
-                    TryQueryServiceSecurityDescriptor(scm, serviceName),
-                    checked((int)status.ProcessId));
+                    recovery,
+                    securityDescriptor,
+                    checked((int)status.ProcessId))
+                {
+                    DescriptionCaptured = descriptionCaptured,
+                    RecoveryCaptured = recoveryCaptured,
+                    SecurityDescriptorCaptured = securityDescriptorCaptured
+                };
             }
             finally
             {
@@ -144,18 +162,48 @@ public sealed partial class WindowsServiceManager : IServiceManager
         string binaryPath,
         string accountName,
         bool existingServiceExpected,
-        bool updateServiceSecurity)
+        bool updateServiceSecurity) =>
+        _ = InstallOrUpdateWithResult(
+            serviceName,
+            displayName,
+            binaryPath,
+            accountName,
+            existingServiceExpected,
+            updateServiceSecurity);
+
+    public ServiceConfigurationResult InstallOrUpdateWithResult(
+        string serviceName,
+        string displayName,
+        string binaryPath,
+        string accountName,
+        bool existingServiceExpected,
+        bool updateServiceSecurity) =>
+        InstallOrUpdateWithResult(
+            serviceName,
+            displayName,
+            binaryPath,
+            accountName,
+            existingServiceExpected,
+            updateServiceSecurity,
+            updateServiceDescription: true);
+
+    public ServiceConfigurationResult InstallOrUpdateWithResult(
+        string serviceName,
+        string displayName,
+        string binaryPath,
+        string accountName,
+        bool existingServiceExpected,
+        bool updateServiceSecurity,
+        bool updateServiceDescription)
     {
         EnsureWindows();
         var createdService = false;
+        var warnings = new List<ServiceConfigurationWarning>();
         var scm = OpenScManager(
             ScManagerConnectAccess | ScManagerCreateServiceAccess);
         try
         {
-            var desiredAccess = ServiceChangeConfigAccess |
-                (updateServiceSecurity
-                    ? ServiceSecurityCaptureAccess | ServiceWriteDacAccess
-                    : 0u);
+            var desiredAccess = ServiceChangeConfigAccess;
             var service = NativeMethods.OpenService(scm, serviceName, desiredAccess);
             if (service == IntPtr.Zero)
             {
@@ -176,9 +224,7 @@ public sealed partial class WindowsServiceManager : IServiceManager
                     scm,
                     serviceName,
                     displayName,
-                    desiredAccess |
-                    ServiceSecurityCaptureAccess |
-                    ServiceWriteDacAccess,
+                    desiredAccess,
                     ServiceWin32OwnProcess,
                     2,
                     ServiceErrorNormal,
@@ -214,48 +260,99 @@ public sealed partial class WindowsServiceManager : IServiceManager
 
             try
             {
-                SetDescription(service, "Windowless Samsung switch Telnet execution Agent");
-                SetServiceSidType(service);
-                if (updateServiceSecurity || createdService)
+                if (updateServiceDescription || createdService)
                 {
-                    ApplyRestrictedServiceDacl(service, serviceName);
+                    TryConfigureOptional(
+                        warnings,
+                        SetupErrorCodes.ServiceDescriptionWarning,
+                        "Agent 서비스 설명을 적용하지 못했지만 핵심 서비스 구성은 완료했습니다.",
+                        () => SetDescription(
+                            service,
+                            "Windowless Samsung switch Telnet execution Agent"));
                 }
+
+                SetServiceSidType(service);
             }
             finally
             {
                 NativeMethods.CloseServiceHandle(service);
+            }
+
+            if (updateServiceSecurity || createdService)
+            {
+                TryConfigureOptional(
+                    warnings,
+                    SetupErrorCodes.ServiceDaclWarning,
+                    "Agent 서비스의 선택적 제어 권한 강화를 적용하지 못했지만 설치를 계속합니다.",
+                    () => WithService(
+                        serviceName,
+                        ServiceSecurityCaptureAccess | ServiceWriteDacAccess,
+                        securedService => ApplyRestrictedServiceDacl(
+                            securedService,
+                            serviceName)));
             }
         }
         finally
         {
             NativeMethods.CloseServiceHandle(scm);
         }
+
+        return warnings.Count == 0
+            ? ServiceConfigurationResult.Completed
+            : new ServiceConfigurationResult(warnings.ToArray());
     }
 
-    public void ConfigureRecovery(string serviceName)
+    public void ConfigureRecovery(string serviceName) =>
+        _ = ConfigureRecoveryWithResult(serviceName);
+
+    public ServiceConfigurationResult ConfigureRecoveryWithResult(
+        string serviceName)
     {
-        WithService(
-            serviceName,
-            ServiceChangeConfigAccess,
-            service => SetRecovery(service, CreateAutomaticRecoveryPolicy()));
+        var warnings = new List<ServiceConfigurationWarning>();
+        TryConfigureOptional(
+            warnings,
+            SetupErrorCodes.ServiceRecoveryPolicyWarning,
+            "Agent 서비스 자동 복구 정책을 적용하지 못했습니다. 현재 실행은 유지되지만 장애 후 자동 재시작 정책은 별도 확인이 필요합니다.",
+            () => WithService(
+                serviceName,
+                ServiceChangeConfigAccess,
+                service => SetRecovery(service, CreateAutomaticRecoveryPolicy())));
+        return warnings.Count == 0
+            ? ServiceConfigurationResult.Completed
+            : new ServiceConfigurationResult(warnings.ToArray());
     }
 
-    public void DisableRecovery(string serviceName)
+    public void DisableRecovery(string serviceName) =>
+        _ = DisableRecoveryWithResult(serviceName);
+
+    public ServiceConfigurationResult DisableRecoveryWithResult(
+        string serviceName)
     {
-        WithService(
-            serviceName,
-            ServiceChangeConfigAccess | ServiceQueryConfigAccess,
-            service =>
+        var warnings = new List<ServiceConfigurationWarning>();
+        TryConfigureOptional(
+            warnings,
+            SetupErrorCodes.ServiceRecoveryPolicyWarning,
+            "설치 중 서비스 자동 복구 정책을 일시 중지하지 못했지만 설치를 계속합니다.",
+            () =>
             {
-                SetRecovery(service, CreateDisabledRecoveryPolicy());
-                var readback = QueryRecovery(service);
-                if (readback.Actions.Count != 0)
-                {
-                    throw new SetupException(
-                        SetupErrorCodes.ServiceFailed,
-                        "Windows 서비스의 자동 복구 작업이 비활성화되었는지 확인하지 못했습니다.");
-                }
+                WithService(
+                    serviceName,
+                    ServiceChangeConfigAccess | ServiceQueryConfigAccess,
+                    service =>
+                    {
+                        SetRecovery(service, CreateDisabledRecoveryPolicy());
+                        var readback = QueryRecovery(service);
+                        if (readback.Actions.Count != 0)
+                        {
+                            throw new SetupException(
+                                SetupErrorCodes.ServiceFailed,
+                                "Windows 서비스의 자동 복구 작업이 비활성화되었는지 확인하지 못했습니다.");
+                        }
+                    });
             });
+        return warnings.Count == 0
+            ? ServiceConfigurationResult.Completed
+            : new ServiceConfigurationResult(warnings.ToArray());
     }
 
     public void Start(string serviceName, TimeSpan timeout)
@@ -334,24 +431,44 @@ public sealed partial class WindowsServiceManager : IServiceManager
                 service => SetServiceSidType(service, snapshot.ServiceSidType));
         }
 
-        TryRestoreOptional(
-            warnings,
-            SetupErrorCodes.RollbackServiceDescriptionRestoreWarning,
-            "이전 Agent 서비스 설명을 복구하지 못했지만 핵심 서비스 구성 복구는 계속합니다.",
-            () => WithService(
-                serviceName,
-                ServiceChangeConfigAccess,
-                service => SetDescription(service, snapshot.Description)));
+        if (snapshot.HasKnownDescription)
+        {
+            TryRestoreOptional(
+                warnings,
+                SetupErrorCodes.RollbackServiceDescriptionRestoreWarning,
+                "이전 Agent 서비스 설명을 복구하지 못했지만 핵심 서비스 구성 복구는 계속합니다.",
+                () => WithService(
+                    serviceName,
+                    ServiceChangeConfigAccess,
+                    service => SetDescription(service, snapshot.Description)));
+        }
+        else
+        {
+            AddRestoreWarning(
+                warnings,
+                SetupErrorCodes.RollbackServiceDescriptionRestoreWarning,
+                "이전 서비스 설명을 알 수 없어 해당 선택 설정은 변경하지 않았습니다.");
+        }
 
-        ValidateRecoverySnapshotForRestore(snapshot.Recovery);
-        TryRestoreOptional(
-            warnings,
-            SetupErrorCodes.RollbackServiceRecoveryPolicyRestoreWarning,
-            "이전 Agent 서비스 자동 복구 정책을 복구하지 못했지만 핵심 서비스 구성 복구는 계속합니다.",
-            () => WithService(
-                serviceName,
-                ServiceChangeConfigAccess,
-                service => SetRecovery(service, snapshot.Recovery)));
+        if (snapshot.HasKnownRecovery)
+        {
+            ValidateRecoverySnapshotForRestore(snapshot.Recovery);
+            TryRestoreOptional(
+                warnings,
+                SetupErrorCodes.RollbackServiceRecoveryPolicyRestoreWarning,
+                "이전 Agent 서비스 자동 복구 정책을 복구하지 못했지만 핵심 서비스 구성 복구는 계속합니다.",
+                () => WithService(
+                    serviceName,
+                    ServiceChangeConfigAccess,
+                    service => SetRecovery(service, snapshot.Recovery)));
+        }
+        else
+        {
+            AddRestoreWarning(
+                warnings,
+                SetupErrorCodes.RollbackServiceRecoveryPolicyRestoreWarning,
+                "이전 자동 복구 정책을 알 수 없어 해당 선택 설정은 변경하지 않았습니다.");
+        }
 
         if (snapshot.Running && !current.Running)
         {
@@ -362,7 +479,8 @@ public sealed partial class WindowsServiceManager : IServiceManager
             Stop(serviceName, TimeSpan.FromSeconds(20));
         }
 
-        if (snapshot.SecurityDescriptor is not null)
+        if (snapshot.HasKnownSecurityDescriptor &&
+            snapshot.SecurityDescriptor is not null)
         {
             TryRestoreOptional(
                 warnings,
@@ -370,6 +488,13 @@ public sealed partial class WindowsServiceManager : IServiceManager
                 "이전 Agent 서비스 접근 권한을 복구하지 못했지만 핵심 서비스 구성 복구는 계속합니다.",
                 () => WithService(serviceName, ServiceWriteDacAccess, service =>
                     ApplyServiceSecurityDescriptor(service, snapshot.SecurityDescriptor)));
+        }
+        else if (!snapshot.HasKnownSecurityDescriptor)
+        {
+            AddRestoreWarning(
+                warnings,
+                SetupErrorCodes.RollbackServiceDaclRestoreWarning,
+                "이전 서비스 제어 권한을 알 수 없어 해당 선택 설정은 변경하지 않았습니다.");
         }
 
         var restored = CaptureCoreServiceState(serviceName);
@@ -490,11 +615,19 @@ public sealed partial class WindowsServiceManager : IServiceManager
         catch (Exception exception) when (
             IsOptionalServiceRestoreFailure(exception))
         {
-            if (!warnings.Any(warning =>
-                    string.Equals(warning.Code, code, StringComparison.Ordinal)))
-            {
-                warnings.Add(new ServiceRestoreWarning(code, message));
-            }
+            AddRestoreWarning(warnings, code, message);
+        }
+    }
+
+    private static void AddRestoreWarning(
+        List<ServiceRestoreWarning> warnings,
+        string code,
+        string message)
+    {
+        if (!warnings.Any(warning =>
+                string.Equals(warning.Code, code, StringComparison.Ordinal)))
+        {
+            warnings.Add(new ServiceRestoreWarning(code, message));
         }
     }
 
@@ -503,6 +636,53 @@ public sealed partial class WindowsServiceManager : IServiceManager
             Win32Exception or
             UnauthorizedAccessException or
             System.Security.SecurityException or
+            IOException;
+
+    private static bool TryCaptureOptional<T>(
+        Func<T> capture,
+        T fallback,
+        out T value)
+    {
+        try
+        {
+            value = capture();
+            return true;
+        }
+        catch (Exception exception) when (
+            IsOptionalServiceOperationFailure(exception))
+        {
+            value = fallback;
+            return false;
+        }
+    }
+
+    private static void TryConfigureOptional(
+        List<ServiceConfigurationWarning> warnings,
+        string code,
+        string message,
+        Action configure)
+    {
+        try
+        {
+            configure();
+        }
+        catch (Exception exception) when (
+            IsOptionalServiceOperationFailure(exception))
+        {
+            if (!warnings.Any(warning =>
+                    string.Equals(warning.Code, code, StringComparison.Ordinal)))
+            {
+                warnings.Add(new ServiceConfigurationWarning(code, message));
+            }
+        }
+    }
+
+    private static bool IsOptionalServiceOperationFailure(Exception exception) =>
+        exception is SetupException or
+            Win32Exception or
+            UnauthorizedAccessException or
+            System.Security.SecurityException or
+            IdentityNotMappedException or
             IOException;
 
     private static void RestoreCoreConfiguration(
@@ -678,8 +858,7 @@ public sealed partial class WindowsServiceManager : IServiceManager
             Thread.Sleep(200);
         }
 
-        throw new SetupException(
-            SetupErrorCodes.ServiceFailed,
+        throw CreateServiceTimeoutException(
             "Windows 서비스가 제한 시간 안에 요청한 상태가 되지 않았습니다.");
     }
 
@@ -847,9 +1026,14 @@ public sealed partial class WindowsServiceManager : IServiceManager
     }
 
     private static void ThrowServiceStopTimeout() =>
-        throw new SetupException(
-            SetupErrorCodes.ServiceFailed,
+        throw CreateServiceTimeoutException(
             "Windows 서비스가 제한 시간 안에 종료되어 프로그램 파일을 해제하지 못했습니다.");
+
+    internal static SetupException CreateServiceTimeoutException(string safeMessage) =>
+        new(
+            SetupErrorCodes.ServiceFailed,
+            safeMessage,
+            new TimeoutException("The Windows service operation timed out."));
 
     private static void SetDescription(IntPtr service, string description)
     {
@@ -1178,8 +1362,7 @@ public sealed partial class WindowsServiceManager : IServiceManager
             Thread.Sleep(ServiceStatePollInterval);
         }
 
-        throw new SetupException(
-            SetupErrorCodes.ServiceFailed,
+        throw CreateServiceTimeoutException(
             "Windows Agent 서비스 삭제 완료를 제한 시간 안에 확인하지 못했습니다.");
     }
 

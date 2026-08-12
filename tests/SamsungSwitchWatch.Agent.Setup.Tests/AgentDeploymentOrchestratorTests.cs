@@ -7,6 +7,151 @@ namespace SamsungSwitchWatch.Agent.Setup.Tests;
 public sealed class AgentDeploymentOrchestratorTests
 {
     [Fact]
+    public async Task DeployAsync_OptionalServiceConfigurationFailuresWarnAndKeepWorkingAgent()
+    {
+        using var folder = new TemporaryFolder();
+        var fixture = CreateFreshFixture(folder);
+        fixture.Services.ConfigurationWarningCodes.UnionWith(
+        [
+            SetupErrorCodes.ServiceDescriptionWarning,
+            SetupErrorCodes.ServiceDaclWarning,
+            SetupErrorCodes.ServiceRecoveryPolicyWarning
+        ]);
+        fixture.Services.ConfigurationWarningMessage =
+            @"sensitive C:\private\agent.exe Windows error 5";
+
+        var result = await fixture.CreateOrchestrator(ready: true).DeployAsync(
+            SetupConstants.CreateAutomaticRequest(),
+            CancellationToken.None);
+
+        Assert.True(result.Succeeded);
+        Assert.True(fixture.Services.State.Running);
+        foreach (var code in fixture.Services.ConfigurationWarningCodes)
+        {
+            var warning = Assert.Single(
+                result.Steps,
+                step => step.Code == code);
+            Assert.Equal(SetupStepState.Warning, warning.State);
+            Assert.DoesNotContain("sensitive", warning.Message);
+            Assert.DoesNotContain(@"C:\private", warning.Message);
+        }
+        Assert.DoesNotContain(
+            result.Steps,
+            step => step.Code == "ROLLBACK_COMPLETED");
+    }
+
+    [Fact]
+    public async Task DeployAsync_UnknownOptionalServiceSnapshotMetadataWarnsAndContinues()
+    {
+        using var folder = new TemporaryFolder();
+        var fixture = CreateUpgradeFixture(folder);
+        fixture.Services.SetState(fixture.Services.State with
+        {
+            Description = string.Empty,
+            Recovery = ServiceRecoverySnapshot.Empty,
+            SecurityDescriptor = null,
+            DescriptionCaptured = false,
+            RecoveryCaptured = false,
+            SecurityDescriptorCaptured = false
+        });
+
+        var result = await fixture.CreateOrchestrator(ready: true).DeployAsync(
+            SetupConstants.CreateAutomaticRequest(),
+            CancellationToken.None);
+
+        Assert.True(result.Succeeded);
+        Assert.True(fixture.Services.State.Running);
+        Assert.Single(
+            result.Steps,
+            step => step.Code == SetupErrorCodes.ServiceDescriptionWarning &&
+                    step.State == SetupStepState.Warning);
+        Assert.Single(
+            result.Steps,
+            step => step.Code == SetupErrorCodes.ServiceRecoveryPolicyWarning &&
+                    step.State == SetupStepState.Warning);
+        Assert.Single(
+            result.Steps,
+            step => step.Code == "SERVICE_SECURITY_PRESERVED" &&
+                    step.State == SetupStepState.Warning);
+        Assert.False(fixture.Services.LastUpdateServiceDescription);
+        Assert.False(fixture.Services.LastUpdateServiceSecurity);
+        Assert.DoesNotContain("recovery-disabled", fixture.Services.Operations);
+        Assert.DoesNotContain("recovery", fixture.Services.Operations);
+        Assert.Equal(string.Empty, fixture.Services.State.Description);
+        Assert.Equal(ServiceRecoverySnapshot.Empty, fixture.Services.State.Recovery);
+        Assert.False(fixture.Services.State.DescriptionCaptured);
+        Assert.False(fixture.Services.State.RecoveryCaptured);
+    }
+
+    [Fact]
+    public async Task DeployAsync_KnownOptionalServiceSnapshotMetadataIsUpdated()
+    {
+        using var folder = new TemporaryFolder();
+        var fixture = CreateUpgradeFixture(folder);
+
+        var result = await fixture.CreateOrchestrator(ready: true).DeployAsync(
+            SetupConstants.CreateAutomaticRequest(),
+            CancellationToken.None);
+
+        Assert.True(result.Succeeded);
+        Assert.True(fixture.Services.LastUpdateServiceDescription);
+        Assert.True(fixture.Services.LastUpdateServiceSecurity);
+        Assert.Contains("recovery-disabled", fixture.Services.Operations);
+        Assert.Contains("recovery", fixture.Services.Operations);
+        Assert.Equal(
+            "Windowless Samsung switch Telnet execution Agent",
+            fixture.Services.State.Description);
+        var expectedRecovery = WindowsServiceManager.CreateAutomaticRecoveryPolicy();
+        Assert.Equal(
+            expectedRecovery.ResetPeriod,
+            fixture.Services.State.Recovery.ResetPeriod);
+        Assert.Equal(
+            expectedRecovery.ApplyOnNonCrashFailures,
+            fixture.Services.State.Recovery.ApplyOnNonCrashFailures);
+        Assert.Equal(
+            expectedRecovery.Actions,
+            fixture.Services.State.Recovery.Actions);
+    }
+
+    [Fact]
+    public async Task DeployAsync_StartFailureDoesNotOverwriteUnknownOptionalMetadataDuringRollback()
+    {
+        using var folder = new TemporaryFolder();
+        var fixture = CreateUpgradeFixture(folder);
+        var preservedRecovery = new ServiceRecoverySnapshot(
+            777,
+            false,
+            "preserved reboot message",
+            "preserved recovery command",
+            [new ServiceFailureActionSnapshot(0, 1234)]);
+        fixture.Services.SetState(fixture.Services.State with
+        {
+            Description = "preserved inaccessible description",
+            Recovery = preservedRecovery,
+            DescriptionCaptured = false,
+            RecoveryCaptured = false
+        });
+        fixture.Services.StartException = new IOException("synthetic");
+
+        var result = await fixture.CreateOrchestrator(ready: true).DeployAsync(
+            SetupConstants.CreateAutomaticRequest(),
+            CancellationToken.None);
+
+        Assert.False(result.Succeeded);
+        Assert.Equal(SetupErrorCodes.ServiceStartFailed, result.Code);
+        Assert.Contains(
+            result.Steps,
+            step => step.Code == "ROLLBACK_COMPLETED");
+        Assert.False(fixture.Services.LastUpdateServiceDescription);
+        Assert.DoesNotContain("recovery-disabled", fixture.Services.Operations);
+        Assert.DoesNotContain("recovery", fixture.Services.Operations);
+        Assert.Equal(
+            "preserved inaccessible description",
+            fixture.Services.State.Description);
+        Assert.Equal(preservedRecovery, fixture.Services.State.Recovery);
+    }
+
+    [Fact]
     public async Task DeployAsync_AutomaticRequest_HealthFailureKeepsInstalledServiceAndWarns()
     {
         using var folder = new TemporaryFolder();
@@ -118,7 +263,7 @@ public sealed class AgentDeploymentOrchestratorTests
             CancellationToken.None);
 
         Assert.False(result.Succeeded);
-        Assert.Equal(SetupErrorCodes.Unexpected, result.Code);
+        Assert.Equal(SetupErrorCodes.ServiceStartFailed, result.Code);
         Assert.True(fixture.Services.LastUpdateServiceSecurity);
         Assert.Equal(
             "old-agent",
@@ -533,8 +678,8 @@ public sealed class AgentDeploymentOrchestratorTests
             CancellationToken.None);
 
         Assert.False(result.Succeeded);
-        Assert.Equal(SetupErrorCodes.Unexpected, result.Code);
-        Assert.Equal(SetupErrorCodes.Unexpected, result.PrimaryFailureCode);
+        Assert.Equal(SetupErrorCodes.ServiceStartFailed, result.Code);
+        Assert.Equal(SetupErrorCodes.ServiceStartFailed, result.PrimaryFailureCode);
         Assert.Equal(
             SetupFailureStage.ServiceStart,
             result.DiagnosticMetadata?.Failure?.Stage);
@@ -554,6 +699,59 @@ public sealed class AgentDeploymentOrchestratorTests
             step => step.Message.Contains(
                 "sensitive",
                 StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task DeployAsync_ServiceStartTimeoutPreservesTimeoutCategoryAndRollsBack()
+    {
+        using var folder = new TemporaryFolder();
+        var fixture = CreateUpgradeFixture(folder);
+        fixture.Services.StartException =
+            WindowsServiceManager.CreateServiceTimeoutException(
+                "synthetic safe service start timeout");
+
+        var result = await fixture.CreateOrchestrator(ready: true).DeployAsync(
+            SetupConstants.CreateAutomaticRequest(),
+            CancellationToken.None);
+
+        Assert.False(result.Succeeded);
+        Assert.Equal(SetupErrorCodes.ServiceStartFailed, result.Code);
+        Assert.Equal(
+            SetupFailureStage.ServiceStart,
+            result.DiagnosticMetadata?.Failure?.Stage);
+        Assert.Equal(
+            SetupFailureCategory.Timeout,
+            result.DiagnosticMetadata?.Failure?.Category);
+        Assert.Contains(
+            result.Steps,
+            step => step.Code == "ROLLBACK_COMPLETED");
+    }
+
+    [Fact]
+    public async Task DeployAsync_ServiceStopTimeoutPreservesTimeoutCategoryAndRollsBack()
+    {
+        using var folder = new TemporaryFolder();
+        var fixture = CreateUpgradeFixture(folder);
+        fixture.Services.StopFailuresRemaining = 1;
+        fixture.Services.StopException =
+            WindowsServiceManager.CreateServiceTimeoutException(
+                "synthetic safe service stop timeout");
+
+        var result = await fixture.CreateOrchestrator(ready: true).DeployAsync(
+            SetupConstants.CreateAutomaticRequest(),
+            CancellationToken.None);
+
+        Assert.False(result.Succeeded);
+        Assert.Equal(SetupErrorCodes.ServiceStopFailed, result.Code);
+        Assert.Equal(
+            SetupFailureStage.ServiceStop,
+            result.DiagnosticMetadata?.Failure?.Stage);
+        Assert.Equal(
+            SetupFailureCategory.Timeout,
+            result.DiagnosticMetadata?.Failure?.Category);
+        Assert.Contains(
+            result.Steps,
+            step => step.Code == "ROLLBACK_COMPLETED");
     }
 
     [Fact]
@@ -1648,7 +1846,7 @@ public sealed class AgentDeploymentOrchestratorTests
 
         Assert.False(deployment.Succeeded);
         Assert.Equal(SetupErrorCodes.RollbackFailed, deployment.Code);
-        Assert.Equal(SetupErrorCodes.Unexpected, deployment.PrimaryFailureCode);
+        Assert.Equal(SetupErrorCodes.ServiceStartFailed, deployment.PrimaryFailureCode);
         Assert.Contains(
             SetupErrorCodes.RollbackServiceRestoreFailed,
             deployment.RollbackFailureCodes);
@@ -1662,14 +1860,14 @@ public sealed class AgentDeploymentOrchestratorTests
 
         Assert.False(firstRecovery.Succeeded);
         Assert.Equal(SetupErrorCodes.RollbackFailed, firstRecovery.Code);
-        Assert.Equal(SetupErrorCodes.Unexpected, firstRecovery.PrimaryFailureCode);
+        Assert.Equal(SetupErrorCodes.ServiceStartFailed, firstRecovery.PrimaryFailureCode);
         Assert.Contains(
             SetupErrorCodes.RollbackServiceRestoreFailed,
             firstRecovery.RollbackFailureCodes);
         Assert.True(journalStore.Exists);
         var pending = journalStore.Read();
         Assert.Equal("service-configured", pending.Stage);
-        Assert.Equal(SetupErrorCodes.Unexpected, pending.PrimaryFailureCode);
+        Assert.Equal(SetupErrorCodes.ServiceStartFailed, pending.PrimaryFailureCode);
         Assert.Contains(
             SetupErrorCodes.RollbackServiceRestoreFailed,
             pending.RollbackFailureCodes);
@@ -1710,7 +1908,7 @@ public sealed class AgentDeploymentOrchestratorTests
 
         Assert.False(deployment.Succeeded);
         Assert.Equal(SetupErrorCodes.RollbackFailed, deployment.Code);
-        Assert.Equal(SetupErrorCodes.Unexpected, deployment.PrimaryFailureCode);
+        Assert.Equal(SetupErrorCodes.ServiceStartFailed, deployment.PrimaryFailureCode);
         Assert.True(journalStore.Exists);
         var initialPending = journalStore.Read();
         fixture.Services.StartException = null;
@@ -1724,7 +1922,7 @@ public sealed class AgentDeploymentOrchestratorTests
         {
             Assert.False(result.Succeeded);
             Assert.Equal(SetupErrorCodes.RollbackFailed, result.Code);
-            Assert.Equal(SetupErrorCodes.Unexpected, result.PrimaryFailureCode);
+            Assert.Equal(SetupErrorCodes.ServiceStartFailed, result.PrimaryFailureCode);
             Assert.Contains(
                 SetupErrorCodes.RollbackServiceRestoreFailed,
                 result.RollbackFailureCodes);
@@ -1734,7 +1932,9 @@ public sealed class AgentDeploymentOrchestratorTests
         var finalPending = journalStore.Read();
         Assert.Equal(initialPending.TransactionId, finalPending.TransactionId);
         Assert.Equal(initialPending.Stage, finalPending.Stage);
-        Assert.Equal(SetupErrorCodes.Unexpected, finalPending.PrimaryFailureCode);
+        Assert.Equal(
+            SetupErrorCodes.ServiceStartFailed,
+            finalPending.PrimaryFailureCode);
         Assert.Contains(
             SetupErrorCodes.RollbackServiceRestoreFailed,
             finalPending.RollbackFailureCodes);
@@ -2090,14 +2290,21 @@ public sealed class AgentDeploymentOrchestratorTests
         fixture.Services.CaptureException =
             new SetupException(
                 SetupErrorCodes.ServiceFailed,
-                "sensitive persistent service detail");
+                "sensitive persistent service detail",
+                new System.ComponentModel.Win32Exception(5));
 
         var result = await fixture.CreateOrchestrator(ready: true).DeployAsync(
             SetupConstants.CreateAutomaticRequest(),
             CancellationToken.None);
 
         Assert.False(result.Succeeded);
-        Assert.Equal(SetupErrorCodes.ServiceFailed, result.Code);
+        Assert.Equal(SetupErrorCodes.ServiceCaptureFailed, result.Code);
+        Assert.Equal(
+            SetupFailureStage.ServiceCapture,
+            result.DiagnosticMetadata?.Failure?.Stage);
+        Assert.Equal(
+            SetupFailureCategory.WindowsApi,
+            result.DiagnosticMetadata?.Failure?.Category);
         Assert.Equal(
             2,
             fixture.Services.Operations.Count(operation => operation == "capture"));
@@ -2140,6 +2347,106 @@ public sealed class AgentDeploymentOrchestratorTests
             fixture.Services.Operations.Count(operation => operation == "capture"));
         Assert.Equal(["capture", "capture"], fixture.Services.Operations.Take(2));
         Assert.Contains(result.Steps, step => step.Code == "SERVICE_RUNNING");
+    }
+
+    [Fact]
+    public async Task Diagnostics_PersistentServiceCaptureFailureReportsStableStageAndCategory()
+    {
+        using var folder = new TemporaryFolder();
+        var fixture = CreateUpgradeFixture(folder);
+        fixture.Services.CaptureException =
+            new IOException("sensitive persistent service detail");
+        var diagnostics = new SetupDiagnosticsService(
+            new AgentPackageValidator(fixture.FileSystem),
+            fixture.FileSystem,
+            fixture.Services,
+            fixture.Firewall,
+            new FakeHealthProbe(true),
+            new FakeAdministratorChecker(),
+            fixture.Paths);
+
+        var result = await diagnostics.RunAsync(
+            SetupConstants.CreateAutomaticRequest(),
+            CancellationToken.None);
+
+        Assert.False(result.Succeeded);
+        Assert.Equal(SetupErrorCodes.ServiceCaptureFailed, result.Code);
+        Assert.Equal(
+            SetupFailureStage.ServiceCapture,
+            result.DiagnosticMetadata?.Failure?.Stage);
+        Assert.Equal(
+            SetupFailureCategory.Io,
+            result.DiagnosticMetadata?.Failure?.Category);
+        Assert.Equal(
+            2,
+            fixture.Services.Operations.Count(operation => operation == "capture"));
+        Assert.DoesNotContain(
+            result.Steps,
+            step => step.Message.Contains(
+                "sensitive",
+                StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task DeployAsync_ServiceConfigurationFailureReportsStableCodeAndRollsBack()
+    {
+        using var folder = new TemporaryFolder();
+        var fixture = CreateUpgradeFixture(folder);
+        fixture.Services.InstallException =
+            new IOException("sensitive service configuration detail");
+
+        var result = await fixture.CreateOrchestrator(ready: true).DeployAsync(
+            SetupConstants.CreateAutomaticRequest(),
+            CancellationToken.None);
+
+        Assert.False(result.Succeeded);
+        Assert.Equal(SetupErrorCodes.ServiceConfigFailed, result.Code);
+        Assert.Equal(SetupErrorCodes.ServiceConfigFailed, result.PrimaryFailureCode);
+        Assert.Equal(
+            SetupFailureStage.ServiceConfiguration,
+            result.DiagnosticMetadata?.Failure?.Stage);
+        Assert.Equal(
+            SetupFailureCategory.Io,
+            result.DiagnosticMetadata?.Failure?.Category);
+        Assert.Equal(
+            "old-agent",
+            File.ReadAllText(fixture.Paths.AgentExecutablePath));
+        Assert.Contains(
+            result.Steps,
+            step => step.Code == "ROLLBACK_COMPLETED");
+        Assert.DoesNotContain(
+            result.Steps,
+            step => step.Message.Contains(
+                "sensitive",
+                StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task DeployAsync_UnexpectedServiceProgrammingFailureRemainsUnexpected()
+    {
+        using var folder = new TemporaryFolder();
+        var fixture = CreateUpgradeFixture(folder);
+        fixture.Services.InstallException =
+            new InvalidOperationException("sensitive invariant detail");
+
+        var result = await fixture.CreateOrchestrator(ready: true).DeployAsync(
+            SetupConstants.CreateAutomaticRequest(),
+            CancellationToken.None);
+
+        Assert.False(result.Succeeded);
+        Assert.Equal(SetupErrorCodes.Unexpected, result.Code);
+        Assert.Equal(SetupErrorCodes.Unexpected, result.PrimaryFailureCode);
+        Assert.Equal(
+            SetupFailureStage.ServiceConfiguration,
+            result.DiagnosticMetadata?.Failure?.Stage);
+        Assert.Equal(
+            SetupFailureCategory.InvalidState,
+            result.DiagnosticMetadata?.Failure?.Category);
+        Assert.DoesNotContain(
+            result.Steps,
+            step => step.Message.Contains(
+                "sensitive",
+                StringComparison.OrdinalIgnoreCase));
     }
 
     [Fact]
@@ -2268,7 +2575,7 @@ public sealed class AgentDeploymentOrchestratorTests
 
         Assert.False(result.Succeeded);
         Assert.Equal(SetupErrorCodes.RollbackFailed, result.Code);
-        Assert.Equal(SetupErrorCodes.ServiceFailed, result.PrimaryFailureCode);
+        Assert.Equal(SetupErrorCodes.ServiceConfigFailed, result.PrimaryFailureCode);
         Assert.Contains(
             SetupErrorCodes.RollbackServiceRestoreFailed,
             result.RollbackFailureCodes);
@@ -2292,7 +2599,7 @@ public sealed class AgentDeploymentOrchestratorTests
             CancellationToken.None);
 
         Assert.False(result.Succeeded);
-        Assert.Equal(SetupErrorCodes.Unexpected, result.Code);
+        Assert.Equal(SetupErrorCodes.ServiceStopFailed, result.Code);
         Assert.Equal(
             2,
             fixture.Services.Operations.Count(operation => operation == "stop"));
@@ -2352,7 +2659,7 @@ public sealed class AgentDeploymentOrchestratorTests
             CancellationToken.None);
 
         Assert.False(result.Succeeded);
-        Assert.Equal(SetupErrorCodes.Unexpected, result.Code);
+        Assert.Equal(SetupErrorCodes.ServiceStopFailed, result.Code);
         Assert.Equal(
             2,
             fixture.Services.Operations.Count(operation => operation == "stop"));
@@ -3208,7 +3515,7 @@ public sealed class AgentDeploymentOrchestratorTests
     [Theory]
     [InlineData(DeploymentJournalStore.LegacyFormatVersion)]
     [InlineData(DeploymentJournalStore.CurrentFormatVersion)]
-    public void DeploymentJournal_ReadsOlderFormatWithoutOptionalFailureMetadata(
+    public async Task DeploymentJournal_ReadsAndRecoversOlderFormatWithoutOptionalMetadata(
         int formatVersion)
     {
         using var folder = new TemporaryFolder();
@@ -3231,6 +3538,11 @@ public sealed class AgentDeploymentOrchestratorTests
         json.Remove(nameof(DeploymentJournal.AgentListenerOwnedObserved));
         json.Remove(nameof(DeploymentJournal.AgentHttpAttemptCount));
         json.Remove(nameof(DeploymentJournal.AgentLastTransportPhase));
+        var previousService = json[nameof(DeploymentJournal.PreviousService)]!
+            .AsObject();
+        previousService.Remove(nameof(ServiceSnapshot.DescriptionCaptured));
+        previousService.Remove(nameof(ServiceSnapshot.RecoveryCaptured));
+        previousService.Remove(nameof(ServiceSnapshot.SecurityDescriptorCaptured));
         File.WriteAllText(journalStore.JournalPath, json.ToJsonString());
 
         var restored = journalStore.Read();
@@ -3247,6 +3559,21 @@ public sealed class AgentDeploymentOrchestratorTests
         Assert.Equal(
             AgentHealthTransportPhase.NotStarted,
             restored.AgentLastTransportPhase);
+        Assert.True(restored.PreviousService.HasKnownDescription);
+        Assert.True(restored.PreviousService.HasKnownRecovery);
+        Assert.True(restored.PreviousService.HasKnownSecurityDescriptor);
+
+        Directory.CreateDirectory(restored.StagingDirectory);
+        var recovery = await fixture.CreateOrchestrator(ready: true)
+            .RecoverAsync(CancellationToken.None);
+
+        Assert.True(recovery.Succeeded);
+        Assert.Equal(
+            "Legacy Agent Description",
+            fixture.Services.State.Description);
+        Assert.Equal(12345u, fixture.Services.State.Recovery.ResetPeriod);
+        Assert.Equal([9, 8, 7], fixture.Services.State.SecurityDescriptor);
+        Assert.False(journalStore.Exists);
     }
 
     [Theory]
@@ -3670,7 +3997,7 @@ public sealed class AgentDeploymentOrchestratorTests
             CancellationToken.None);
 
         Assert.False(result.Succeeded);
-        Assert.Equal(SetupErrorCodes.ServiceFailed, result.Code);
+        Assert.Equal(SetupErrorCodes.ServiceContractFailed, result.Code);
         Assert.DoesNotContain("stop", fixture.Services.Operations);
         Assert.DoesNotContain("install", fixture.Services.Operations);
     }

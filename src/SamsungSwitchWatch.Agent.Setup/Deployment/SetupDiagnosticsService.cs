@@ -63,11 +63,12 @@ public sealed class SetupDiagnosticsService(
                 "패키지 확인",
                 $"Agent {package.Version} 파일 무결성이 정상입니다."));
 
-            steps.MarkActiveStage(SetupFailureStage.FileSystem);
+            steps.MarkActiveStage(SetupFailureStage.ServiceCapture);
             var service = await CaptureServiceSnapshotAsync(
                 serviceManager,
                 cancellationToken);
             AddServiceSnapshotStep(steps, service);
+            steps.MarkActiveStage(SetupFailureStage.FileSystem);
             ValidateDeploymentPathsForInstall(fileSystem, paths, service, []);
 
             steps.Add(Success(
@@ -182,6 +183,7 @@ public sealed class SetupDiagnosticsService(
         }
         catch (SetupException exception)
         {
+            steps.RecordUnexpectedFailure(exception);
             steps.Add(Failure(exception.Code, "사전 점검", exception.Message));
             return SetupOperationResult.Failure(exception.Code, exception.Message, steps);
         }
@@ -302,13 +304,13 @@ public sealed class SetupDiagnosticsService(
         if (lastFailure is SetupException setupException)
         {
             throw new SetupException(
-                setupException.Code,
+                SetupErrorCodes.ServiceCaptureFailed,
                 "기존 Agent 서비스 상태를 확인하지 못했습니다. 잠시 후 다시 시도하거나 Windows 서비스 상태를 확인하십시오.",
                 setupException);
         }
 
         throw new SetupException(
-            SetupErrorCodes.ServiceFailed,
+            SetupErrorCodes.ServiceCaptureFailed,
             "기존 Agent 서비스 상태를 확인하지 못했습니다. 잠시 후 다시 시도하거나 Windows 서비스 상태를 확인하십시오.",
             lastFailure);
     }
@@ -332,6 +334,46 @@ public sealed class SetupDiagnosticsService(
                     ? "기존 Agent 서비스가 실행 중입니다."
                     : "기존 Agent 서비스가 중지되어 있습니다."
                 : "신규 설치 대상입니다."));
+        if (!service.Exists)
+        {
+            return;
+        }
+
+        AddOptionalServiceSnapshotWarning(
+            steps,
+            service.HasKnownDescription,
+            SetupErrorCodes.ServiceDescriptionWarning,
+            "서비스 설명 확인",
+            "기존 서비스 설명을 확인하지 못했지만 핵심 설치 검사는 계속합니다.");
+        AddOptionalServiceSnapshotWarning(
+            steps,
+            service.HasKnownRecovery,
+            SetupErrorCodes.ServiceRecoveryPolicyWarning,
+            "자동 복구 정책 확인",
+            "기존 자동 복구 정책을 확인하지 못했지만 핵심 설치 검사는 계속합니다.");
+        AddOptionalServiceSnapshotWarning(
+            steps,
+            service.HasKnownSecurityDescriptor,
+            "SERVICE_SECURITY_PRESERVED",
+            "서비스 보안 설정 유지",
+            "기존 Agent 서비스의 보안 설명자를 읽지 못해 해당 보안 설정은 변경하지 않고 유지합니다.");
+    }
+
+    private static void AddOptionalServiceSnapshotWarning(
+        SetupStepRecorder steps,
+        bool captured,
+        string code,
+        string label,
+        string message)
+    {
+        if (!captured)
+        {
+            steps.Add(new SetupStepResult(
+                code,
+                label,
+                SetupStepState.Warning,
+                message));
+        }
     }
 
     private static bool IsRecoverableServiceCaptureFailure(Exception exception) =>

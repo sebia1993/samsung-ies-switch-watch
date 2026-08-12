@@ -2,23 +2,23 @@
 
 ## 1. 준비
 
-공식 GitHub `v0.11.6-poc` Release의 Assets에서 다음 두 파일만 받습니다.
+공식 GitHub `v0.11.7-poc` Release의 Assets에서 다음 두 파일만 받습니다.
 
-- `SamsungSwitchWatch-Agent-0.11.6-poc-win-x64.zip`
-- `SamsungSwitchWatch-Viewer-0.11.6-poc-win-x64.zip`
+- `SamsungSwitchWatch-Agent-0.11.7-poc-win-x64.zip`
+- `SamsungSwitchWatch-Viewer-0.11.7-poc-win-x64.zip`
 
 GitHub가 자동 표시하는 Source code ZIP과 tar.gz는 실행 패키지가 아닙니다. 두 ZIP은 Windows
 x64용 self-contained 빌드이므로 Python, PowerShell 모듈 또는 .NET을 온라인으로 설치하지
 않습니다. API v4가 호환되면 버전이 달라도 경고 후 연결하지만, 기능 차이와 운영 혼동을 줄이기
 위해 Agent와 Viewer는 같은 Release 조합을 권장합니다.
 
-`0.11.6-poc`는 코드 서명되지 않은 시험판입니다. SmartScreen, EDR, AppLocker 또는 WDAC가
+`0.11.7-poc`는 코드 서명되지 않은 시험판입니다. SmartScreen, EDR, AppLocker 또는 WDAC가
 경고하거나 차단할 수 있으며, 보안 정책을 우회하지 말고 공식 Release와 파일 해시를 확인한
 뒤 사내 보안 담당자의 승인 절차를 따르십시오.
 
 Agent 설치·업데이트 실패 뒤 미완료 작업이 감지되면 Setup은 상태를 읽기 전용으로 확인하고
 `설치/업데이트`를 비활성화합니다. 구형 Setup을 실행하거나 설치를 반복하지 말고, 같은
-`0.11.6-poc` Agent ZIP의 Setup에서 별도의 `이전 상태 복구`를 사용하십시오. 복구 성공 뒤에는
+`0.11.7-poc` Agent ZIP의 Setup에서 별도의 `이전 상태 복구`를 사용하십시오. 복구 성공 뒤에는
 운영자가 `설치/업데이트`를 한 번 눌러 같은 설치 작업의 내부 검사부터 새 작업을 시작해야 합니다.
 복구가 자동으로 설치를 이어서 실행하지는 않습니다.
 
@@ -94,12 +94,18 @@ Agent Setup은 다음 항목을 구성합니다.
 6. Agent 준비 상태
 
 초기 Windows 서비스 상태 조회가 일시적으로 실패하면 200ms 뒤 한 번만 다시 확인합니다. 두 번째
-조회도 실패하면 파일·서비스·방화벽을 변경하기 전에 `SETUP_SERVICE_FAILED`로 중단합니다.
-기존 서비스의 보안 설명자만 읽을 수 없는 경우에는 조회 가능한 구성과 실행 상태를 사용해
-계속하되 기존 서비스 보안 설정은 변경하지 않습니다. 설명자를 확보한 경우에만 새 제한 DACL을
-적용하고 실패 시 원래 DACL까지 복원합니다. 설치 결과에는 `SERVICE_NOT_INSTALLED`,
-`SERVICE_RUNNING` 또는 `SERVICE_STOPPED`를 표시합니다. 같은 오류가 반복되면 재설치를 반복하지
-말고 새 SWD1 지원 코드를 전달하십시오.
+조회도 실패하면 파일·서비스·방화벽을 변경하기 전에 `SETUP_SERVICE_CAPTURE_FAILED`로
+중단합니다. 기존 서비스의 실행 경로·시작 유형·계정 계약이 예상과 다르면
+`SETUP_SERVICE_CONTRACT_FAILED`, 기존 서비스 중지는 `SETUP_SERVICE_STOP_FAILED`, 실행 파일
+경로·자동 시작 유형·가상 서비스 계정 같은 핵심 구성은 `SETUP_SERVICE_CONFIG_FAILED`, 실제
+시작은 `SETUP_SERVICE_START_FAILED`로 구분합니다. 이 단계들은 Agent 구동에 필요하므로 실패하면
+성공으로 처리하지 않습니다.
+반면 서비스 설명, 자동 복구 정책과 제한 DACL 적용만 실패하면 각각
+`SETUP_SERVICE_DESCRIPTION_WARNING`, `SETUP_SERVICE_RECOVERY_POLICY_WARNING`,
+`SETUP_SERVICE_DACL_WARNING`을 남기고 설치를 계속합니다. 이 경우에도 핵심 서비스 구성과
+Running 상태는 반드시 확인합니다. 설치 결과에는 `SERVICE_NOT_INSTALLED`, `SERVICE_RUNNING`
+또는 `SERVICE_STOPPED`를 표시합니다. 같은 오류가 반복되면 재설치를 반복하지 말고 새 SWD1
+지원 코드를 전달하십시오.
 
 기존 서비스가 설치 도중 외부 작업으로 사라지면 Setup은 같은 이름의 서비스를 새로 만들지 않고
 중단합니다. 기존 서비스는 화면에 표시된 실행 상태와 관계없이 제한 시간 안에 실제 중지가
@@ -238,7 +244,7 @@ PC·사용자명, 계정, 인증서 정보, 절대 경로, 방화벽 원문, 예
 
 복구 완료 메시지가 나타났다면 같은 실패 화면에서 설치를 자동으로 다시 시작하지 않습니다.
 Setup을 닫지 않아도 되지만, 상태가 `복구 필요 없음`으로 바뀌고 설치 버튼이 다시 활성화됐는지
-확인한 뒤 `0.11.6-poc` 패키지의 `설치/업데이트`를 한 번만 다시 실행하십시오. Setup이 내부
+확인한 뒤 `0.11.7-poc` 패키지의 `설치/업데이트`를 한 번만 다시 실행하십시오. Setup이 내부
 사전 점검부터 새 설치를 수행합니다. 같은 readiness 분류가 반복되면 재설치를 계속 반복하지
 말고 SWD1 코드 또는 `진단정보 복사` 결과를 전달하십시오.
 
@@ -499,6 +505,28 @@ Agent 설치는 완료됐지만, Setup이 제품 소유 RFC1918 방화벽 규칙
 `SETUP_FIREWALL_FAILED`는 이전 버전 또는 복구가 필요한 예외 경로에서 보일 수 있는 호환 코드입니다.
 현재 버전에서 단순 방화벽·GPO·적용·재조회 문제는 Agent 전체 설치 rollback 대신 위 경고로
 처리합니다. `Any`, `LocalSubnet` 또는 Public 프로필 규칙을 만들어 우회하지 마십시오.
+
+### SETUP_SERVICE_* 오류와 경고
+
+서비스 핵심 실패는 다음처럼 구분됩니다.
+
+| 코드 | 의미 | 운영자 확인 |
+|---|---|---|
+| `SETUP_SERVICE_CAPTURE_FAILED` | 설치 전 서비스 상태 snapshot을 읽지 못함 | 관리자 권한과 Windows 서비스 관리 기능 확인 |
+| `SETUP_SERVICE_CONTRACT_FAILED` | 기존 서비스의 실행 경로·시작 유형·계정 계약이 예상과 다름 | 다른 설치 도구나 관리 작업이 같은 서비스를 변경했는지 확인 |
+| `SETUP_SERVICE_STOP_FAILED` | 기존 Agent 서비스를 제한 시간 안에 중지하지 못함 | 서비스 상태와 EDR의 프로세스 종료 차단 확인 |
+| `SETUP_SERVICE_CONFIG_FAILED` | 실행 경로·자동 시작·가상 계정 등 핵심 구성을 적용하지 못함 | SCM 권한과 서비스 정책 확인 |
+| `SETUP_SERVICE_START_FAILED` | 새 Agent 서비스가 시작되지 않음 | Windows 이벤트와 EDR 격리·실행 차단 확인 |
+
+위 오류는 Agent 구동을 확인할 수 없으므로 설치 성공으로 처리하지 않습니다. 설치 버튼을 반복해
+누르거나 서비스를 수동으로 삭제·등록하지 말고, rollback 또는 `이전 상태 복구` 결과와 새 SWD1
+지원 코드를 함께 확인합니다.
+
+`SETUP_SERVICE_DESCRIPTION_WARNING`, `SETUP_SERVICE_RECOVERY_POLICY_WARNING`,
+`SETUP_SERVICE_DACL_WARNING`은 각각 설명, 자동 복구 정책 또는 제한 DACL이라는 부가 설정만
+완료하지 못했다는 뜻입니다. Setup은 핵심 서비스 구성과 Running 상태가 확인된 경우에만 이
+항목을 경고로 남기고 설치를 유지합니다. Viewer 연결을 먼저 확인하고, 반복 설치나 서비스
+권한 수동 확대 대신 사내 Windows 정책과 EDR 적용 여부를 관리자에게 확인합니다.
 
 ### SETUP_RECOVERY_REQUIRED / SETUP_ROLLBACK_FAILED
 

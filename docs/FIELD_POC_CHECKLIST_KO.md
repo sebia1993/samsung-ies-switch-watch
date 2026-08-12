@@ -6,7 +6,7 @@
 ## 1. 반입 파일과 버전
 
 - [ ] 동일 GitHub Release에서 Agent ZIP과 Viewer ZIP을 받음
-- [ ] Agent와 Viewer 파일명이 같은 `0.11.6-poc` 버전을 표시함
+- [ ] Agent와 Viewer 파일명이 같은 `0.11.7-poc` 버전을 표시함
 - [ ] 두 ZIP의 SHA-256을 해당 GitHub Release 본문에 표시된 값과 비교함
 - [ ] Agent ZIP에 `SamsungSwitchWatch.Agent.Setup.exe`와 Agent 런타임 파일이 있음
 - [ ] Viewer ZIP에 `SamsungSwitchWatch.Viewer.Setup.exe`, `SamsungSwitchWatch.Viewer.exe`와 Viewer 런타임 파일이 있음
@@ -36,7 +36,15 @@ API v4가 호환되면 Agent와 Viewer 버전이 달라도 경고 후 연결할 
 - [ ] 설치 진행 결과에서 입력, 패키지와 설치 경로의 내부 검사가 통과함
 - [ ] 서비스 상태가 `SERVICE_NOT_INSTALLED`, `SERVICE_RUNNING` 또는 `SERVICE_STOPPED`로 표시됨
 - [ ] 릴리스 자동화 검증에서 첫 서비스 조회만 일시 실패하는 시뮬레이션이 한 번 재시도 후 통과함
-- [ ] 릴리스 자동화 검증에서 서비스 조회가 계속 실패하면 변경 전에 `SETUP_SERVICE_FAILED`로 중단됨
+- [ ] 릴리스 자동화 검증에서 서비스 조회가 계속 실패하면 변경 전에 `SETUP_SERVICE_CAPTURE_FAILED`로 중단됨
+- [ ] 기존 서비스의 실행 경로·시작 유형·계정 계약이 다르면 `SETUP_SERVICE_CONTRACT_FAILED`로 fail-closed 중단됨
+- [ ] 기존 서비스 중지가 실패하면 `SETUP_SERVICE_STOP_FAILED`로 fail-closed 중단됨
+- [ ] 실행 경로·자동 시작·가상 계정 같은 핵심 구성이 실패하면 `SETUP_SERVICE_CONFIG_FAILED`로 중단됨
+- [ ] 실제 서비스 시작이 실패하면 `SETUP_SERVICE_START_FAILED`로 fail-closed 중단됨
+- [ ] 서비스 설명만 실패하면 `SETUP_SERVICE_DESCRIPTION_WARNING`을 남기고 핵심 설치를 계속함
+- [ ] 자동 복구 정책만 실패하면 `SETUP_SERVICE_RECOVERY_POLICY_WARNING`을 남기고 핵심 설치를 계속함
+- [ ] 제한 DACL 적용만 실패하면 `SETUP_SERVICE_DACL_WARNING`을 남기고 핵심 설치를 계속함
+- [ ] 위 경고가 있어도 새 서비스의 핵심 구성과 Running 상태 확인이 실패하면 성공으로 처리하지 않음
 - [ ] 설치 또는 업데이트 결과가 `완료` 또는 조치 가능한 연결 확인 경고임
 - [ ] `SamsungSwitchWatchAgent` 서비스가 자동 시작으로 등록됨
 - [ ] 서비스가 `NT SERVICE\SamsungSwitchWatchAgent` 가상 계정으로 실행됨
@@ -262,7 +270,7 @@ Viewer가 종료되면 감시도 중단되는 구조가 현장 운영 요구와 
       핵심 서비스 상태가 확인된 복구는 완료되며 작업 기록이 정리됨
 - [ ] 서비스 실행 파일 경로·시작 유형·계정·표시 이름·서비스 SID·이전 실행 상태 중 하나라도
       복원하지 못하면 `ROLLBACK_SERVICE_RESTORE_FAILED`로 중단하고 journal과 이전 파일을 보존함
-- [ ] `0.11.4-poc`·`0.11.5-poc`에서 남은 호환 journal을 `0.11.6-poc` Setup이 읽고 안전하게 복구함
+- [ ] `0.11.4-poc`·`0.11.5-poc`·`0.11.6-poc`에서 남은 호환 journal을 `0.11.7-poc` Setup이 읽고 안전하게 복구함
 - [ ] 서비스 삭제 대기 상태에서는 최대 20초 안에 완료를 기다린 뒤 복구가 진행되거나 명확한
       실패로 끝나며, Setup이 무한 대기하지 않음
 - [ ] 서비스 중지 뒤 관찰한 서비스 프로세스 종료가 확인되기 전에는 프로그램 폴더를 이동하지 않음
