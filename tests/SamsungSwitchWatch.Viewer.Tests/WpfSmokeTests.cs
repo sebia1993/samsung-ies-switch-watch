@@ -214,9 +214,15 @@ public sealed class WpfSmokeTests
                     AutomationProperties.GetName(devices.MonitoringCheckBox));
                 Assert.Equal("로그인 _확인", devices.TestButton.Content);
                 Assert.Contains("로그인 확인", devices.ResultText.Text, StringComparison.Ordinal);
+                Assert.True(devices.ModelTextBox.IsReadOnly);
+                Assert.Equal("로그인 확인 후 표시", devices.ModelTextBox.Text);
                 devices.Close();
                 Volatile.Write(ref phase, "device-storage-failures");
                 VerifyDeviceManagementFailuresStayInsideWindow(folder);
+                Volatile.Write(ref phase, "device-model-detection");
+                VerifyAutomaticModelDetection(folder);
+                Volatile.Write(ref phase, "device-model-detection-legacy-agent");
+                VerifyLegacyAgentModelDetectionGuidance(folder);
                 Volatile.Write(ref phase, "device-close-cancellation");
                 VerifyClosingDeviceWindowCancelsConnectionTest(folder);
                 Volatile.Write(ref phase, "mini-and-alert");
@@ -361,8 +367,8 @@ public sealed class WpfSmokeTests
             new RoutedEventArgs(System.Windows.Controls.Button.ClickEvent));
 
         Assert.True(clientFactory.Client.FirstTestStarted.Task.IsCompletedSuccessfully);
-        var statusAtClose = window.ResultText.Text;
         window.Close();
+        Assert.False(window.IsVisible);
 
         clientFactory.Client.FirstTestCancellationObserved.Task
             .WaitAsync(TimeSpan.FromSeconds(5))
@@ -371,49 +377,97 @@ public sealed class WpfSmokeTests
         Assert.Empty(window.PasswordBox.Password);
         Assert.Empty(window.EnablePasswordBox.Password);
 
+        // A successful same-host retry proves that cancellation released the
+        // per-device operation gate. Do not drain the process-wide Dispatcher:
+        // the closed window intentionally ignores its queued async continuation.
         var nextResult = viewModel.TestManagedDeviceAsync(DeviceDraft(
                 "SW-CLOSE-RETRY",
                 "192.0.2.25"))
             .WaitAsync(TimeSpan.FromSeconds(5))
             .GetAwaiter()
             .GetResult();
-        DrainDispatcherQueue();
 
         Assert.True(nextResult.Success);
         Assert.Equal(2, clientFactory.Client.TestCount);
-        Assert.Equal(statusAtClose, window.ResultText.Text);
         viewModel.DisposeAsync().AsTask().GetAwaiter().GetResult();
     }
 
-    private static void DrainDispatcherQueue()
+    private static void VerifyAutomaticModelDetection(string folder)
     {
-        var frame = new System.Windows.Threading.DispatcherFrame();
-        var dispatcher = System.Windows.Threading.Dispatcher.CurrentDispatcher;
-        var drained = false;
-        dispatcher.BeginInvoke(
-            System.Windows.Threading.DispatcherPriority.Normal,
-            new Action(() =>
-            {
-                drained = true;
-                frame.Continue = false;
-            }));
-        var timeout = new System.Windows.Threading.DispatcherTimer(
-            System.Windows.Threading.DispatcherPriority.Send,
-            dispatcher)
-        {
-            Interval = TimeSpan.FromSeconds(5)
-        };
-        timeout.Tick += (_, _) => frame.Continue = false;
-        timeout.Start();
-        try
-        {
-            System.Windows.Threading.Dispatcher.PushFrame(frame);
-        }
-        finally
-        {
-            timeout.Stop();
-        }
-        Assert.True(drained, "WPF dispatcher queue did not drain within 5 seconds.");
+        var clientFactory = new CountingAgentClientFactory();
+        var store = new ManagedDeviceStore(
+            Path.Combine(folder, "model-detection-devices.json"),
+            new TestSecretProtector());
+        var viewModel = new DashboardViewModel(
+            new ViewerSettings { DemoMode = true },
+            new ViewerSettingsStore(
+                Path.Combine(folder, "model-detection-settings.json")),
+            clientFactory,
+            SynchronizationContext.Current,
+            store);
+        var window = new DeviceManagementWindow(viewModel);
+        window.Show();
+        window.UpdateLayout();
+
+        Assert.Equal("로그인 확인 후 표시", window.ModelTextBox.Text);
+        window.DisplayNameTextBox.Text = "SW-AUTO";
+        window.HostTextBox.Text = "192.0.2.50";
+        window.UsernameTextBox.Text = "operator";
+        window.PasswordBox.Password = "login-password";
+        window.TestButton.RaiseEvent(
+            new RoutedEventArgs(System.Windows.Controls.Button.ClickEvent));
+
+        Assert.Equal("IES4224GP", window.ModelTextBox.Text);
+        Assert.Contains("자동 판별", window.ResultText.Text, StringComparison.Ordinal);
+        Assert.Equal(1, clientFactory.TelnetTestRequestCount);
+        Assert.Equal("IES4224GP", clientFactory.LastTelnetTestModel);
+        window.SaveButton.RaiseEvent(
+            new RoutedEventArgs(System.Windows.Controls.Button.ClickEvent));
+        var saved = Assert.Single(store.Load());
+        Assert.Equal("IES4224GP", saved.Model);
+        Assert.True(saved.ConnectionVerified);
+
+        window.HostTextBox.Text = "192.0.2.51";
+        Assert.Equal("로그인 확인 후 표시", window.ModelTextBox.Text);
+        Assert.False(window.MonitoringCheckBox.IsEnabled);
+
+        window.Close();
+        viewModel.DisposeAsync().AsTask().GetAwaiter().GetResult();
+    }
+
+    private static void VerifyLegacyAgentModelDetectionGuidance(string folder)
+    {
+        var clientFactory = new CountingAgentClientFactory(includeDetectedModel: false);
+        var viewModel = new DashboardViewModel(
+            new ViewerSettings { DemoMode = true },
+            new ViewerSettingsStore(
+                Path.Combine(folder, "legacy-agent-model-settings.json")),
+            clientFactory,
+            SynchronizationContext.Current,
+            new ManagedDeviceStore(
+                Path.Combine(folder, "legacy-agent-model-devices.json"),
+                new TestSecretProtector()));
+        var window = new DeviceManagementWindow(viewModel);
+        window.Show();
+        window.UpdateLayout();
+        window.DisplayNameTextBox.Text = "SW-LEGACY";
+        window.HostTextBox.Text = "192.0.2.60";
+        window.UsernameTextBox.Text = "operator";
+        window.PasswordBox.Password = "login-password";
+
+        window.TestButton.RaiseEvent(
+            new RoutedEventArgs(System.Windows.Controls.Button.ClickEvent));
+
+        Assert.Equal("로그인 확인 후 표시", window.ModelTextBox.Text);
+        Assert.Contains(
+            "MODEL_DETECTION_UNAVAILABLE",
+            window.ResultText.Text,
+            StringComparison.Ordinal);
+        Assert.Contains("같은 최신 버전", window.ResultText.Text, StringComparison.Ordinal);
+        Assert.False(window.MonitoringCheckBox.IsEnabled);
+
+        window.Close();
+        viewModel.DisposeAsync().AsTask().GetAwaiter().GetResult();
     }
 
     private static void VerifyDeviceManagementFailuresStayInsideWindow(string folder)
@@ -863,11 +917,15 @@ public sealed class WpfSmokeTests
         public void Quarantine(string path, string destination) => Content = null;
     }
 
-    private sealed class CountingAgentClientFactory : IAgentClientFactory
+    private sealed class CountingAgentClientFactory(bool includeDetectedModel = true)
+        : IAgentClientFactory
     {
         private int _telnetTestRequestCount;
+        private string? _lastTelnetTestModel;
+        private bool IncludeDetectedModel { get; } = includeDetectedModel;
 
         public int TelnetTestRequestCount => Volatile.Read(ref _telnetTestRequestCount);
+        public string? LastTelnetTestModel => Volatile.Read(ref _lastTelnetTestModel);
 
         public IAgentClient Create(ViewerSettings settings) =>
             new CountingAgentClient(this);
@@ -906,6 +964,7 @@ public sealed class WpfSmokeTests
                 CancellationToken cancellationToken)
             {
                 Interlocked.Increment(ref owner._telnetTestRequestCount);
+                Volatile.Write(ref owner._lastTelnetTestModel, target.Model);
                 var now = DateTimeOffset.UtcNow;
                 return Task.FromResult(new TelnetExecutionResultDto(
                     4,
@@ -916,7 +975,10 @@ public sealed class WpfSmokeTests
                     now,
                     now,
                     0,
-                    []));
+                    [])
+                {
+                    DetectedModel = owner.IncludeDetectedModel ? target.Model : null
+                });
             }
 
             public Task<TelnetExecutionResultDto> ExecuteTelnetAsync(
@@ -1005,7 +1067,8 @@ public sealed class WpfSmokeTests
                 FirstTestStarted.TrySetResult();
                 try
                 {
-                    await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                    await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken)
+                        .ConfigureAwait(false);
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                 {

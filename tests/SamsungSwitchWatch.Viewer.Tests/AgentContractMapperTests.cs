@@ -500,6 +500,64 @@ public sealed class AgentContractMapperTests
     }
 
     [Fact]
+    public void MapTelnetExecutionResultV4_ReadsOptionalCanonicalDetectedModel()
+    {
+        var payload = new Dictionary<string, object?>
+        {
+            ["apiVersion"] = 4,
+            ["requestId"] = "request-1",
+            ["success"] = true,
+            ["privilege"] = "privileged",
+            ["promptTerminator"] = "#",
+            ["startedUtc"] = "2026-07-23T01:00:00Z",
+            ["completedUtc"] = "2026-07-23T01:00:01Z",
+            ["durationMs"] = 1000,
+            ["sessionCount"] = 1,
+            ["reconnectCount"] = 0,
+            ["detectedModel"] = "ies4226xp",
+            ["commands"] = Array.Empty<object>()
+        };
+
+        var result = AgentContractMapper.MapTelnetExecutionResultV4(
+            JsonSerializer.Serialize(payload),
+            "request-1",
+            [],
+            65_536);
+
+        Assert.Equal("IES4226XP", result.DetectedModel);
+        Assert.Empty(result.Commands);
+    }
+
+    [Fact]
+    public void MapTelnetExecutionResultV4_AllowsLegacyTestResultWithoutDetectedModel()
+    {
+        var result = AgentContractMapper.MapTelnetExecutionResultV4(
+            TelnetResultJson("request-1", true, []),
+            "request-1",
+            [],
+            65_536);
+
+        Assert.Null(result.DetectedModel);
+    }
+
+    [Theory]
+    [InlineData("UNKNOWN")]
+    [InlineData("")]
+    public void MapTelnetExecutionResultV4_RejectsUnsupportedDetectedModel(string model)
+    {
+        var payload = JsonSerializer.Deserialize<Dictionary<string, object?>>(
+            TelnetResultJson("request-1", true, []))!;
+        payload["detectedModel"] = model;
+
+        Assert.Throws<JsonException>(() =>
+            AgentContractMapper.MapTelnetExecutionResultV4(
+                JsonSerializer.Serialize(payload),
+                "request-1",
+                [],
+                65_536));
+    }
+
+    [Fact]
     public void MapTelnetExecutionResultV4_ValidatesRequestAndNormalizedCommandMapping()
     {
         var json = TelnetResultJson(

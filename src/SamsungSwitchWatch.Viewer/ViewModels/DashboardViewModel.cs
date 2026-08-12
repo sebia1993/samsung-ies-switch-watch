@@ -445,15 +445,24 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
     {
         if (_deviceStore is null) throw new InvalidOperationException("VIEWER_DEVICE_STORE_UNAVAILABLE");
         var resolved = _deviceStore.ResolveDraftForOperation(draft);
-        if (!ManagedDeviceValidator.TryValidate(resolved, true, out var reason))
+        if (!ManagedDeviceValidator.TryValidateConnectionInput(
+                resolved,
+                true,
+                out var reason))
         {
             throw new InvalidDataException(reason);
         }
+        var bootstrapModel = SupportedSwitchModels.Contains(resolved.Model)
+            ? SupportedSwitchModels.All.First(model =>
+                model.Equals(
+                    resolved.Model.Trim(),
+                    StringComparison.OrdinalIgnoreCase))
+            : SupportedSwitchModels.All[0];
         var request = new TelnetTargetDto(
             Guid.NewGuid().ToString("N"),
             resolved.Host.Trim(),
             23,
-            resolved.Model.Trim(),
+            bootstrapModel,
             resolved.Username.Trim(),
             resolved.Password,
             string.IsNullOrEmpty(resolved.EnablePassword) ? null : resolved.EnablePassword,

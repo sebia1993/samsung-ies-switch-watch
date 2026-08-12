@@ -340,6 +340,32 @@ loopback, link-local, multicast와 사설 범위 밖 주소를 거부합니다.
 }
 ```
 
+`model`은 v4 요청 호환을 위한 내부 bootstrap 값이며 사용자가 선택하는 권한 값이 아닙니다.
+Agent는 인증과 선택적 enable 전환 후 `show version`을 한 번 실행하고 등록 모델 토큰이 정확히
+하나일 때만 아래처럼 정규화된 모델명만 반환합니다. 명령과 원문 출력은 test 응답에 포함하지
+않습니다.
+
+```json
+{
+  "apiVersion": 4,
+  "requestId": "7df5b77d-a5fb-45db-bc93-96f719b04b36",
+  "success": true,
+  "privilege": "privileged",
+  "promptTerminator": "#",
+  "startedUtc": "2026-08-12T01:00:00Z",
+  "completedUtc": "2026-08-12T01:00:01Z",
+  "durationMs": 1000,
+  "sessionCount": 1,
+  "reconnectCount": 0,
+  "detectedModel": "IES4224GP",
+  "commands": []
+}
+```
+
+지원 모델이 없으면 `MODEL_NOT_DETECTED`, 둘 이상이면 `MODEL_AMBIGUOUS`로 실패합니다. 구형
+Agent 응답처럼 `detectedModel`이 없으면 Viewer는 임의 추정 없이
+`MODEL_DETECTION_UNAVAILABLE`로 Agent 업데이트를 안내합니다.
+
 ### 명령 실행
 
 `POST /api/v4/telnet/execute`

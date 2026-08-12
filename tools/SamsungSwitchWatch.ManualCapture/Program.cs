@@ -22,7 +22,7 @@ namespace SamsungSwitchWatch.ManualCapture;
 
 internal static class Program
 {
-    private const string ManualProductVersion = "0.11.8-poc";
+    private const string ManualProductVersion = "0.11.9-poc";
 
     private static readonly string[] ExpectedScreenshotNames =
     [
@@ -437,7 +437,7 @@ internal static class Program
                 Capture(
                     deviceLifetime.Window,
                     Path.Combine(outputDirectory, "03-device-management.png"),
-                    "장비명, 모델, IPv4, 계정 ID, 로그인 비밀번호, enable 비밀번호와 감시 설정을 입력하는 장비 관리 창");
+                    "장비명, IPv4, 계정 ID와 비밀번호를 입력하고 자동 판별된 모델과 감시 설정을 확인하는 장비 관리 창");
             }
 
             viewModel.SelectedDevice = viewModel.Devices.First(item =>

@@ -3,7 +3,7 @@
 원격 PC의 숨겨진 Windows 서비스가 삼성 iES 스위치에 Telnet으로 접속하고, 운영자 PC의
 Viewer가 장비 등록·조회 명령·결과 확인·주기 감시를 담당하는 Windows 전용 POC입니다.
 
-현재 버전은 `v0.11.8-poc`입니다. IES4224GP, IES4028XP, IES4226XP의 실제 펌웨어별
+현재 버전은 `v0.11.9-poc`입니다. IES4224GP, IES4028XP, IES4226XP의 실제 펌웨어별
 명령과 출력은 사내 현장 검증 전까지 확정된 것으로 간주하지 않습니다.
 
 ## 한눈에 보는 구조
@@ -30,8 +30,8 @@ SamsungSwitchWatch.Viewer.exe              SamsungSwitchWatchAgent 서비스
 
 공식 GitHub Release Assets에서 다음 두 ZIP만 받습니다.
 
-- `SamsungSwitchWatch-Agent-0.11.8-poc-win-x64.zip`
-- `SamsungSwitchWatch-Viewer-0.11.8-poc-win-x64.zip`
+- `SamsungSwitchWatch-Agent-0.11.9-poc-win-x64.zip`
+- `SamsungSwitchWatch-Viewer-0.11.9-poc-win-x64.zip`
 
 두 패키지는 Windows x64용 self-contained 빌드이므로 Python이나 .NET을 별도로 설치하지
 않습니다. API v4가 호환되면 버전 차이는 경고 후 연결되지만, 운영에는 같은 Release 조합을
@@ -102,6 +102,16 @@ Viewer 데이터, Agent API v4, rollback 계약과 화면 흐름은 변경하지
 경우에만 ACL과 파일을 쓰므로, 검사와 생성 사이에 다른 프로세스가 만든 폴더를 수정하지
 않습니다.
 
+`0.11.9-poc`는 장비 모델 선택을 사용자 입력에서 제거합니다. `로그인 확인`이 인증과 선택적
+enable 전환을 마친 뒤 읽기 전용 `show version`을 한 번 실행하고, 등록된 세 모델 중 정확히
+하나가 확인될 때만 정규화된 모델명을 Viewer에 표시합니다. 지원 모델을 찾지 못하거나 여러
+모델 토큰이 섞인 출력은 각각 `MODEL_NOT_DETECTED`, `MODEL_AMBIGUOUS`로 중단하며 임의 모델을
+추정하지 않습니다. 판별에 사용한 원문은 Viewer 응답·설정·로그에 남기지 않습니다.
+
+기존 API v4 요청과 Viewer 장비 저장 형식은 유지합니다. 최신 Agent의 test 응답에 선택적인
+`detectedModel`만 추가했으며, 이 값이 없는 구형 Agent와 연결하면
+`MODEL_DETECTION_UNAVAILABLE`로 같은 최신 Agent·Viewer 조합 사용을 안내합니다.
+
 Viewer는 Agent 연결 교체·종료 때 발생한 정상적인 취소를 앱 오류로 올리지 않습니다. 수동
 `포트 상태/시스템 로그 수동 점검`과 직접 입력한 읽기 전용 명령 조회는 동시에 하나만 실행합니다. 장비 관리 창을 닫으면 진행 중인
 연결을 취소하고 입력된 로그인·enable 비밀번호를 즉시 지웁니다. 자동 수집 후보가
@@ -153,7 +163,8 @@ Viewer·Mock Agent·Agent Setup 실행 파일의 제한된 smoke 검사도 포�
 4. Agent PC의 IPv4 또는 사내 DNS 이름을 입력하고 연결 진단을 완료합니다. Agent와 Viewer를
    같은 PC에서 먼저 시험할 때는 `localhost` 또는 `127.0.0.1`을 입력합니다.
 5. 장비 관리에서 장비명, IPv4, ID, 로그인 PW와 선택적 enable PW를 등록합니다. 모델은 장비
-   응답에서 자동 판별하며 판별 전에는 확인 대기로 표시합니다.
+   응답에서 자동 판별하며 판별 전에는 확인 대기로 표시됩니다. 새 장비는 `로그인 확인`으로
+   모델 판별을 완료한 뒤 저장합니다.
 6. `로그인 확인` 후 수집 진단에서 `show port status`, `show sylog tail num 100` 또는 장비에서
    지원하는 읽기 전용 명령의 실제 동작을 확인합니다.
 
@@ -163,7 +174,10 @@ Viewer 업데이트는 설치 파일만 현재 버전으로 교체합니다.
 거치며 완료 전에 실패하면 관리되는 이전 버전을 복구합니다. 임의의 다운로드·압축 해제 폴더는
 자동으로 삭제하지 않습니다.
 
-`로그인 확인`은 TCP/23, 계정, enable과 최종 프롬프트까지만 검사합니다. 자동 수집은 포트 상태와
+`로그인 확인`은 TCP/23, 계정, enable과 최종 프롬프트를 확인한 뒤 읽기 전용 `show version`을
+한 번 실행해 IES4224GP, IES4028XP, IES4226XP 중 정확히 하나를 판별합니다. 판별 원문은
+Viewer나 로그에 저장하지 않습니다. 최신 Agent가 판별 결과를 제공하지 않으면 임의 모델을
+선택하지 않고 Agent와 Viewer를 같은 최신 버전으로 맞추도록 안내합니다. 자동 수집은 포트 상태와
 시스템 로그를 순차적인 개별 세션으로 실행하므로 한 항목이 시간 초과되어도 다른 결과를 계속
 수집합니다. 명령은 30초 동안 새 응답이 없을 때 중단하며, 출력이 계속되더라도 전체 90초를
 넘기지 않습니다. 이번 POC의 자동 감시 검증·지원 범위는 등록 장비 10대 이하입니다.
@@ -232,7 +246,7 @@ dotnet restore SamsungSwitchWatch.sln --locked-mode
 dotnet build SamsungSwitchWatch.sln -c Release --no-restore
 dotnet test SamsungSwitchWatch.sln -c Release --no-build
 .\scripts\validate.ps1 -Configuration Release
-.\scripts\build-release.ps1 -Version 0.11.8-poc
+.\scripts\build-release.ps1 -Version 0.11.9-poc
 ```
 
 실제 장비 대신 합성 Telnet 서버와 비식별 Fixture를 사용합니다. Mock 통과를 실제 펌웨어
@@ -254,6 +268,7 @@ ZIP 정확히 두 개입니다.
 - [보안 모델](docs/SECURITY.md)
 - [현장 POC 점검표](docs/FIELD_POC_CHECKLIST_KO.md)
 - [릴리스 절차](docs/RELEASE_PROCESS_KO.md)
+- [0.11.9-poc 릴리스 노트](docs/RELEASE_NOTES_0.11.9_POC_KO.md)
 - [0.11.8-poc 릴리스 노트](docs/RELEASE_NOTES_0.11.8_POC_KO.md)
 - [0.11.7-poc 릴리스 노트](docs/RELEASE_NOTES_0.11.7_POC_KO.md)
 - [0.11.6-poc 릴리스 노트](docs/RELEASE_NOTES_0.11.6_POC_KO.md)

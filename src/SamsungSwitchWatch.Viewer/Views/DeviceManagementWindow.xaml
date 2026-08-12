@@ -104,9 +104,12 @@
                                          MaxLength="80" AutomationProperties.Name="장비 표시 이름"/>
                             </StackPanel>
                             <StackPanel Grid.Column="2">
-                                <TextBlock Text="모델" FontWeight="SemiBold"/>
-                                <ComboBox x:Name="ModelComboBox" Margin="0,6,0,0"
-                                          AutomationProperties.Name="삼성 스위치 모델"/>
+                                <TextBlock Text="모델 (자동 판별)" FontWeight="SemiBold"/>
+                                <TextBox x:Name="ModelTextBox" Margin="0,6,0,0" Height="38" Padding="10,6"
+                                         IsReadOnly="True" IsTabStop="False" Background="#F8FAFC"
+                                         Foreground="{StaticResource MutedTextBrush}"
+                                         ToolTip="로그인 확인을 실행하면 장비 응답에서 자동으로 판별합니다."
+                                         AutomationProperties.Name="자동 판별된 삼성 스위치 모델"/>
                             </StackPanel>
                         </Grid>
 
@@ -119,6 +122,7 @@
                             <StackPanel>
                                 <TextBlock Text="장비 IPv4" FontWeight="SemiBold"/>
                                 <TextBox x:Name="HostTextBox" Margin="0,6,0,0" Height="38" Padding="10,6"
+                                         TextChanged="HostTextBox_TextChanged"
                                          AutomationProperties.Name="장비 관리 IPv4"/>
                             </StackPanel>
                             <StackPanel Grid.Column="2">
@@ -162,10 +166,10 @@
                                 BorderThickness="1" CornerRadius="4">
                             <StackPanel>
                                 <TextBlock FontWeight="SemiBold"
-                                           Text="권장 순서: 1. 로그인 확인 → 2. 저장 → 3. 주기 감시 켜기"/>
+                                           Text="권장 순서: 1. 로그인 및 모델 확인 → 2. 저장 → 3. 주기 감시 켜기"/>
                                 <TextBlock x:Name="ResultText" Margin="0,5,0,0" TextWrapping="Wrap"
                                            AutomationProperties.LiveSetting="Polite"
-                                           Text="로그인 확인에 실패해도 장비는 저장되지만 주기 감시는 시작되지 않습니다."/>
+                                           Text="로그인 확인이 성공하면 모델을 자동으로 표시합니다."/>
                             </StackPanel>
                         </Border>
                     </StackPanel>

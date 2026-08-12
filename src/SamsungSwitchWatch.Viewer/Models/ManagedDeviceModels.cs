@@ -61,7 +61,7 @@ public sealed class ManagedDeviceDraft
 {
     public string? Id { get; set; }
     public string DisplayName { get; set; } = string.Empty;
-    public string Model { get; set; } = SupportedSwitchModels.All[0];
+    public string Model { get; set; } = string.Empty;
     public string Host { get; set; } = string.Empty;
     public string Username { get; set; } = string.Empty;
     public string Password { get; set; } = string.Empty;
@@ -113,6 +113,8 @@ public sealed record TelnetExecutionResultDto(
     long DurationMs,
     IReadOnlyList<TelnetCommandOutputDto> Commands)
 {
+    public string? DetectedModel { get; init; }
+
     public int SessionCount { get; init; } = 1;
 
     public int ReconnectCount { get; init; }
@@ -132,16 +134,32 @@ public sealed record AgentIdentityDto(
 
 public static class ManagedDeviceValidator
 {
-    public static bool TryValidate(ManagedDeviceDraft draft, bool passwordRequired, out string reason)
+    public static bool TryValidate(
+        ManagedDeviceDraft draft,
+        bool passwordRequired,
+        out string reason) =>
+        TryValidateCore(draft, passwordRequired, modelRequired: true, out reason);
+
+    public static bool TryValidateConnectionInput(
+        ManagedDeviceDraft draft,
+        bool passwordRequired,
+        out string reason) =>
+        TryValidateCore(draft, passwordRequired, modelRequired: false, out reason);
+
+    private static bool TryValidateCore(
+        ManagedDeviceDraft draft,
+        bool passwordRequired,
+        bool modelRequired,
+        out string reason)
     {
         if (string.IsNullOrWhiteSpace(draft.DisplayName) || draft.DisplayName.Trim().Length > 80)
         {
             reason = "장비명은 1~80자로 입력해 주세요.";
             return false;
         }
-        if (!SupportedSwitchModels.Contains(draft.Model))
+        if (modelRequired && !SupportedSwitchModels.Contains(draft.Model))
         {
-            reason = "지원되는 삼성 스위치 모델을 선택해 주세요.";
+            reason = "먼저 로그인 확인을 실행해 장비 모델을 자동 판별해 주세요.";
             return false;
         }
         if (!IPAddress.TryParse(draft.Host?.Trim(), out var address)

@@ -17,7 +17,7 @@ dotnet restore SamsungSwitchWatch.sln --locked-mode
 dotnet build SamsungSwitchWatch.sln -c Release --no-restore
 dotnet test SamsungSwitchWatch.sln -c Release --no-build
 .\scripts\validate.ps1 -Configuration Release
-.\scripts\build-release.ps1 -Version 0.11.8-poc
+.\scripts\build-release.ps1 -Version 0.11.9-poc
 ```
 
 Use the .NET 10 SDK. Release packages target `win-x64`, are self-contained, single-file, and untrimmed.
@@ -26,7 +26,7 @@ Regenerate the manual from `tools/build-user-manual.py` before a release wheneve
 
 ## Runtime ownership
 
-- Viewer owns device IP/model, DPAPI CurrentUser credentials, monitoring schedules, baselines, gaps and events.
+- Viewer owns device IP, the Agent-detected model, DPAPI CurrentUser credentials, monitoring schedules, baselines, gaps and events.
 - Agent stores no device inventory, credential, command, result, monitoring state or event history.
 - Public Agent runtime is Windows service-only with `--service`; direct no-argument or
   `--background` launch exits.
@@ -37,6 +37,8 @@ Regenerate the manual from `tools/build-user-manual.py` before a release wheneve
 - Each request uses a fresh bounded Telnet session and always disconnects. If the device closes the
   connection during command execution, reconnect at most once and execute only unfinished commands;
   never retry authentication/enable failures or command timeouts.
+- A v4 login test executes only `show version` after authentication, detects exactly one registered
+  model token, and returns only the canonical model name. Never return or persist the raw detection output.
 - The manual Viewer UI accepts one normalized `show` command at a time; one Agent API request may carry at most eight validated commands for monitoring.
 - Each command may include `show running-config`; reject line breaks, separators and configuration commands.
 - Manual command and raw output remain in Viewer memory and are never persisted or exported.
