@@ -291,8 +291,11 @@ git push origin v0.11.9-poc
 ```
 
 Release workflow는 태그가 `origin/main`에 포함되고 annotated tag의 객체와 peeled commit이
-변하지 않았는지 확인합니다. 두 공개 ZIP에 provenance를 발급한 뒤 draft에 정확히 한 번
-업로드하고 크기·SHA-256을 검증한 후 게시합니다.
+변하지 않았는지 확인합니다. 기존 Release와 draft는 GraphQL의 정확한 tag 조회로 사전
+차단합니다. 두 공개 ZIP에 provenance를 발급한 뒤 새 draft의 생성 URL과 GraphQL 기반
+`gh release view`가 반환한 숫자 ID를 함께 대조하여 정확히 한 번 업로드하고, 크기·SHA-256을
+검증한 후 게시합니다. REST Release 목록은 draft가 누락될 수 있으므로 draft 식별 근거로
+사용하지 않습니다.
 
 기존 태그나 Release Asset을 교체하지 않습니다. 같은 버전에 문제가 있으면 새 버전과 새
 불변 태그를 만듭니다.

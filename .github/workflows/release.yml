@@ -63,11 +63,18 @@ jobs:
           SSW_RELEASE_TAG: ${{ steps.version.outputs.tag }}
           SSW_REPOSITORY: ${{ github.repository }}
         run: |
-          $pagesJson = gh api --paginate --slurp "repos/$($env:SSW_REPOSITORY)/releases?per_page=100"
+          $repositoryParts = @($env:SSW_REPOSITORY.Split('/'))
+          if ($repositoryParts.Count -ne 2) { throw 'GitHub repository identity is invalid.' }
+          $repositoryOwner = [string]$repositoryParts[0]
+          $repositoryName = [string]$repositoryParts[1]
+          $releaseLookupQuery = 'query($owner:String!,$name:String!,$tag:String!){repository(owner:$owner,name:$name){release(tagName:$tag){databaseId tagName isDraft url}}}'
+          $releaseJson = gh api graphql -f query=$releaseLookupQuery `
+            -f owner=$repositoryOwner -f name=$repositoryName -f tag=$env:SSW_RELEASE_TAG
           if ($LASTEXITCODE -ne 0) { throw 'GitHub release preflight lookup failed.' }
-          $pages = ($pagesJson -join "`n") | ConvertFrom-Json
-          $matching = @($pages | ForEach-Object { $_ } | Where-Object { $_.tag_name -eq $env:SSW_RELEASE_TAG })
-          if ($matching.Count -gt 0) { throw 'Immutable release or draft already exists; rebuilding or replacing its assets is forbidden.' }
+          $lookup = ($releaseJson -join "`n") | ConvertFrom-Json
+          if ($null -ne $lookup.data.repository.release) {
+            throw 'Immutable release or draft already exists; rebuilding or replacing its assets is forbidden.'
+          }
 
       - name: Checkout exact source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -203,12 +210,18 @@ jobs:
           SSW_RELEASE_TAG: ${{ needs.package.outputs.tag }}
           SSW_REPOSITORY: ${{ github.repository }}
         run: |
-          $pagesJson = gh api -H 'X-GitHub-Api-Version: 2026-03-10' --paginate --slurp `
-            "repos/$($env:SSW_REPOSITORY)/releases?per_page=100"
+          $repositoryParts = @($env:SSW_REPOSITORY.Split('/'))
+          if ($repositoryParts.Count -ne 2) { throw 'GitHub repository identity is invalid.' }
+          $repositoryOwner = [string]$repositoryParts[0]
+          $repositoryName = [string]$repositoryParts[1]
+          $releaseLookupQuery = 'query($owner:String!,$name:String!,$tag:String!){repository(owner:$owner,name:$name){release(tagName:$tag){databaseId tagName isDraft url}}}'
+          $releaseJson = gh api graphql -f query=$releaseLookupQuery `
+            -f owner=$repositoryOwner -f name=$repositoryName -f tag=$env:SSW_RELEASE_TAG
           if ($LASTEXITCODE -ne 0) { throw 'GitHub release preflight lookup failed.' }
-          $pages = ($pagesJson -join "`n") | ConvertFrom-Json
-          $matching = @($pages | ForEach-Object { $_ } | Where-Object { $_.tag_name -eq $env:SSW_RELEASE_TAG })
-          if ($matching.Count -gt 0) { throw 'Immutable release or draft already exists; assets will not be overwritten.' }
+          $lookup = ($releaseJson -join "`n") | ConvertFrom-Json
+          if ($null -ne $lookup.data.repository.release) {
+            throw 'Immutable release or draft already exists; assets will not be overwritten.'
+          }
 
       - name: Attest release assets
         uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4
@@ -362,49 +375,39 @@ jobs:
             }
             $draftCreated = $true
 
-            # GitHub can acknowledge draft creation before the releases list is consistent.
-            # Never retry creation; retry only discovery, then bind every mutation to one numeric ID.
-            $draft = $null
+            # Draft releases can be absent from the REST release list even though
+            # the GraphQL-backed CLI view can resolve them by tag. Never retry
+            # creation; retry only exact-tag discovery, then bind every mutation
+            # to one numeric ID.
             foreach ($draftLookupAttempt in 1..12) {
+              $draftViewJson = @()
+              $draftLookupExitCode = 1
               $oldPreference = $ErrorActionPreference
               $ErrorActionPreference = 'Continue'
               try {
-                $pagesJson = gh api -H 'X-GitHub-Api-Version: 2026-03-10' --paginate --slurp `
-                  "repos/$($env:SSW_REPOSITORY)/releases?per_page=100" 2>$null
+                $draftViewJson = @(gh release view $tag --repo $env:SSW_REPOSITORY `
+                  --json databaseId,tagName,isDraft,isImmutable,url,targetCommitish,assets 2>$null)
                 $draftLookupExitCode = $LASTEXITCODE
               }
               finally { $ErrorActionPreference = $oldPreference }
 
               if ($draftLookupExitCode -eq 0) {
-                try { $pages = ($pagesJson -join "`n") | ConvertFrom-Json }
+                try { $candidate = ($draftViewJson -join "`n") | ConvertFrom-Json }
                 catch { throw 'Created release draft lookup returned invalid JSON.' }
-                $allReleases = @()
-                foreach ($page in @($pages)) {
-                  foreach ($release in @($page)) { $allReleases += $release }
+                if ($candidate.tagName -ne $tag -or -not $candidate.isDraft -or
+                    $candidate.isImmutable -or [string]$candidate.url -ne $draftUrl -or
+                    [long]$candidate.databaseId -le 0) {
+                  throw 'Matching release differs from the mutable draft created by this run.'
                 }
-                $matching = @($allReleases | Where-Object { $_.tag_name -eq $tag })
-                if ($matching.Count -gt 1) {
-                  throw 'More than one matching release was found; automatic publication is forbidden.'
-                }
-                if ($matching.Count -eq 1) {
-                  $candidate = $matching[0]
-                  if (-not $candidate.draft -or $candidate.immutable) {
-                    throw 'Matching release is not a mutable draft; automatic publication is forbidden.'
-                  }
-                  if ([string]$candidate.html_url -ne $draftUrl) {
-                    throw 'Matching release URL differs from the draft created by this run.'
-                  }
-                  $draft = $candidate
-                  break
-                }
+                $releaseId = [long]$candidate.databaseId
+                break
               }
               if ($draftLookupAttempt -lt 12) { Start-Sleep -Seconds 5 }
             }
-            if ($null -eq $draft) {
+            if ($null -eq $releaseId) {
               throw 'Created release draft was not discoverable within the bounded lookup window.'
             }
 
-            $releaseId = [long]$draft.id
             $draftJson = gh api -H 'X-GitHub-Api-Version: 2026-03-10' `
               "repos/$($env:SSW_REPOSITORY)/releases/$releaseId"
             if ($LASTEXITCODE -ne 0) { throw 'Created release draft lookup by ID failed.' }
