@@ -108,7 +108,12 @@ Assert-Pattern $workflow '\$buildParameters\s*=\s*@\{\s*Version\s*=\s*\$env:' 'P
 Assert-Pattern $workflow '\.\\scripts\\build-release\.ps1\s+@buildParameters' 'Release build must use the named-parameter splat.'
 Assert-Pattern $workflow 'git merge-base --is-ancestor.+origin/main' 'Release tags must be reachable from origin/main.'
 Assert-Pattern $workflow 'function\s+Assert-ReleaseTag' 'The tag object and peeled commit must be revalidated before publish.'
-Assert-Pattern $workflow 'gh api --paginate --slurp' 'Release and draft lookup must fail closed through the API.'
+Assert-PatternCount $workflow 'gh api graphql -f query=\$releaseLookupQuery' 2 `
+    'Both release preflight checks must use the GraphQL tag lookup that includes drafts.'
+Assert-PatternCount $workflow 'release\(tagName:\$tag\)' 2 `
+    'Both release preflight checks must query the exact tag, including draft releases.'
+Assert-PatternCount $workflow '-f owner=\$repositoryOwner -f name=\$repositoryName' 2 `
+    'PowerShell must pass scalar repository owner and name values to both GraphQL preflight calls.'
 Assert-Pattern $workflow '--signer-workflow' 'Attestation verification must constrain the signer workflow.'
 Assert-Pattern $workflow '--source-digest' 'Attestation verification must constrain the source digest.'
 Assert-Pattern $workflow '--source-ref' 'Attestation verification must constrain the source ref.'
@@ -132,7 +137,9 @@ if ($workflow -match 'gh release upload.+--clobber') {
 }
 Assert-Pattern $workflow 'foreach\s*\(\$draftLookupAttempt\s+in\s+1\.\.12\)' 'Draft discovery must use a bounded eventual-consistency retry.'
 Assert-Pattern $workflow 'Created release draft was not discoverable within the bounded lookup window' 'Draft discovery must fail closed when the retry budget is exhausted.'
-Assert-Pattern $workflow '\[string\]\$candidate\.html_url\s+-ne\s+\$draftUrl' 'Draft discovery must bind the candidate to the URL returned by creation.'
+Assert-Pattern $workflow '\[string\]\$candidate\.url\s+-ne\s+\$draftUrl' 'Draft discovery must bind the candidate to the URL returned by creation.'
+Assert-Pattern $workflow '(?s)gh release view\s+\$tag.+?--json\s+databaseId,tagName,isDraft,isImmutable,url,targetCommitish,assets' `
+    'Post-creation draft discovery must obtain the exact numeric ID through the GraphQL-backed release view.'
 Assert-Pattern $workflow 'Created release draft identity changed before asset upload' 'The selected draft must be revalidated by numeric release ID before upload.'
 Assert-Pattern $workflow 'Created release draft identity changed after asset upload' 'The selected draft must be revalidated by numeric release ID after upload.'
 Assert-Pattern $workflow 'Uploaded draft digest or size differs' 'GitHub draft asset digests and sizes must be compared locally.'
@@ -190,9 +197,8 @@ Assert-PatternCount $ciVerifyBlock `
 if ($workflow -match "(?m)^\s*\`$arguments\s*=\s*@\('-Version'") {
     throw 'Array splatting cannot preserve named parameters for a PowerShell script.'
 }
-if ($workflow -match 'gh release view') {
-    throw 'gh release view exit code 1 is ambiguous and must not be used as a not-found check.'
-}
+Assert-PatternCount $workflow 'gh release view' 1 `
+    'Release view may be used only after successful draft creation, never as the preflight not-found check.'
 if ($workflow -match 'gh release delete') {
     throw 'Release cleanup must use a confirmed numeric release ID, never a tag lookup.'
 }
@@ -318,12 +324,14 @@ if ([regex]::Matches($workflow, 'foreach\s*\(\$name\s+in\s+\$publicAssetNames\)'
 $draftDigestIndex = $workflow.IndexOf('Uploaded draft digest or size differs', [StringComparison]::Ordinal)
 $draftCreateOutputIndex = $workflow.IndexOf('$draftCreateOutput = @(gh release create @arguments)', [StringComparison]::Ordinal)
 $draftLookupRetryIndex = $workflow.IndexOf('foreach ($draftLookupAttempt in 1..12)', [StringComparison]::Ordinal)
+$draftViewIndex = $workflow.IndexOf('gh release view $tag', [StringComparison]::Ordinal)
 $draftIdentityBeforeUploadIndex = $workflow.IndexOf('Created release draft identity changed before asset upload', [StringComparison]::Ordinal)
 $draftUploadIndex = $workflow.IndexOf('gh release upload $tag $path', [StringComparison]::Ordinal)
 $draftIdentityAfterUploadIndex = $workflow.IndexOf('Created release draft identity changed after asset upload', [StringComparison]::Ordinal)
 $finalTagCheckIndex = $workflow.IndexOf('# The active v* tag ruleset closes the remaining fetch-to-publish race.', [StringComparison]::Ordinal)
 $publishIndex = $workflow.IndexOf('--method PATCH', [StringComparison]::Ordinal)
 if ($draftCreateOutputIndex -lt $createIndex -or $draftLookupRetryIndex -lt $draftCreateOutputIndex -or
+    $draftViewIndex -lt $draftLookupRetryIndex -or
     $draftIdentityBeforeUploadIndex -lt $draftLookupRetryIndex -or
     $draftUploadIndex -lt $draftIdentityBeforeUploadIndex -or
     $draftIdentityAfterUploadIndex -lt $draftUploadIndex -or
