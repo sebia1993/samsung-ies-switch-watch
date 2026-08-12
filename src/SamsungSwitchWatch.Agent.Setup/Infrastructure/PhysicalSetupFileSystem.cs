@@ -1,3 +1,5 @@
+using System.ComponentModel;
+using System.Runtime.InteropServices;
 using System.Security;
 using System.Security.AccessControl;
 using System.Security.Cryptography;
@@ -9,6 +11,8 @@ namespace SamsungSwitchWatch.Agent.Setup.Infrastructure;
 
 public sealed class PhysicalSetupFileSystem : ISetupFileSystem
 {
+    private const int ErrorFileExists = 80;
+    private const int ErrorAlreadyExists = 183;
     private static readonly UTF8Encoding Utf8WithoutBom = new(false);
 
     public bool FileExists(string path) => File.Exists(path);
@@ -52,29 +56,44 @@ public sealed class PhysicalSetupFileSystem : ISetupFileSystem
 
             if (File.Exists(fullPath))
             {
-                var backupPath = $"{temporaryPath}.bak";
-                File.Replace(temporaryPath, fullPath, backupPath, ignoreMetadataErrors: true);
-                File.Delete(backupPath);
+                // The caller owns transactional recovery. A File.Replace backup
+                // is never consumed and turns an already committed write into a
+                // false failure when AV/EDR prevents only backup cleanup.
+                File.Replace(
+                    temporaryPath,
+                    fullPath,
+                    destinationBackupFileName: null,
+                    ignoreMetadataErrors: true);
             }
             else
             {
                 File.Move(temporaryPath, fullPath);
             }
 
-            using var committed = new FileStream(
+            using var committedStream = new FileStream(
                 fullPath,
                 FileMode.Open,
                 FileAccess.ReadWrite,
                 FileShare.Read,
                 bufferSize: 1,
                 FileOptions.WriteThrough);
-            committed.Flush(flushToDisk: true);
+            committedStream.Flush(flushToDisk: true);
         }
         finally
         {
             if (File.Exists(temporaryPath))
             {
-                File.Delete(temporaryPath);
+                try
+                {
+                    File.Delete(temporaryPath);
+                }
+                catch (Exception exception) when (
+                    exception is IOException or UnauthorizedAccessException or SecurityException)
+                {
+                    // Cleanup is best effort. Do not hide the original write
+                    // failure or report a committed replacement as failed only
+                    // because AV/EDR still has the temporary name open.
+                }
             }
         }
     }
@@ -91,6 +110,50 @@ public sealed class PhysicalSetupFileSystem : ISetupFileSystem
 
     public void CreateDirectory(string path) =>
         Directory.CreateDirectory(Path.GetFullPath(path));
+
+    public bool TryCreateDirectoryExclusive(string path)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            throw new PlatformNotSupportedException();
+        }
+
+        var fullPath = Path.GetFullPath(path);
+        EnsureTrustedParentHierarchy(fullPath);
+        if (CreateDirectoryNative(fullPath, IntPtr.Zero))
+        {
+            // Creation ownership is known only while this process wins the
+            // atomic CreateDirectoryW call. Re-check the new root before any
+            // ACL mutation so a replacement/reparse race fails closed.
+            if (!IsEmptyNonReparseDirectory(fullPath))
+            {
+                throw new SetupException(
+                    SetupErrorCodes.PathUntrusted,
+                    "새 데이터 폴더가 생성 직후 예상하지 못한 내용 또는 연결 지점으로 바뀌었습니다.");
+            }
+
+            ValidateNewlyCreatedDirectoryOwner(fullPath);
+            return true;
+        }
+
+        var error = Marshal.GetLastWin32Error();
+        if (error is ErrorFileExists or ErrorAlreadyExists)
+        {
+            return false;
+        }
+
+        throw new IOException(
+            "The setup data directory could not be created atomically.",
+            new Win32Exception(error));
+    }
+
+    public void ValidateDataDirectoryBeforeAccess(
+        string path,
+        bool allowLegacyLocalService) =>
+        ValidateExistingDirectory(
+            Path.GetFullPath(path),
+            allowServiceSid: true,
+            allowLocalService: allowLegacyLocalService);
 
     public void CopyFile(string source, string destination, bool overwrite) =>
         File.Copy(Path.GetFullPath(source), Path.GetFullPath(destination), overwrite);
@@ -606,6 +669,121 @@ public sealed class PhysicalSetupFileSystem : ISetupFileSystem
         IEnumerable<SecurityIdentifier> allowedOwners) =>
         allowedOwners.Contains(owner);
 
+    private static void ValidateNewlyCreatedDirectoryOwner(string path)
+    {
+        var allowedOwners = new List<SecurityIdentifier>
+        {
+            new(WellKnownSidType.LocalSystemSid, null),
+            new(WellKnownSidType.BuiltinAdministratorsSid, null)
+        };
+        using var currentIdentity = WindowsIdentity.GetCurrent();
+        if (currentIdentity.User is not null)
+        {
+            allowedOwners.Add(currentIdentity.User);
+        }
+
+        var owner = new DirectoryInfo(path)
+            .GetAccessControl(AccessControlSections.Owner)
+            .GetOwner(typeof(SecurityIdentifier)) as SecurityIdentifier;
+        if (owner is null || !IsAllowedOwner(owner, allowedOwners))
+        {
+            throw new SetupException(
+                SetupErrorCodes.PathUntrusted,
+                "새 데이터 폴더의 소유자가 생성 프로세스와 일치하지 않습니다.");
+        }
+    }
+
+    private static void EnsureTrustedParentHierarchy(string path)
+    {
+        var parentPath = Path.GetDirectoryName(path) ??
+                         throw new SetupException(
+                             SetupErrorCodes.PathInvalid,
+                             "The setup data directory does not have a valid parent path.");
+        var missingParents = new Stack<string>();
+        var current = parentPath;
+        while (!Directory.Exists(current))
+        {
+            if (File.Exists(current))
+            {
+                throw new SetupException(
+                    SetupErrorCodes.PathUntrusted,
+                    "A required setup data parent path is not a directory.");
+            }
+
+            missingParents.Push(current);
+            current = Path.GetDirectoryName(current) ??
+                      throw new SetupException(
+                          SetupErrorCodes.PathInvalid,
+                          "The setup data directory parent hierarchy is invalid.");
+        }
+
+        ValidateTrustedParentDirectory(current);
+        while (missingParents.TryPop(out var missingParent))
+        {
+            // Revalidate the known parent immediately before each native
+            // creation. If another process wins a previously missing name, do
+            // not adopt or modify that directory.
+            ValidateTrustedParentDirectory(current);
+            if (!CreateDirectoryNative(missingParent, IntPtr.Zero))
+            {
+                var error = Marshal.GetLastWin32Error();
+                if (error is ErrorFileExists or ErrorAlreadyExists)
+                {
+                    throw new SetupException(
+                        SetupErrorCodes.PathUntrusted,
+                        "A required setup data parent was created by another process.");
+                }
+
+                throw new IOException(
+                    "A required setup data parent could not be created atomically.",
+                    new Win32Exception(error));
+            }
+
+            if (!IsEmptyNonReparseDirectory(missingParent))
+            {
+                throw new SetupException(
+                    SetupErrorCodes.PathUntrusted,
+                    "A newly created setup data parent changed unexpectedly.");
+            }
+
+            ValidateNewlyCreatedDirectoryOwner(missingParent);
+            current = missingParent;
+        }
+
+        // Keep this adjacent to the final CreateDirectoryW call. This does not
+        // replace exclusive creation of the product data directory itself.
+        ValidateTrustedParentDirectory(parentPath);
+    }
+
+    private static void ValidateTrustedParentDirectory(string path)
+    {
+        try
+        {
+            var attributes = File.GetAttributes(path);
+            if ((attributes & FileAttributes.Directory) == 0 ||
+                IsReparsePoint(attributes))
+            {
+                throw new SetupException(
+                    SetupErrorCodes.PathUntrusted,
+                    "A required setup data parent is not a trusted directory.");
+            }
+
+            ValidateNewlyCreatedDirectoryOwner(path);
+        }
+        catch (SetupException)
+        {
+            throw;
+        }
+        catch (Exception exception) when (
+            exception is IOException or UnauthorizedAccessException or SecurityException)
+        {
+            throw new SetupException(
+                SetupErrorCodes.PathUntrusted,
+                "A required setup data parent could not be validated.",
+                exception);
+        }
+    }
+
     internal static bool HasUntrustedWriteAccess(
         FileSystemSecurity security,
         IEnumerable<SecurityIdentifier> allowedOwners)
@@ -660,4 +838,14 @@ public sealed class PhysicalSetupFileSystem : ISetupFileSystem
             identity,
             rights,
             AccessControlType.Allow));
+
+    [DllImport(
+        "kernel32.dll",
+        EntryPoint = "CreateDirectoryW",
+        CharSet = CharSet.Unicode,
+        SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CreateDirectoryNative(
+        string lpPathName,
+        IntPtr lpSecurityAttributes);
 }

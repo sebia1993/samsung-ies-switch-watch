@@ -254,6 +254,234 @@ public sealed class WindowsServiceManagerTests
     }
 
     [Fact]
+    public void DecideStartAction_HandlesKnownScmStatesExplicitly()
+    {
+        Assert.Equal(
+            ServiceStartAction.Complete,
+            WindowsServiceManager.DecideStartAction(ServiceRunning));
+        Assert.Equal(
+            ServiceStartAction.Start,
+            WindowsServiceManager.DecideStartAction(ServiceStopped));
+        Assert.Equal(
+            ServiceStartAction.WaitForRunning,
+            WindowsServiceManager.DecideStartAction(ServiceStartPending));
+        Assert.Equal(
+            ServiceStartAction.WaitForStopped,
+            WindowsServiceManager.DecideStartAction(ServiceStopPending));
+    }
+
+    [Theory]
+    [InlineData(0u)]
+    [InlineData(5u)]
+    [InlineData(6u)]
+    [InlineData(7u)]
+    public void DecideStartAction_RejectsUnsupportedScmStates(uint currentState)
+    {
+        Assert.Equal(
+            ServiceStartAction.Reject,
+            WindowsServiceManager.DecideStartAction(currentState));
+    }
+
+    [Fact]
+    public void RunStartStateMachine_DoesNotMissAutomaticRestartAfterStopPending()
+    {
+        var states = new Queue<uint>(
+        [
+            ServiceStopPending,
+            ServiceStartPending,
+            ServiceRunning
+        ]);
+        var elapsed = TimeSpan.Zero;
+        var startRequests = 0;
+
+        WindowsServiceManager.RunStartStateMachine(
+            () => states.Dequeue(),
+            () =>
+            {
+                startRequests++;
+                return true;
+            },
+            TimeSpan.FromSeconds(1),
+            () => elapsed,
+            delay => elapsed += delay);
+
+        Assert.Equal(0, startRequests);
+        Assert.Empty(states);
+        Assert.True(elapsed < TimeSpan.FromSeconds(1));
+    }
+
+    [Fact]
+    public void RunStartStateMachine_StartsStoppedServiceAndUsesSameBudget()
+    {
+        var states = new Queue<uint>(
+        [
+            ServiceStopped,
+            ServiceStartPending,
+            ServiceRunning
+        ]);
+        var elapsed = TimeSpan.Zero;
+        var startRequests = 0;
+
+        WindowsServiceManager.RunStartStateMachine(
+            () => states.Dequeue(),
+            () =>
+            {
+                startRequests++;
+                return true;
+            },
+            TimeSpan.FromSeconds(1),
+            () => elapsed,
+            delay => elapsed += delay);
+
+        Assert.Equal(1, startRequests);
+        Assert.Empty(states);
+        Assert.True(elapsed < TimeSpan.FromSeconds(1));
+    }
+
+    [Fact]
+    public void RunStartStateMachine_StopPendingTimesOutWithinSingleBudget()
+    {
+        var elapsed = TimeSpan.Zero;
+        var stateReads = 0;
+
+        var exception = Assert.Throws<SetupException>(() =>
+            WindowsServiceManager.RunStartStateMachine(
+                () =>
+                {
+                    stateReads++;
+                    return ServiceStopPending;
+                },
+                () =>
+                {
+                    Assert.Fail("STOP_PENDING must not request a start.");
+                    return true;
+                },
+                TimeSpan.FromMilliseconds(450),
+                () => elapsed,
+                delay => elapsed += delay));
+
+        Assert.IsType<TimeoutException>(exception.InnerException);
+        Assert.Equal(TimeSpan.FromMilliseconds(450), elapsed);
+        Assert.InRange(stateReads, 2, 4);
+    }
+
+    [Fact]
+    public void RunStartStateMachine_PersistentStoppedAfterAcceptedStartDoesNotRequestAgain()
+    {
+        var elapsed = TimeSpan.Zero;
+        var startRequests = 0;
+
+        var exception = Assert.Throws<SetupException>(() =>
+            WindowsServiceManager.RunStartStateMachine(
+                () => ServiceStopped,
+                () =>
+                {
+                    startRequests++;
+                    return true;
+                },
+                TimeSpan.FromMilliseconds(450),
+                () => elapsed,
+                delay => elapsed += delay));
+
+        Assert.IsType<TimeoutException>(exception.InnerException);
+        Assert.Equal(1, startRequests);
+        Assert.Equal(TimeSpan.FromMilliseconds(450), elapsed);
+    }
+
+    [Fact]
+    public void RunStartStateMachine_RecurrentStoppedAfterAcceptedStartDoesNotRequestAgain()
+    {
+        var states = new Queue<uint>(
+        [
+            ServiceStopped,
+            ServiceStartPending,
+            ServiceStopped,
+            ServiceStopped
+        ]);
+        var elapsed = TimeSpan.Zero;
+        var startRequests = 0;
+
+        var exception = Assert.Throws<SetupException>(() =>
+            WindowsServiceManager.RunStartStateMachine(
+                () => states.Count > 0 ? states.Dequeue() : ServiceStopped,
+                () =>
+                {
+                    startRequests++;
+                    return true;
+                },
+                TimeSpan.FromMilliseconds(450),
+                () => elapsed,
+                delay => elapsed += delay));
+
+        Assert.IsType<TimeoutException>(exception.InnerException);
+        Assert.Equal(1, startRequests);
+        Assert.Equal(TimeSpan.FromMilliseconds(450), elapsed);
+    }
+
+    [Fact]
+    public void RunStartStateMachine_FailedConcurrentStartCanRequestAfterServiceStops()
+    {
+        var states = new Queue<uint>(
+        [
+            ServiceStopped,
+            ServiceStopPending,
+            ServiceStopped,
+            ServiceStartPending,
+            ServiceRunning
+        ]);
+        var elapsed = TimeSpan.Zero;
+        var startCalls = 0;
+
+        WindowsServiceManager.RunStartStateMachine(
+            () => states.Dequeue(),
+            () =>
+            {
+                startCalls++;
+                return startCalls > 1;
+            },
+            TimeSpan.FromSeconds(1),
+            () => elapsed,
+            delay => elapsed += delay);
+
+        Assert.Equal(2, startCalls);
+        Assert.Empty(states);
+    }
+
+    [Theory]
+    [InlineData(ServiceRunning, true)]
+    [InlineData(ServiceStartPending, true)]
+    [InlineData(ServiceStopPending, true)]
+    [InlineData(ServiceStopped, false)]
+    [InlineData(7u, false)]
+    public void FailedStartOnlyContinuesForObservedConcurrentTransition(
+        uint observedState,
+        bool expected)
+    {
+        Assert.Equal(
+            expected,
+            WindowsServiceManager.CanContinueAfterFailedStart(observedState));
+    }
+
+    [Theory]
+    [InlineData(0, 1000, false)]
+    [InlineData(999, 1000, false)]
+    [InlineData(1000, 1000, true)]
+    [InlineData(1001, 1000, true)]
+    [InlineData(0, 0, true)]
+    [InlineData(0, -1, true)]
+    public void HasReachedServiceOperationTimeout_UsesElapsedMonotonicBudget(
+        int elapsedMilliseconds,
+        int timeoutMilliseconds,
+        bool expected)
+    {
+        var timedOut = WindowsServiceManager.HasReachedServiceOperationTimeout(
+            TimeSpan.FromMilliseconds(elapsedMilliseconds),
+            TimeSpan.FromMilliseconds(timeoutMilliseconds));
+
+        Assert.Equal(expected, timedOut);
+    }
+
+    [Fact]
     public void FakeServiceManager_DisableAndConfigureRecoveryFollowContract()
     {
         var service = new FakeServiceManager(new ServiceSnapshot(

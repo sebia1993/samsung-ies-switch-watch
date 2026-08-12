@@ -7,6 +7,138 @@ namespace SamsungSwitchWatch.Agent.Setup.Tests;
 public sealed class AgentDeploymentOrchestratorTests
 {
     [Fact]
+    public async Task DeployAsync_FreshDataCreationRacePreservesForeignDirectoryWithoutAclOrDeletion()
+    {
+        using var folder = new TemporaryFolder();
+        var fixture = CreateFreshFixture(folder);
+        fixture.FileSystem.ExternalDataDirectoryRacePath =
+            fixture.Paths.DataDirectory;
+
+        var result = await fixture.CreateOrchestrator(ready: true).DeployAsync(
+            SetupConstants.CreateAutomaticRequest(),
+            CancellationToken.None);
+
+        Assert.False(result.Succeeded);
+        Assert.Equal(SetupErrorCodes.RollbackFailed, result.Code);
+        Assert.Equal(SetupErrorCodes.PathUntrusted, result.PrimaryFailureCode);
+        Assert.True(Directory.Exists(fixture.Paths.DataDirectory));
+        Assert.Equal(
+            "external",
+            File.ReadAllText(Path.Combine(
+                fixture.Paths.DataDirectory,
+                "foreign-owner.marker")));
+        Assert.DoesNotContain(
+            fixture.FileSystem.AccessRequests,
+            request => PhysicalSetupFileSystem.SamePath(
+                request.Path,
+                fixture.Paths.DataDirectory));
+        Assert.DoesNotContain(
+            fixture.FileSystem.DeleteDirectoryRequests,
+            path => PhysicalSetupFileSystem.SamePath(
+                path,
+                fixture.Paths.DataDirectory));
+
+        var pending = new DeploymentJournalStore(
+            fixture.FileSystem,
+            fixture.Paths).Read();
+        Assert.False(pending.DataDirectoryExistedBefore);
+        Assert.False(pending.DataDirectoryCreated);
+        Assert.Equal("data-directory-create-pending", pending.Stage);
+    }
+
+    [Fact]
+    public async Task DeployAsync_FreshDataDirectoryIsExclusivelyCreatedAndProtected()
+    {
+        using var folder = new TemporaryFolder();
+        var fixture = CreateFreshFixture(folder);
+
+        var result = await fixture.CreateOrchestrator(ready: true).DeployAsync(
+            SetupConstants.CreateAutomaticRequest(),
+            CancellationToken.None);
+
+        Assert.True(result.Succeeded);
+        Assert.Contains(
+            fixture.FileSystem.ExclusiveCreateRequests,
+            path => PhysicalSetupFileSystem.SamePath(
+                path,
+                fixture.Paths.DataDirectory));
+        Assert.Contains(
+            fixture.FileSystem.AccessRequests,
+            request => PhysicalSetupFileSystem.SamePath(
+                           request.Path,
+                           fixture.Paths.DataDirectory) &&
+                       request.Kind == DirectoryAccessKind.AgentDataModify);
+    }
+
+    [Fact]
+    public async Task DeployAsync_TrustedExistingDataDirectoryIsProtectedWithoutExclusiveCreation()
+    {
+        using var folder = new TemporaryFolder();
+        var fixture = CreateUpgradeFixture(folder);
+
+        var result = await fixture.CreateOrchestrator(ready: true).DeployAsync(
+            SetupConstants.CreateAutomaticRequest(),
+            CancellationToken.None);
+
+        Assert.True(result.Succeeded);
+        Assert.DoesNotContain(
+            fixture.FileSystem.ExclusiveCreateRequests,
+            path => PhysicalSetupFileSystem.SamePath(
+                path,
+                fixture.Paths.DataDirectory));
+        Assert.Contains(
+            fixture.FileSystem.AccessRequests,
+            request => PhysicalSetupFileSystem.SamePath(
+                           request.Path,
+                           fixture.Paths.DataDirectory) &&
+                       request.Kind == DirectoryAccessKind.AgentDataModify);
+    }
+
+    [Fact]
+    public async Task DeployAsync_ExistingDataDirectorySwapBeforeAclFailsClosed()
+    {
+        using var folder = new TemporaryFolder();
+        var fixture = CreateUpgradeFixture(folder);
+        fixture.FileSystem.BeforeDataAccessValidation = (path, _) =>
+        {
+            if (!PhysicalSetupFileSystem.SamePath(path, fixture.Paths.DataDirectory))
+            {
+                return;
+            }
+
+            Directory.Delete(path, recursive: true);
+            Directory.CreateDirectory(path);
+            File.WriteAllText(Path.Combine(path, "foreign-owner.marker"), "external");
+            throw new SetupException(
+                SetupErrorCodes.PathUntrusted,
+                "simulated data directory replacement");
+        };
+
+        var result = await fixture.CreateOrchestrator(ready: true).DeployAsync(
+            SetupConstants.CreateAutomaticRequest(),
+            CancellationToken.None);
+
+        Assert.False(result.Succeeded);
+        Assert.Equal(SetupErrorCodes.PathUntrusted, result.PrimaryFailureCode);
+        Assert.Contains(
+            fixture.FileSystem.DataAccessValidationRequests,
+            request => PhysicalSetupFileSystem.SamePath(
+                request.Path,
+                fixture.Paths.DataDirectory));
+        Assert.DoesNotContain(
+            fixture.FileSystem.AccessRequests,
+            request => PhysicalSetupFileSystem.SamePath(
+                           request.Path,
+                           fixture.Paths.DataDirectory) &&
+                       request.Kind == DirectoryAccessKind.AgentDataModify);
+        Assert.Equal(
+            "external",
+            File.ReadAllText(Path.Combine(
+                fixture.Paths.DataDirectory,
+                "foreign-owner.marker")));
+    }
+
+    [Fact]
     public async Task DeployAsync_OptionalServiceConfigurationFailuresWarnAndKeepWorkingAgent()
     {
         using var folder = new TemporaryFolder();

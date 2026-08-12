@@ -204,6 +204,7 @@ public sealed class WpfSmokeTests
                 Assert.Contains("로그인 확인", devices.ResultText.Text, StringComparison.Ordinal);
                 devices.Close();
                 VerifyDeviceManagementFailuresStayInsideWindow(folder);
+                VerifyClosingDeviceWindowCancelsConnectionTest(folder);
                 var mini = new MiniWindow(viewModel, true);
                 mini.Show();
                 mini.UpdateLayout();
@@ -314,6 +315,63 @@ public sealed class WpfSmokeTests
             [typeof(System.Windows.Controls.TextBlock)] =
                 new Style(typeof(System.Windows.Controls.TextBlock))
         };
+
+    private static void VerifyClosingDeviceWindowCancelsConnectionTest(string folder)
+    {
+        var clientFactory = new CancelThenSucceedAgentClientFactory();
+        var viewModel = new DashboardViewModel(
+            new ViewerSettings { DemoMode = true },
+            new ViewerSettingsStore(Path.Combine(folder, "close-settings.json")),
+            clientFactory,
+            SynchronizationContext.Current,
+            new ManagedDeviceStore(
+                Path.Combine(folder, "close-devices.json"),
+                new TestSecretProtector()));
+        var window = new DeviceManagementWindow(viewModel);
+        window.Show();
+        window.UpdateLayout();
+        window.DisplayNameTextBox.Text = "SW-CLOSE";
+        window.HostTextBox.Text = "192.0.2.25";
+        window.UsernameTextBox.Text = "operator";
+        window.PasswordBox.Password = "login-password";
+        window.EnablePasswordBox.Password = "enable-password";
+
+        window.TestButton.RaiseEvent(
+            new RoutedEventArgs(System.Windows.Controls.Button.ClickEvent));
+
+        Assert.True(clientFactory.Client.FirstTestStarted.Task.IsCompletedSuccessfully);
+        var statusAtClose = window.ResultText.Text;
+        window.Close();
+
+        clientFactory.Client.FirstTestCancellationObserved.Task
+            .WaitAsync(TimeSpan.FromSeconds(5))
+            .GetAwaiter()
+            .GetResult();
+        Assert.Empty(window.PasswordBox.Password);
+        Assert.Empty(window.EnablePasswordBox.Password);
+
+        var nextResult = viewModel.TestManagedDeviceAsync(DeviceDraft(
+                "SW-CLOSE-RETRY",
+                "192.0.2.25"))
+            .WaitAsync(TimeSpan.FromSeconds(5))
+            .GetAwaiter()
+            .GetResult();
+        DrainDispatcherQueue();
+
+        Assert.True(nextResult.Success);
+        Assert.Equal(2, clientFactory.Client.TestCount);
+        Assert.Equal(statusAtClose, window.ResultText.Text);
+        viewModel.DisposeAsync().AsTask().GetAwaiter().GetResult();
+    }
+
+    private static void DrainDispatcherQueue()
+    {
+        var frame = new System.Windows.Threading.DispatcherFrame();
+        System.Windows.Threading.Dispatcher.CurrentDispatcher.BeginInvoke(
+            System.Windows.Threading.DispatcherPriority.ApplicationIdle,
+            new Action(() => frame.Continue = false));
+        System.Windows.Threading.Dispatcher.PushFrame(frame);
+    }
 
     private static void VerifyDeviceManagementFailuresStayInsideWindow(string folder)
     {
@@ -861,6 +919,107 @@ public sealed class WpfSmokeTests
 
             public ValueTask DisposeAsync() => ValueTask.CompletedTask;
         }
+    }
+
+    private sealed class CancelThenSucceedAgentClientFactory : IAgentClientFactory
+    {
+        public CancelThenSucceedAgentClient Client { get; } = new();
+
+        public IAgentClient Create(ViewerSettings settings) => Client;
+    }
+
+    private sealed class CancelThenSucceedAgentClient : IAgentClient
+    {
+        private int _testCount;
+
+        public int TestCount => Volatile.Read(ref _testCount);
+        public TaskCompletionSource FirstTestStarted { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource FirstTestCancellationObserved { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public bool SupportsStatelessV4 => true;
+        public event EventHandler<AgentEventChangeDto>? EventChanged { add { } remove { } }
+        public event EventHandler<AgentConnectionState>? ConnectionStateChanged { add { } remove { } }
+
+        public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+
+        public Task<AgentIdentityDto> GetIdentityAsync(CancellationToken cancellationToken) =>
+            Task.FromResult(new AgentIdentityDto(
+                4,
+                "wpf-close-agent",
+                "wpf-close-instance",
+                new string('A', 64),
+                "https",
+                8,
+                65_536));
+
+        public async Task<TelnetExecutionResultDto> TestTelnetAsync(
+            TelnetTargetDto target,
+            CancellationToken cancellationToken)
+        {
+            if (Interlocked.Increment(ref _testCount) == 1)
+            {
+                FirstTestStarted.TrySetResult();
+                try
+                {
+                    await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    FirstTestCancellationObserved.TrySetResult();
+                    throw;
+                }
+            }
+
+            var now = DateTimeOffset.UtcNow;
+            return new TelnetExecutionResultDto(
+                4,
+                target.RequestId,
+                true,
+                "user",
+                ">",
+                now,
+                now,
+                0,
+                []);
+        }
+
+        public Task<TelnetExecutionResultDto> ExecuteTelnetAsync(
+            TelnetExecuteRequestDto request,
+            CancellationToken cancellationToken) =>
+            Task.FromException<TelnetExecutionResultDto>(new NotSupportedException());
+
+        public Task<AgentSnapshotDto> GetSnapshotAsync(CancellationToken cancellationToken) =>
+            Task.FromException<AgentSnapshotDto>(new NotSupportedException());
+
+        public Task<IReadOnlyList<SwitchEventDto>> GetRecentEventsAsync(
+            int limit,
+            CancellationToken cancellationToken) =>
+            Task.FromResult<IReadOnlyList<SwitchEventDto>>([]);
+
+        public Task<EventChangePageDto> GetEventChangesAsync(
+            long cursor,
+            int limit,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(new EventChangePageDto(cursor, cursor, false, []));
+
+        public Task<CommandResultDto> ExecuteRegisteredCheckAsync(
+            string deviceId,
+            string commandId,
+            CancellationToken cancellationToken) =>
+            Task.FromException<CommandResultDto>(new NotSupportedException());
+
+        public Task<ReadOnlyQueryResultDto> ExecuteReadOnlyQueryAsync(
+            string deviceId,
+            string command,
+            CancellationToken cancellationToken) =>
+            Task.FromException<ReadOnlyQueryResultDto>(new NotSupportedException());
+
+        public Task<bool> AcknowledgeAsync(
+            string eventId,
+            CancellationToken cancellationToken) => Task.FromResult(false);
+
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 
     private sealed class FaultingMonitoringPersistence : IViewerMonitoringPersistence

@@ -91,8 +91,19 @@ if ($vulnerabilityOutput -match '(?im)^\s*>\s+') {
 
 if (Get-Command git -ErrorAction SilentlyContinue) {
     Write-SswStep 'Git whitespace 검사'
-    & git -C $repoRoot diff --check
-    if ($LASTEXITCODE -ne 0) { throw 'git diff --check 실패' }
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        $gitWhitespaceOutput = @(& git -C $repoRoot diff --check 2>&1)
+        $gitWhitespaceExitCode = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+    if ($gitWhitespaceExitCode -ne 0) {
+        $gitWhitespaceOutput | ForEach-Object { Write-Host $_ }
+        throw 'git diff --check 실패'
+    }
 }
 
 Write-SswStep '검증 완료'

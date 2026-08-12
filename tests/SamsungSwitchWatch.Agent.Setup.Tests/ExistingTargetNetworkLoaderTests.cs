@@ -126,6 +126,8 @@ public sealed class ExistingTargetNetworkLoaderTests
             throw new NotSupportedException();
         public string ComputeSha256(string path) => throw new NotSupportedException();
         public void CreateDirectory(string path) => throw new NotSupportedException();
+        public bool TryCreateDirectoryExclusive(string path) =>
+            throw new NotSupportedException();
         public void CopyFile(string source, string destination, bool overwrite) =>
             throw new NotSupportedException();
         public void MoveDirectory(string source, string destination) =>
@@ -133,6 +135,9 @@ public sealed class ExistingTargetNetworkLoaderTests
         public void DeleteDirectory(string path, bool recursive) =>
             throw new NotSupportedException();
         public void DeleteFile(string path) => throw new NotSupportedException();
+        public void ValidateDataDirectoryBeforeAccess(
+            string path,
+            bool allowLegacyLocalService) => throw new NotSupportedException();
         public void EnsureDirectoryAccess(string path, DirectoryAccessKind accessKind) =>
             throw new NotSupportedException();
         public bool CanCreateUnder(string path) => throw new NotSupportedException();

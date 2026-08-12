@@ -558,6 +558,97 @@ public sealed class ViewerMonitoringIntegrationTests
     }
 
     [Fact]
+    public async Task AutomaticMonitoring_TimeoutAdvancesOneCandidatePerLaterCycleAndPinsLastCandidate()
+    {
+        var folder = TemporaryFolder();
+        try
+        {
+            var devices = CreateVerifiedDevices(folder, 1);
+            var monitoringStore = new ViewerMonitoringStore(Path.Combine(folder, "monitor.json"));
+            var client = new TimeoutCandidateProgressionClient();
+            var viewModel = CreateViewModel(folder, devices, client, monitoringStore);
+            try
+            {
+                await viewModel.InitializeAsync();
+                await WaitUntilAsync(() =>
+                {
+                    var capabilities = Assert.Single(viewModel.Devices).Capabilities;
+                    return client.ExecuteRequests.Count == 2
+                           && capabilities.Any(item =>
+                               item.CommandId == "interface_status"
+                               && item.State == "Unavailable"
+                               && item.SelectedCli == "show port status")
+                           && capabilities.Any(item =>
+                               item.CommandId == "log_ram"
+                               && item.State == "Unavailable"
+                               && item.SelectedCli == "show sylog tail num 100");
+                });
+
+                Assert.Equal(
+                    ["show port status", "show sylog tail num 100"],
+                    client.ExecuteRequests.Select(request => Assert.Single(request.Commands)).ToArray());
+
+                await viewModel.RunMonitoringCycleAsync();
+
+                var secondCycleRequests = client.ExecuteRequests.ToArray();
+                Assert.Equal(4, secondCycleRequests.Length);
+                Assert.Equal(
+                    ["show interfaces status", "show syslog tail num 100"],
+                    secondCycleRequests.Skip(2)
+                        .Select(request => Assert.Single(request.Commands))
+                        .ToArray());
+                var secondCycleCapabilities = Assert.Single(viewModel.Devices).Capabilities;
+                var readyPort = Assert.Single(
+                    secondCycleCapabilities,
+                    item => item.CommandId == "interface_status");
+                Assert.Equal("Ready", readyPort.State);
+                Assert.Equal("show interfaces status", readyPort.SelectedCli);
+                Assert.Equal("show interfaces status", readyPort.LastSuccessfulCli);
+                var unavailableLog = Assert.Single(
+                    secondCycleCapabilities,
+                    item => item.CommandId == "log_ram");
+                Assert.Equal("Unavailable", unavailableLog.State);
+                Assert.Equal("show syslog tail num 100", unavailableLog.SelectedCli);
+
+                await viewModel.RunMonitoringCycleAsync();
+
+                var thirdCycleRequests = client.ExecuteRequests.ToArray();
+                Assert.Equal(6, thirdCycleRequests.Length);
+                Assert.Equal(
+                    ["show interfaces status", "show log ram"],
+                    thirdCycleRequests.Skip(4)
+                        .Select(request => Assert.Single(request.Commands))
+                        .ToArray());
+
+                await viewModel.RunMonitoringCycleAsync();
+
+                var fourthCycleRequests = client.ExecuteRequests.ToArray();
+                Assert.Equal(8, fourthCycleRequests.Length);
+                Assert.Equal(
+                    ["show interfaces status", "show log ram"],
+                    fourthCycleRequests.Skip(6)
+                        .Select(request => Assert.Single(request.Commands))
+                        .ToArray());
+                var pinnedLog = Assert.Single(
+                    Assert.Single(viewModel.Devices).Capabilities,
+                    item => item.CommandId == "log_ram");
+                Assert.Equal("Unavailable", pinnedLog.State);
+                Assert.Equal("COMMAND_TIMEOUT", pinnedLog.ErrorCode);
+                Assert.Equal("show log ram", pinnedLog.SelectedCli);
+                Assert.Null(pinnedLog.LastSuccessfulCli);
+            }
+            finally
+            {
+                await viewModel.DisposeAsync();
+            }
+        }
+        finally
+        {
+            Directory.Delete(folder, true);
+        }
+    }
+
+    [Fact]
     public async Task AgentSwitch_DuringCapabilityFallback_KeepsNewSessionAwaitingFreshResult()
     {
         var folder = TemporaryFolder();
@@ -2272,6 +2363,37 @@ public sealed class ViewerMonitoringIntegrationTests
                         30_000,
                         true,
                         isPortStatus ? 0 : 1));
+            }
+
+            return Task.FromResult(Result(request.RequestId, NormalOutputs(request)));
+        }
+    }
+
+    private sealed class TimeoutCandidateProgressionClient : StatelessClientBase
+    {
+        public ConcurrentQueue<TelnetExecuteRequestDto> ExecuteRequests { get; } = new();
+
+        public override Task<TelnetExecutionResultDto> ExecuteTelnetAsync(
+            TelnetExecuteRequestDto request,
+            CancellationToken cancellationToken)
+        {
+            ExecuteRequests.Enqueue(request);
+            var command = Assert.Single(request.Commands);
+            var isPrimaryPortCommand = command.Equals(
+                "show port status",
+                StringComparison.OrdinalIgnoreCase);
+            var isLogCommand = command.Contains("log", StringComparison.OrdinalIgnoreCase)
+                               || command.Contains("sylog", StringComparison.OrdinalIgnoreCase);
+            if (isPrimaryPortCommand || isLogCommand)
+            {
+                throw new AgentClientException(
+                    "COMMAND_TIMEOUT",
+                    AgentConnectionState.Stale,
+                    details: new AgentErrorDetails(
+                        "command-idle",
+                        30_000,
+                        true,
+                        0));
             }
 
             return Task.FromResult(Result(request.RequestId, NormalOutputs(request)));
