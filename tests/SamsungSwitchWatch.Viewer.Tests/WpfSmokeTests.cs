@@ -9,6 +9,13 @@ using System.Windows.Automation;
 
 namespace SamsungSwitchWatch.Viewer.Tests;
 
+[CollectionDefinition(Name, DisableParallelization = true)]
+public sealed class WpfSmokeCollection
+{
+    public const string Name = "WPF smoke";
+}
+
+[Collection(WpfSmokeCollection.Name)]
 public sealed class WpfSmokeTests
 {
     [Fact]
@@ -233,7 +240,9 @@ public sealed class WpfSmokeTests
         thread.Name = "SamsungSwitchWatch-WpfSmoke";
         thread.SetApartmentState(ApartmentState.STA);
         thread.Start();
-        var timeout = TimeSpan.FromSeconds(30);
+        // Cold WPF resource loading is CPU-bound on shared Windows runners. Keep
+        // this collection isolated and retain a bounded allowance for that cold start.
+        var timeout = TimeSpan.FromSeconds(60);
         Assert.True(
             thread.Join(timeout),
             $"WPF smoke thread did not finish within {timeout.TotalSeconds:0} seconds. "
