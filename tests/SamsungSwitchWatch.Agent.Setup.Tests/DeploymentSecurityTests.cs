@@ -8,6 +8,34 @@ namespace SamsungSwitchWatch.Agent.Setup.Tests;
 public sealed class DeploymentSecurityTests
 {
     [Fact]
+    public void TryCreateDirectoryExclusive_CreatesOnlyOnce()
+    {
+        using var folder = new TemporaryFolder();
+        var path = folder.Combine("exclusive-data");
+        var fileSystem = new PhysicalSetupFileSystem();
+
+        Assert.True(fileSystem.TryCreateDirectoryExclusive(path));
+        Assert.True(Directory.Exists(path));
+        Assert.False(fileSystem.TryCreateDirectoryExclusive(path));
+    }
+
+    [Fact]
+    public void TryCreateDirectoryExclusive_CreatesMissingTrustedParentHierarchy()
+    {
+        using var folder = new TemporaryFolder();
+        var parent = Path.Combine(folder.Path, "missing-vendor", "product");
+        var path = Path.Combine(parent, "exclusive-data");
+        var fileSystem = new PhysicalSetupFileSystem();
+
+        Assert.True(fileSystem.TryCreateDirectoryExclusive(path));
+
+        Assert.True(Directory.Exists(parent));
+        Assert.True(Directory.Exists(path));
+        Assert.Empty(Directory.EnumerateFileSystemEntries(path));
+        Assert.False(fileSystem.TryCreateDirectoryExclusive(path));
+    }
+
+    [Fact]
     public void WriteAllTextAtomic_CreatesAndReplacesUtf8WithoutLeavingTemporaryFiles()
     {
         using var folder = new TemporaryFolder();

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the Korean Samsung Switch Watch v0.11.7 operator manual.
+"""Build the Korean Samsung Switch Watch v0.11.8 operator manual.
 
 The manual is intentionally generated from sanitized, deterministic WPF
 screenshots. It never needs a company switch, a real IP address, or a secret.
@@ -20,7 +20,7 @@ from docx.oxml.ns import qn
 from docx.shared import Inches, Pt, RGBColor
 
 
-VERSION = "0.11.7-poc"
+VERSION = "0.11.8-poc"
 DOCUMENT_DATE = "2026-08-12"
 FONT = "맑은 고딕"
 MONO = "Consolas"
@@ -115,7 +115,10 @@ def set_repeat_table_header(row):
 def prevent_table_row_split(row):
     tr_pr = row._tr.get_or_add_trPr()
     cant_split = OxmlElement("w:cantSplit")
-    cant_split.set(qn("w:val"), "true")
+    # Word's pagination is more reliable with the canonical numeric on/off
+    # value here. This keeps a troubleshooting row from being cut between two
+    # PDF pages when the table spans several pages.
+    cant_split.set(qn("w:val"), "1")
     tr_pr.append(cant_split)
 
 
@@ -721,7 +724,8 @@ def build_manual(output_path: Path, images_dir: Path):
         "포트 상태와 시스템 로그는 순차적인 개별 세션으로 수집합니다. 명령 시간 초과·출력 한도는 "
         "실패한 항목만 확인 불가로 표시하고 다른 항목을 계속 확인합니다. 명령은 30초 동안 새 응답이 "
         "없으면 중단하고, 출력이 계속되어도 전체 90초를 넘기지 않습니다. 같은 실패 명령은 현재 "
-        "주기에서 즉시 재시도하지 않습니다. 인증·enable·TCP·세션 종료는 반복 로그인을 막기 위해 "
+        "주기에서 즉시 재시도하지 않습니다. COMMAND_TIMEOUT 또는 QUERY_TIMEOUT이면 다음 점검 "
+        "주기에 다음 읽기 전용 후보를 한 번 시도합니다. 인증·enable·TCP·세션 종료는 반복 로그인을 막기 위해 "
         "해당 장비 주기를 중단합니다. 이번 POC의 자동 감시 검증·지원 범위는 등록 장비 10대 이하입니다.",
         "info",
     )
@@ -893,6 +897,9 @@ Viewer 허용 범위      : 10/8, 172.16/12, 192.168/16
         "종료를 확인하고 프로그램 폴더의 일시적 잠금만 최대 5회 제한적으로 재시도합니다. "
         "staging·backup·failed·journal 정리가 잠시 실패하면 정확히 검증된 대상만 최대 3회 "
         "시도하고 실패한 시도 사이 250ms 대기한 뒤 삭제 결과를 확인합니다. "
+        "journal은 원자적으로 교체하며 교체가 완료된 뒤 임시 파일 정리만 실패해도 저장 완료를 "
+        "실패로 되돌리지 않습니다. 새 ProgramData 제품 루트는 원자적 생성에 성공한 경우에만 "
+        "ACL과 파일을 쓰므로 검사 직후 다른 프로세스가 만든 폴더는 수정하지 않습니다. "
         "변경 자체의 복구까지 실패하면 최초 설치 실패 코드를 별도로 유지하고 SETUP_ROLLBACK_FAILED와 "
         "실패한 ROLLBACK_* 단계를 함께 표시합니다.",
         "info",
@@ -922,7 +929,9 @@ Viewer 허용 범위      : 10/8, 172.16/12, 192.168/16
         "fail-closed로 중단합니다. 서비스 설명, 자동 복구 정책 또는 제한 DACL 적용만 실패하면 "
         "SETUP_SERVICE_DESCRIPTION_WARNING, SETUP_SERVICE_RECOVERY_POLICY_WARNING 또는 "
         "SETUP_SERVICE_DACL_WARNING을 남기고 계속합니다. 이 경우에도 핵심 구성과 Running 상태는 "
-        "반드시 확인합니다.",
+        "반드시 확인합니다. START_PENDING은 중복 시작 없이 기다리고, STOP_PENDING은 중지가 끝난 "
+        "뒤 한 번만 시작합니다. 시스템 시각 변경의 영향을 받지 않는 제한 시간 안에 완료되지 않으면 "
+        "SETUP_SERVICE_START_FAILED로 중단합니다.",
         "info",
     )
     add_callout(
@@ -1170,6 +1179,14 @@ Viewer 허용 범위      : 10/8, 172.16/12, 192.168/16
         title="장비 관리 창",
         alt_text="장비명, 모델, IPv4, 계정 ID, 로그인 비밀번호, enable 비밀번호와 감시 설정을 입력하는 창",
         caption="그림 6. Viewer가 보관하는 장비 및 계정 입력 화면",
+    )
+    add_callout(
+        doc,
+        "중복 실행과 창 닫기",
+        "포트 상태/시스템 로그 수동 점검과 직접 입력한 읽기 전용 명령은 동시에 하나만 실행됩니다. 하나가 실행 중이면 다른 "
+        "실행 버튼은 잠시 비활성화되며 뒤에서 다시 실행되지 않습니다. 장비 관리 창을 닫으면 진행 "
+        "중인 연결을 취소하고 화면의 로그인 PW와 enable PW를 즉시 지웁니다.",
+        "info",
     )
     add_unnumbered_heading(
         doc,
@@ -1419,10 +1436,7 @@ Viewer 허용 범위      : 10/8, 172.16/12, 192.168/16
         "Viewer PC와 Agent PC는 관리망에서만 사용하고, 일반 사용자 VLAN이나 인터넷을 거쳐 Telnet을 사용하지 마세요.",
         "danger",
     )
-    add_table(
-        doc,
-        ["표시 코드/증상", "확인 순서"],
-        [
+    troubleshooting_rows = [
             ("AGENT_DNS_FAILED", "입력한 Agent PC 이름 → 사내 DNS → IPv4 직접 입력"),
             ("AGENT_CONNECTION_REFUSED", "실제 Agent PC 주소 → 서비스 Running → 원격 TCP/18443"),
             ("AGENT_CLIENT_NOT_ALLOWED", "Viewer 주소가 10/8, 172.16/12 또는 192.168/16인지 확인"),
@@ -1485,7 +1499,25 @@ Viewer 허용 범위      : 10/8, 172.16/12, 192.168/16
             ("VIEWER_MONITOR_STATE_UNAVAILABLE", "자동 감시가 중지됨. Viewer 사용자 폴더 권한·파일 잠금 확인 후 재시작"),
             ("VIEWER_MONITOR_STATE_WRITE_FAILED", "장비 설정은 저장될 수 있음. 중복 등록하지 말고 감시 이력 파일 권한·잠금·디스크 확인"),
             ("VIEWER_MONITOR_CYCLE_FAILED", "다음 주기 재시도를 기다리고 반복되면 Viewer 진단 로그 확인"),
-        ],
+    ]
+    monitor_rows_start = next(
+        index
+        for index, row in enumerate(troubleshooting_rows)
+        if row[0] == "VIEWER_MONITOR_STATE_CORRUPT"
+    )
+    add_table(
+        doc,
+        ["표시 코드/증상", "확인 순서"],
+        troubleshooting_rows[:monitor_rows_start],
+        [4300, 5060],
+        header_size=8.5,
+        body_size=8.25,
+        body_line=1.0,
+    )
+    add_table(
+        doc,
+        ["표시 코드/증상", "확인 순서"],
+        troubleshooting_rows[monitor_rows_start:],
         [4300, 5060],
         header_size=8.5,
         body_size=8.25,

@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.ComponentModel;
 using System.Security.Cryptography;
 using System.Text;
 using System.Windows;
@@ -13,6 +14,7 @@ public partial class DeviceManagementWindow : Window
 {
     private readonly DashboardViewModel _dashboard;
     private readonly ObservableCollection<ManagedDeviceProfile> _devices = [];
+    private readonly CancellationTokenSource _lifetimeCancellation = new();
     private string? _editingId;
     private string? _successfulTestSignature;
     private string? _failedTestSignature;
@@ -20,6 +22,7 @@ public partial class DeviceManagementWindow : Window
     private DateTimeOffset? _lastTestUtc;
     private bool _busy;
     private bool _suppressSelectionChange;
+    private bool _closingOrClosed;
 
     public DeviceManagementWindow(DashboardViewModel dashboard)
     {
@@ -28,7 +31,31 @@ public partial class DeviceManagementWindow : Window
         ModelComboBox.ItemsSource = SupportedSwitchModels.All;
         DeviceList.ItemsSource = _devices;
         Loaded += (_, _) => InitializeWindow();
-        Closed += (_, _) => RefreshDashboardAfterClose();
+        Closing += OnClosing;
+        Closed += OnClosed;
+    }
+
+    private void OnClosing(object? sender, CancelEventArgs e)
+    {
+        if (_closingOrClosed) return;
+
+        _closingOrClosed = true;
+        _lifetimeCancellation.Cancel();
+        ClearPasswordInputs();
+    }
+
+    private void OnClosed(object? sender, EventArgs e)
+    {
+        _closingOrClosed = true;
+        ClearPasswordInputs();
+        _lifetimeCancellation.Dispose();
+        RefreshDashboardAfterClose();
+    }
+
+    private void ClearPasswordInputs()
+    {
+        PasswordBox.Clear();
+        EnablePasswordBox.Clear();
     }
 
     private void FitToWorkingArea()
@@ -197,9 +224,12 @@ public partial class DeviceManagementWindow : Window
         }
 
         SetBusy(true, "로그인 확인 중…");
+        var lifetimeToken = _lifetimeCancellation.Token;
         try
         {
-            var result = await _dashboard.TestManagedDeviceAsync(draft);
+            var result = await _dashboard.TestManagedDeviceAsync(draft, lifetimeToken);
+            if (_closingOrClosed || lifetimeToken.IsCancellationRequested) return;
+
             draft.ConnectionVerified = result.Success;
             MonitoringCheckBox.IsEnabled = result.Success;
             if (!result.Success)
@@ -218,8 +248,14 @@ public partial class DeviceManagementWindow : Window
             _lastTestUtc = DateTimeOffset.UtcNow;
             ShowResult($"로그인 확인 성공 · 권한 {result.Privilege} · {result.DurationMs:N0}ms", true);
         }
+        catch (OperationCanceledException) when (lifetimeToken.IsCancellationRequested)
+        {
+            // Closing the window intentionally cancels the in-flight login check.
+        }
         catch (Exception exception)
         {
+            if (_closingOrClosed) return;
+
             _successfulTestSignature = null;
             _failedTestSignature = BuildConnectionSignature(draft);
             MonitoringCheckBox.IsChecked = false;
@@ -247,7 +283,7 @@ public partial class DeviceManagementWindow : Window
         }
         finally
         {
-            SetBusy(false);
+            if (!_closingOrClosed) SetBusy(false);
         }
     }
 

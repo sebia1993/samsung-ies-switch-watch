@@ -577,19 +577,44 @@ public sealed class AgentDeploymentOrchestrator(
             }
             if (!dataDirectoryExistedBefore)
             {
-                dataDirectoryCreated = true;
                 journal = journal with
                 {
                     Stage = "data-directory-create-pending",
-                    DataDirectoryCreated = true
+                    DataDirectoryCreated = false
                 };
                 journalStore.Write(journal);
+
+                if (!fileSystem.TryCreateDirectoryExclusive(paths.DataDirectory))
+                {
+                    throw new SetupException(
+                        SetupErrorCodes.PathUntrusted,
+                        "데이터 폴더 생성 중 다른 프로세스가 같은 경로를 먼저 만들었습니다. 해당 폴더는 변경하지 않았습니다.");
+                }
+
+                dataDirectoryCreated = true;
+                journal = journal with { DataDirectoryCreated = true };
+                journalStore.Write(journal);
+            }
+            else if (!fileSystem.DirectoryExists(paths.DataDirectory))
+            {
+                throw new SetupException(
+                    SetupErrorCodes.PathUntrusted,
+                    "검증한 기존 데이터 폴더가 설치 중 사라져 작업을 계속할 수 없습니다.");
             }
 
-            fileSystem.CreateDirectory(paths.DataDirectory);
             fileSystem.EnsureDirectoryAccess(
                 paths.InstallDirectory,
                 DirectoryAccessKind.ProgramReadExecute);
+            if (dataDirectoryExistedBefore)
+            {
+                // Preflight trust is not durable across activation and service
+                // configuration. Revalidate immediately before the first data
+                // root ACL mutation so a replacement fails closed.
+                fileSystem.ValidateDataDirectoryBeforeAccess(
+                    paths.DataDirectory,
+                    ServiceAccountContract.AllowsLegacyLocalServiceDataOwner(
+                        previousService));
+            }
             fileSystem.EnsureDirectoryAccess(
                 paths.DataDirectory,
                 DirectoryAccessKind.AgentDataModify);
@@ -2821,7 +2846,7 @@ public sealed class AgentDeploymentOrchestrator(
             "data-directory-create-pending" =>
                 pending.MutationStarted &&
                 pending.StagingActivated &&
-                pending.DataDirectoryCreated,
+                !pending.DataDirectoryExistedBefore,
             "service-configured" or
             "firewall-configured" or
             "service-started" or

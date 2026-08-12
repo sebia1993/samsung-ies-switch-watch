@@ -6,7 +6,7 @@
 ## 1. 반입 파일과 버전
 
 - [ ] 동일 GitHub Release에서 Agent ZIP과 Viewer ZIP을 받음
-- [ ] Agent와 Viewer 파일명이 같은 `0.11.7-poc` 버전을 표시함
+- [ ] Agent와 Viewer 파일명이 같은 `0.11.8-poc` 버전을 표시함
 - [ ] 두 ZIP의 SHA-256을 해당 GitHub Release 본문에 표시된 값과 비교함
 - [ ] Agent ZIP에 `SamsungSwitchWatch.Agent.Setup.exe`와 Agent 런타임 파일이 있음
 - [ ] Viewer ZIP에 `SamsungSwitchWatch.Viewer.Setup.exe`, `SamsungSwitchWatch.Viewer.exe`와 Viewer 런타임 파일이 있음
@@ -41,6 +41,9 @@ API v4가 호환되면 Agent와 Viewer 버전이 달라도 경고 후 연결할 
 - [ ] 기존 서비스 중지가 실패하면 `SETUP_SERVICE_STOP_FAILED`로 fail-closed 중단됨
 - [ ] 실행 경로·자동 시작·가상 계정 같은 핵심 구성이 실패하면 `SETUP_SERVICE_CONFIG_FAILED`로 중단됨
 - [ ] 실제 서비스 시작이 실패하면 `SETUP_SERVICE_START_FAILED`로 fail-closed 중단됨
+- [ ] 서비스가 `START_PENDING`이면 중복 시작 요청 없이 제한 시간 안에 Running을 기다림
+- [ ] 서비스가 `STOP_PENDING`이면 중지가 끝난 뒤 한 번만 시작하며 시스템 시각 변경에도 대기
+      한도가 늘어나지 않음
 - [ ] 서비스 설명만 실패하면 `SETUP_SERVICE_DESCRIPTION_WARNING`을 남기고 핵심 설치를 계속함
 - [ ] 자동 복구 정책만 실패하면 `SETUP_SERVICE_RECOVERY_POLICY_WARNING`을 남기고 핵심 설치를 계속함
 - [ ] 제한 DACL 적용만 실패하면 `SETUP_SERVICE_DACL_WARNING`을 남기고 핵심 설치를 계속함
@@ -202,8 +205,12 @@ HTTPS는 전송 내용을 암호화하지만 Agent 신원을 인증하지 않습
 - [ ] 원격 종료 시 남은 명령만 새 세션에서 최대 한 번 재시도함
 - [ ] 인증 또는 enable 실패를 자동 재시도하지 않음
 - [ ] 명령 시간 초과를 자동 재시도하지 않음
+- [ ] `COMMAND_TIMEOUT` 또는 `QUERY_TIMEOUT` 후보 실패는 같은 점검에서 재접속하지 않고 다음
+      주기에 다음 후보를 한 번 시도함
 - [ ] Viewer 취소 후 세션이 남지 않음
 - [ ] 장비 한 대에서 중복 실행이 직렬화됨
+- [ ] `포트 상태/시스템 로그 수동 점검`과 직접 입력한 읽기 전용 명령을 동시에 누를 수 없고 두 번째 작업이 대기열로 실행되지 않음
+- [ ] 장비 관리 창을 닫으면 진행 중인 로그인을 취소하고 로그인 PW와 enable PW를 지움
 - [ ] Agent 전체 동시 실행이 기본 최대 두 건임
 - [ ] 한 세션이 240초를 넘지 않음
 - [ ] 실패한 한 장비가 다른 장비 작업을 중단시키지 않음
@@ -270,7 +277,10 @@ Viewer가 종료되면 감시도 중단되는 구조가 현장 운영 요구와 
       핵심 서비스 상태가 확인된 복구는 완료되며 작업 기록이 정리됨
 - [ ] 서비스 실행 파일 경로·시작 유형·계정·표시 이름·서비스 SID·이전 실행 상태 중 하나라도
       복원하지 못하면 `ROLLBACK_SERVICE_RESTORE_FAILED`로 중단하고 journal과 이전 파일을 보존함
-- [ ] `0.11.4-poc`·`0.11.5-poc`·`0.11.6-poc`에서 남은 호환 journal을 `0.11.7-poc` Setup이 읽고 안전하게 복구함
+- [ ] `0.11.4-poc`·`0.11.5-poc`·`0.11.6-poc`·`0.11.7-poc`에서 남은 호환 journal을 `0.11.8-poc` Setup이 읽고 안전하게 복구함
+- [ ] 새 ProgramData 제품 루트 생성 직전에 다른 프로세스가 같은 폴더를 만들면 Setup이 해당
+      폴더의 ACL·내용을 변경하거나 rollback에서 삭제하지 않음
+- [ ] journal 원자 교체가 완료된 뒤 임시 파일 정리만 실패해도 저장 완료를 실패로 바꾸지 않음
 - [ ] 서비스 삭제 대기 상태에서는 최대 20초 안에 완료를 기다린 뒤 복구가 진행되거나 명확한
       실패로 끝나며, Setup이 무한 대기하지 않음
 - [ ] 서비스 중지 뒤 관찰한 서비스 프로세스 종료가 확인되기 전에는 프로그램 폴더를 이동하지 않음

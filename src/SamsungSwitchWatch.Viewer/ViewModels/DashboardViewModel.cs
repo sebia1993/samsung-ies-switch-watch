@@ -107,6 +107,7 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
     private readonly object _deviceOperationGateSync = new();
     private readonly object _deviceLifecycleSync = new();
     private readonly object _monitorLoopSync = new();
+    private readonly object _readOnlyQueryCancellationSync = new();
     private readonly Dictionary<string, EventViewModel> _eventsById = new(StringComparer.Ordinal);
     private readonly HashSet<string> _monitoringCredentialBlocks = new(StringComparer.Ordinal);
     private readonly Dictionary<string, SemaphoreSlim> _deviceOperationGates =
@@ -149,6 +150,7 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
     private string _readOnlyQueryHistoryDraft = string.Empty;
     private bool _movingReadOnlyQueryHistory;
     private CancellationTokenSource? _readOnlyQueryCancellation;
+    private int _manualDeviceOperationActive;
     private long _readOnlyQueryContextGeneration;
     private IReadOnlyList<OperationalStatusDto> _snapshotOperationalStatuses = [];
     private long _changeCursor;
@@ -231,6 +233,7 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
         ManualCheckCommand = new AsyncRelayCommand(
             ExecuteManualCheckAsync,
             () => !IsBusy
+                  && !IsManualDeviceOperationActive
                   && SelectedDevice is not null
                   && ConnectionState != AgentConnectionState.NeedsConnection
                   && (!_statelessV4 || IsManagedDeviceStoreOperational));
@@ -239,6 +242,7 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
             () => ReadOnlyQueriesEnabled
                   && !IsBusy
                   && !IsReadOnlyQueryRunning
+                  && !IsManualDeviceOperationActive
                   && SelectedDevice is not null
                   && ConnectionState != AgentConnectionState.NeedsConnection
                   && !string.IsNullOrWhiteSpace(ReadOnlyQueryCommand));
@@ -579,7 +583,7 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
             if (SetProperty(ref _selectedDevice, value))
             {
                 Interlocked.Increment(ref _readOnlyQueryContextGeneration);
-                _readOnlyQueryCancellation?.Cancel();
+                CancelActiveReadOnlyQuery();
                 ReadOnlyQueryOutput = string.Empty;
                 ReadOnlyQueryTruncated = false;
                 ReadOnlyQueryStatusText = "준비";
@@ -1781,6 +1785,16 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
                     OnPropertyChanged(nameof(LastSuccessfulReceiptText));
                 }).ConfigureAwait(false);
             }
+            catch (OperationCanceledException) when (
+                _lifetime.IsCancellationRequested ||
+                !ReferenceEquals(client, _client))
+            {
+                // Disposing an old Agent client is expected to cancel requests
+                // that were already in flight when a verified replacement was
+                // installed. Do not turn that lifecycle cancellation into an
+                // unhandled async-command failure. Unrelated cancellations are
+                // intentionally allowed to propagate.
+            }
             catch (Exception exception) when (exception is not OperationCanceledException)
             {
                 await SetUnavailableStateAsync(
@@ -1884,37 +1898,47 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
     {
         var device = SelectedDevice;
         if (device is null) return;
-        if (_statelessV4)
-        {
-            ReadOnlyQueryCommand = SelectedCheckId switch
-            {
-                "log_ram" => "show sylog tail num 100",
-                "interface_status" => "show port status",
-                "system" => "show system",
-                "version" => "show version",
-                _ => "show port status"
-            };
-            await ExecuteReadOnlyQueryAsync().ConfigureAwait(false);
-            return;
-        }
-        await RunOnUiAsync(() =>
-        {
-            IsBusy = true;
-            OperationMessage = $"{device.Name} · {SelectedCheckDisplayName} 점검 요청 중";
-        }).ConfigureAwait(false);
+        if (!TryBeginManualDeviceOperation()) return;
         try
         {
-            var result = await _client.ExecuteRegisteredCheckAsync(device.Id, SelectedCheckId, _lifetime.Token).ConfigureAwait(false);
-            await RunOnUiAsync(() => OperationMessage = result.Accepted ? result.Message : $"점검 거부 · {result.ErrorCode ?? "UNKNOWN"}").ConfigureAwait(false);
-            if (result.Accepted) _ = await RefreshSnapshotAndChangesAsync(true, _lifetime.Token).ConfigureAwait(false);
-        }
-        catch (Exception exception) when (exception is not OperationCanceledException)
-        {
-            await RunOnUiAsync(() => OperationMessage = $"점검 요청 실패 · {SafeMessage(exception)}").ConfigureAwait(false);
+            if (_statelessV4)
+            {
+                var command = SelectedCheckId switch
+                {
+                    "log_ram" => "show sylog tail num 100",
+                    "interface_status" => "show port status",
+                    "system" => "show system",
+                    "version" => "show version",
+                    _ => "show port status"
+                };
+                ReadOnlyQueryCommand = command;
+                await ExecuteReadOnlyQueryCoreAsync(device, command).ConfigureAwait(false);
+                return;
+            }
+
+            await RunOnUiAsync(() =>
+            {
+                IsBusy = true;
+                OperationMessage = $"{device.Name} · {SelectedCheckDisplayName} 점검 요청 중";
+            }).ConfigureAwait(false);
+            try
+            {
+                var result = await _client.ExecuteRegisteredCheckAsync(device.Id, SelectedCheckId, _lifetime.Token).ConfigureAwait(false);
+                await RunOnUiAsync(() => OperationMessage = result.Accepted ? result.Message : $"점검 거부 · {result.ErrorCode ?? "UNKNOWN"}").ConfigureAwait(false);
+                if (result.Accepted) _ = await RefreshSnapshotAndChangesAsync(true, _lifetime.Token).ConfigureAwait(false);
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                await RunOnUiAsync(() => OperationMessage = $"점검 요청 실패 · {SafeMessage(exception)}").ConfigureAwait(false);
+            }
+            finally
+            {
+                await RunOnUiAsync(() => IsBusy = false).ConfigureAwait(false);
+            }
         }
         finally
         {
-            await RunOnUiAsync(() => IsBusy = false).ConfigureAwait(false);
+            EndManualDeviceOperation();
         }
     }
 
@@ -1923,31 +1947,47 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
         var device = SelectedDevice;
         var command = ReadOnlyQueryCommand.Trim();
         if (device is null || !ReadOnlyQueriesEnabled || command.Length == 0) return;
-        if (!ManagedDeviceValidator.IsSingleShowCommand(command, ReadOnlyQueryMaxCommandLength))
+        if (!TryBeginManualDeviceOperation()) return;
+        try
+        {
+            if (!ManagedDeviceValidator.IsSingleShowCommand(command, ReadOnlyQueryMaxCommandLength))
+            {
+                await RunOnUiAsync(() =>
+                {
+                    ReadOnlyQueryStatusText = "실패 · QUERY_COMMAND_BLOCKED";
+                    ReadOnlyQueryResultMeta = "한 줄짜리 show 조회 명령만 입력할 수 있습니다.";
+                }).ConfigureAwait(false);
+                return;
+            }
+
+            await ExecuteReadOnlyQueryCoreAsync(device, command).ConfigureAwait(false);
+        }
+        finally
+        {
+            EndManualDeviceOperation();
+        }
+    }
+
+    private async Task ExecuteReadOnlyQueryCoreAsync(DeviceViewModel device, string command)
+    {
+        var cancellation = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
+        if (!TryOwnReadOnlyQueryCancellation(cancellation))
+        {
+            cancellation.Dispose();
+            return;
+        }
+        var queryContextGeneration = Interlocked.Read(ref _readOnlyQueryContextGeneration);
+        try
         {
             await RunOnUiAsync(() =>
             {
-                ReadOnlyQueryStatusText = "실패 · QUERY_COMMAND_BLOCKED";
-                ReadOnlyQueryResultMeta = "한 줄짜리 show 조회 명령만 입력할 수 있습니다.";
+                IsReadOnlyQueryRunning = true;
+                ReadOnlyQueryOutput = string.Empty;
+                ReadOnlyQueryTruncated = false;
+                ReadOnlyQueryStatusText = "장비 연결 및 조회 중";
+                ReadOnlyQueryResultMeta = $"{device.Name} · {command}";
             }).ConfigureAwait(false);
-            return;
-        }
 
-        var cancellation = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
-        var queryContextGeneration = Interlocked.Read(ref _readOnlyQueryContextGeneration);
-        _readOnlyQueryCancellation?.Dispose();
-        _readOnlyQueryCancellation = cancellation;
-        await RunOnUiAsync(() =>
-        {
-            IsReadOnlyQueryRunning = true;
-            ReadOnlyQueryOutput = string.Empty;
-            ReadOnlyQueryTruncated = false;
-            ReadOnlyQueryStatusText = "장비 연결 및 조회 중";
-            ReadOnlyQueryResultMeta = $"{device.Name} · {command}";
-        }).ConfigureAwait(false);
-
-        try
-        {
             ReadOnlyQueryResultDto result;
             if (_statelessV4 && _deviceStore is not null)
             {
@@ -2029,19 +2069,79 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
         }
         finally
         {
-            await RunOnUiAsync(() => IsReadOnlyQueryRunning = false).ConfigureAwait(false);
-            if (ReferenceEquals(Interlocked.CompareExchange(ref _readOnlyQueryCancellation, null, cancellation), cancellation))
+            try
             {
-                cancellation.Dispose();
+                await RunOnUiAsync(() => IsReadOnlyQueryRunning = false).ConfigureAwait(false);
+            }
+            finally
+            {
+                ReleaseReadOnlyQueryCancellation(cancellation);
             }
         }
+    }
+
+    private bool IsManualDeviceOperationActive =>
+        Volatile.Read(ref _manualDeviceOperationActive) != 0;
+
+    private bool TryBeginManualDeviceOperation()
+    {
+        if (Interlocked.CompareExchange(ref _manualDeviceOperationActive, 1, 0) != 0)
+        {
+            return false;
+        }
+
+        RunOnUi(NotifyCommandStates);
+        return true;
+    }
+
+    private void EndManualDeviceOperation()
+    {
+        if (Interlocked.Exchange(ref _manualDeviceOperationActive, 0) != 0)
+        {
+            RunOnUi(NotifyCommandStates);
+        }
+    }
+
+    private bool TryOwnReadOnlyQueryCancellation(CancellationTokenSource cancellation)
+    {
+        lock (_readOnlyQueryCancellationSync)
+        {
+            if (_readOnlyQueryCancellation is not null)
+            {
+                return false;
+            }
+
+            _readOnlyQueryCancellation = cancellation;
+            return true;
+        }
+    }
+
+    private void CancelActiveReadOnlyQuery()
+    {
+        lock (_readOnlyQueryCancellationSync)
+        {
+            _readOnlyQueryCancellation?.Cancel();
+        }
+    }
+
+    private void ReleaseReadOnlyQueryCancellation(CancellationTokenSource cancellation)
+    {
+        lock (_readOnlyQueryCancellationSync)
+        {
+            if (ReferenceEquals(_readOnlyQueryCancellation, cancellation))
+            {
+                _readOnlyQueryCancellation = null;
+            }
+        }
+
+        cancellation.Dispose();
     }
 
     private void CancelReadOnlyQuery()
     {
         if (!IsReadOnlyQueryRunning) return;
         ReadOnlyQueryStatusText = "취소 요청 중";
-        _readOnlyQueryCancellation?.Cancel();
+        CancelActiveReadOnlyQuery();
     }
 
     private void ClearReadOnlyQueryOutput()
@@ -2904,6 +3004,14 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
         ReadOnlyCommandDefinition definition,
         CollectorCapabilityDto? capability)
     {
+        if (capability is not null
+            && capability.State.Equals("Unavailable", StringComparison.OrdinalIgnoreCase)
+            && IsTimeoutCandidateFailure(capability.ErrorCode)
+            && TrySelectNextCandidate(definition.CandidateCommands, capability.SelectedCli, out var nextCandidate))
+        {
+            return nextCandidate;
+        }
+
         var selected = capability?.State.Equals("Ready", StringComparison.OrdinalIgnoreCase) == true
             ? capability.SelectedCli
             : capability?.LastSuccessfulCli;
@@ -2911,6 +3019,32 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
                && definition.CandidateCommands.Contains(selected, StringComparer.OrdinalIgnoreCase)
             ? selected
             : definition.Command;
+    }
+
+    private static bool IsTimeoutCandidateFailure(string? errorCode) => errorCode is
+        "COMMAND_TIMEOUT" or
+        "QUERY_TIMEOUT";
+
+    private static bool TrySelectNextCandidate(
+        IReadOnlyList<string> candidates,
+        string? current,
+        out string selected)
+    {
+        selected = string.Empty;
+        if (string.IsNullOrWhiteSpace(current) || candidates.Count == 0)
+        {
+            return false;
+        }
+
+        for (var index = 0; index < candidates.Count; index++)
+        {
+            if (!candidates[index].Equals(current, StringComparison.OrdinalIgnoreCase)) continue;
+
+            selected = candidates[Math.Min(index + 1, candidates.Count - 1)];
+            return true;
+        }
+
+        return false;
     }
 
     private DeviceSnapshotDto CreateManagedDeviceSnapshot(ManagedDeviceProfile profile)
@@ -4294,7 +4428,7 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
         _disposed = true;
         _allowLiveAlerts = false;
         _lifetime.Cancel();
-        _readOnlyQueryCancellation?.Cancel();
+        CancelActiveReadOnlyQuery();
         Interlocked.Increment(ref _settingsGeneration);
         UnsubscribeClient(_client);
 
@@ -4331,7 +4465,6 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
         }
 
         await DisposeClientBestEffortAsync(_client).ConfigureAwait(false);
-        Interlocked.Exchange(ref _readOnlyQueryCancellation, null)?.Dispose();
         lock (_settingsSync)
         {
             _settingsSaveCoordinator.TrySave(

@@ -553,10 +553,14 @@ public interface ISetupFileSystem
     void WriteAllTextAtomic(string path, string contents);
     string ComputeSha256(string path);
     void CreateDirectory(string path);
+    bool TryCreateDirectoryExclusive(string path);
     void CopyFile(string source, string destination, bool overwrite);
     void MoveDirectory(string source, string destination);
     void DeleteDirectory(string path, bool recursive);
     void DeleteFile(string path);
+    void ValidateDataDirectoryBeforeAccess(
+        string path,
+        bool allowLegacyLocalService);
     void EnsureDirectoryAccess(string path, DirectoryAccessKind accessKind);
     bool CanCreateUnder(string path);
     void ValidateDeploymentPaths(

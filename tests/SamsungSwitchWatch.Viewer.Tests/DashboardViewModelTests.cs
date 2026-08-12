@@ -878,6 +878,52 @@ public sealed class DashboardViewModelTests
     }
 
     [Fact]
+    public async Task RefreshAsync_OldStatelessClientCancellationAfterSuccessfulSwitchIsExpected()
+    {
+        var folder = Path.Combine(
+            Path.GetTempPath(),
+            "SamsungSwitchWatch-ViewerTests",
+            Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(folder);
+        try
+        {
+            var original = new FakeAgentClient
+            {
+                SupportsStatelessV4 = true,
+                BlockStartCall = 2,
+                CancelBlockedStartOnDispose = true
+            };
+            var replacement = new FakeAgentClient { SupportsStatelessV4 = true };
+            var store = new ViewerSettingsStore(Path.Combine(folder, "settings.json"));
+            var viewModel = new DashboardViewModel(
+                new ViewerSettings { DemoMode = true },
+                store,
+                new QueueFactory(original, replacement));
+            await viewModel.InitializeAsync();
+
+            viewModel.RefreshCommand.Execute(null);
+            await original.StartBlocked.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+            await viewModel.SwitchClientAsync(new ViewerSettings
+            {
+                DemoMode = false,
+                AgentUri = "https://replacement.example.test:18443"
+            });
+            await WaitUntilAsync(() => !viewModel.IsBusy);
+
+            Assert.True(original.DisposeCalled);
+            Assert.True(original.BlockedStartCancelled);
+            Assert.Equal(AgentConnectionState.Connected, viewModel.ConnectionState);
+            Assert.Contains("Agent 연결", viewModel.OperationMessage, StringComparison.Ordinal);
+            await viewModel.DisposeAsync();
+        }
+        finally
+        {
+            if (Directory.Exists(folder)) Directory.Delete(folder, true);
+        }
+    }
+
+    [Fact]
     public async Task RegisteredChecks_ShowKoreanLabelsButExecuteRawCommandId()
     {
         using var fixture = new ViewModelFixture();
@@ -1053,6 +1099,119 @@ public sealed class DashboardViewModelTests
         await WaitUntilAsync(() => !viewModel.IsReadOnlyQueryRunning);
 
         Assert.StartsWith("취소됨", viewModel.ReadOnlyQueryStatusText, StringComparison.Ordinal);
+        await viewModel.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task ReadOnlyQuery_RunningDisablesRegisteredCheckAndCancelRestoresBothEntryPoints()
+    {
+        using var fixture = new ViewModelFixture();
+        var now = DateTimeOffset.UtcNow;
+        fixture.Client.Snapshot = Snapshot(now, 0, [Device("a", DeviceHealth.Normal, now)]) with
+        {
+            ApiVersion = 3,
+            ReadOnlyQueriesEnabled = true
+        };
+        fixture.Client.BlockReadOnlyQuery = true;
+        var viewModel = fixture.CreateViewModel();
+        await viewModel.InitializeAsync();
+
+        viewModel.ExecuteReadOnlyQueryCommand.Execute(null);
+        await fixture.Client.ReadOnlyQueryStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.True(viewModel.IsReadOnlyQueryRunning);
+        Assert.False(viewModel.ExecuteReadOnlyQueryCommand.CanExecute(null));
+        Assert.False(viewModel.ManualCheckCommand.CanExecute(null));
+        Assert.True(viewModel.CancelReadOnlyQueryCommand.CanExecute(null));
+
+        viewModel.ManualCheckCommand.Execute(null);
+        Assert.Equal(0, fixture.Client.RegisteredCheckCalls);
+
+        viewModel.CancelReadOnlyQueryCommand.Execute(null);
+        await WaitUntilAsync(() =>
+            !viewModel.IsReadOnlyQueryRunning
+            && !viewModel.CancelReadOnlyQueryCommand.CanExecute(null)
+            && viewModel.ExecuteReadOnlyQueryCommand.CanExecute(null)
+            && viewModel.ManualCheckCommand.CanExecute(null));
+
+        Assert.False(viewModel.CancelReadOnlyQueryCommand.CanExecute(null));
+        Assert.True(viewModel.ExecuteReadOnlyQueryCommand.CanExecute(null));
+        Assert.True(viewModel.ManualCheckCommand.CanExecute(null));
+        await viewModel.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task ManualEntryPoints_RacingStartOnlyOneClientRequestAndDoNotQueueTheLoser()
+    {
+        using var fixture = new ViewModelFixture();
+        var now = DateTimeOffset.UtcNow;
+        fixture.Client.Snapshot = Snapshot(now, 0, [Device("a", DeviceHealth.Normal, now)]) with
+        {
+            ApiVersion = 3,
+            ReadOnlyQueriesEnabled = true
+        };
+        fixture.Client.BlockReadOnlyQuery = true;
+        fixture.Client.BlockRegisteredCheck = true;
+        var viewModel = fixture.CreateViewModel();
+        await viewModel.InitializeAsync();
+        using var start = new Barrier(2);
+
+        await Task.WhenAll(
+            Task.Run(() =>
+            {
+                start.SignalAndWait();
+                viewModel.ExecuteReadOnlyQueryCommand.Execute(null);
+            }),
+            Task.Run(() =>
+            {
+                start.SignalAndWait();
+                viewModel.ManualCheckCommand.Execute(null);
+            }));
+
+        await WaitUntilAsync(() =>
+            fixture.Client.ReadOnlyQueryCalls + fixture.Client.RegisteredCheckCalls == 1);
+        Assert.Equal(1, fixture.Client.ReadOnlyQueryCalls + fixture.Client.RegisteredCheckCalls);
+
+        fixture.Client.ReleaseReadOnlyQuery.TrySetResult();
+        fixture.Client.ReleaseRegisteredCheck.TrySetResult();
+        await WaitUntilAsync(() =>
+            !viewModel.IsReadOnlyQueryRunning
+            && !viewModel.IsBusy
+            && viewModel.ExecuteReadOnlyQueryCommand.CanExecute(null)
+            && viewModel.ManualCheckCommand.CanExecute(null));
+
+        Assert.Equal(1, fixture.Client.ReadOnlyQueryCalls + fixture.Client.RegisteredCheckCalls);
+        await viewModel.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task ReadOnlyQuery_CancelTargetsCurrentOwnerAndDoesNotCancelFollowingRequest()
+    {
+        using var fixture = new ViewModelFixture();
+        var now = DateTimeOffset.UtcNow;
+        fixture.Client.Snapshot = Snapshot(now, 0, [Device("a", DeviceHealth.Normal, now)]) with
+        {
+            ApiVersion = 3,
+            ReadOnlyQueriesEnabled = true
+        };
+        var viewModel = fixture.CreateViewModel();
+        await viewModel.InitializeAsync();
+
+        viewModel.ExecuteReadOnlyQueryCommand.Execute(null);
+        await WaitUntilAsync(() => fixture.Client.ReadOnlyQueryCalls == 1 && !viewModel.IsReadOnlyQueryRunning);
+
+        fixture.Client.BlockReadOnlyQuery = true;
+        viewModel.ExecuteReadOnlyQueryCommand.Execute(null);
+        await WaitUntilAsync(() => fixture.Client.ReadOnlyQueryCalls == 2 && viewModel.IsReadOnlyQueryRunning);
+        viewModel.CancelReadOnlyQueryCommand.Execute(null);
+        await WaitUntilAsync(() => !viewModel.IsReadOnlyQueryRunning);
+
+        fixture.Client.BlockReadOnlyQuery = false;
+        viewModel.ExecuteReadOnlyQueryCommand.Execute(null);
+        await WaitUntilAsync(() => fixture.Client.ReadOnlyQueryCalls == 3 && !viewModel.IsReadOnlyQueryRunning);
+
+        Assert.Equal(1, fixture.Client.ReadOnlyQueryCancellationCount);
+        Assert.Equal("완료 · 연결 종료됨", viewModel.ReadOnlyQueryStatusText);
         await viewModel.DisposeAsync();
     }
 
@@ -1366,6 +1525,10 @@ public sealed class DashboardViewModelTests
         public List<AgentEventChangeDto> Changes { get; } = [];
         public Queue<EventChangePageDto> ChangePages { get; } = new();
         public Exception? StartException { get; set; }
+        public bool SupportsStatelessV4 { get; set; }
+        public int BlockStartCall { get; set; } = int.MaxValue;
+        public bool CancelBlockedStartOnDispose { get; set; }
+        public bool BlockedStartCancelled { get; private set; }
         public Exception? ChangeException { get; set; }
         public int ChangeExceptionAfterCalls { get; set; } = int.MaxValue;
         public bool BlockSnapshot { get; set; }
@@ -1377,6 +1540,9 @@ public sealed class DashboardViewModelTests
         public TaskCompletionSource SnapshotBlocked { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource ReleaseSnapshot { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public bool StartCalled { get; private set; }
+        private int _startCalls;
+        public TaskCompletionSource StartBlocked { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource ReleaseStart { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public int ChangePageCalls { get; private set; }
         private int _recentCalls;
         public int RecentCalls => Volatile.Read(ref _recentCalls);
@@ -1389,8 +1555,15 @@ public sealed class DashboardViewModelTests
         public string? LastExecutedCommandId { get; private set; }
         public string? LastReadOnlyQueryDeviceId { get; private set; }
         public string? LastReadOnlyQueryCommand { get; private set; }
-        public int ReadOnlyQueryCalls { get; private set; }
+        private int _registeredCheckCalls;
+        private int _readOnlyQueryCancellationCount;
+        private int _readOnlyQueryCalls;
+        public int RegisteredCheckCalls => Volatile.Read(ref _registeredCheckCalls);
+        public int ReadOnlyQueryCancellationCount => Volatile.Read(ref _readOnlyQueryCancellationCount);
+        public int ReadOnlyQueryCalls => Volatile.Read(ref _readOnlyQueryCalls);
+        public bool BlockRegisteredCheck { get; set; }
         public bool BlockReadOnlyQuery { get; set; }
+        public TaskCompletionSource ReleaseRegisteredCheck { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource ReadOnlyQueryStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource ReleaseReadOnlyQuery { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public ReadOnlyQueryResultDto ReadOnlyQueryResult { get; set; } = new(
@@ -1399,17 +1572,40 @@ public sealed class DashboardViewModelTests
         public event EventHandler<AgentEventChangeDto>? EventChanged;
         public event EventHandler<AgentConnectionState>? ConnectionStateChanged;
 
-        public Task StartAsync(CancellationToken cancellationToken)
+        public async Task StartAsync(CancellationToken cancellationToken)
         {
             StartCalled = true;
             if (StartException is not null)
             {
                 ConnectionStateChanged?.Invoke(this, AgentConnectionState.Offline);
-                return Task.FromException(StartException);
+                throw StartException;
+            }
+            var call = Interlocked.Increment(ref _startCalls);
+            if (call == BlockStartCall)
+            {
+                StartBlocked.TrySetResult();
+                try
+                {
+                    await ReleaseStart.Task.WaitAsync(cancellationToken);
+                }
+                catch (OperationCanceledException)
+                {
+                    BlockedStartCancelled = true;
+                    throw;
+                }
             }
             ConnectionStateChanged?.Invoke(this, Snapshot.ConnectionState);
-            return Task.CompletedTask;
         }
+
+        public Task<AgentIdentityDto> GetIdentityAsync(CancellationToken cancellationToken) =>
+            Task.FromResult(new AgentIdentityDto(
+                4,
+                "fake-agent",
+                "fake-instance",
+                "unused",
+                "https",
+                8,
+                65_536));
 
         public async Task<AgentSnapshotDto> GetSnapshotAsync(CancellationToken cancellationToken)
         {
@@ -1464,11 +1660,19 @@ public sealed class DashboardViewModelTests
             return Task.FromResult(new EventChangePageDto(high, next, next < high, items));
         }
 
-        public Task<CommandResultDto> ExecuteRegisteredCheckAsync(string deviceId, string commandId, CancellationToken cancellationToken)
+        public async Task<CommandResultDto> ExecuteRegisteredCheckAsync(
+            string deviceId,
+            string commandId,
+            CancellationToken cancellationToken)
         {
+            Interlocked.Increment(ref _registeredCheckCalls);
             LastExecutedDeviceId = deviceId;
             LastExecutedCommandId = commandId;
-            return Task.FromResult(new CommandResultDto(true, "ok"));
+            if (BlockRegisteredCheck)
+            {
+                await ReleaseRegisteredCheck.Task.WaitAsync(cancellationToken);
+            }
+            return new CommandResultDto(true, "ok");
         }
 
         public async Task<ReadOnlyQueryResultDto> ExecuteReadOnlyQueryAsync(
@@ -1476,13 +1680,21 @@ public sealed class DashboardViewModelTests
             string command,
             CancellationToken cancellationToken)
         {
-            ReadOnlyQueryCalls++;
+            Interlocked.Increment(ref _readOnlyQueryCalls);
             LastReadOnlyQueryDeviceId = deviceId;
             LastReadOnlyQueryCommand = command;
             ReadOnlyQueryStarted.TrySetResult();
             if (BlockReadOnlyQuery)
             {
-                await ReleaseReadOnlyQuery.Task.WaitAsync(cancellationToken);
+                try
+                {
+                    await ReleaseReadOnlyQuery.Task.WaitAsync(cancellationToken);
+                }
+                catch (OperationCanceledException)
+                {
+                    Interlocked.Increment(ref _readOnlyQueryCancellationCount);
+                    throw;
+                }
             }
             return ReadOnlyQueryResult with { DeviceId = deviceId, Command = command };
         }
@@ -1502,6 +1714,10 @@ public sealed class DashboardViewModelTests
         public ValueTask DisposeAsync()
         {
             DisposeCalled = true;
+            if (CancelBlockedStartOnDispose)
+            {
+                ReleaseStart.TrySetCanceled();
+            }
             if (DisposeException is not null)
             {
                 return new ValueTask(Task.FromException(DisposeException));

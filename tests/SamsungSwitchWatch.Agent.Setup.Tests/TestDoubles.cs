@@ -8,9 +8,16 @@ internal sealed class TestFileSystem : ISetupFileSystem
     private readonly PhysicalSetupFileSystem _inner = new();
 
     public List<(string Path, DirectoryAccessKind Kind)> AccessRequests { get; } = [];
+    public List<(string Path, bool AllowLegacyLocalService)>
+        DataAccessValidationRequests
+    { get; } = [];
+    public Action<string, bool>? BeforeDataAccessValidation { get; set; }
     public bool FailBackupCleanup { get; set; }
     public string? FreshDataDirectory { get; set; }
     public int DataCleanupFailuresRemaining { get; set; }
+    public string? ExternalDataDirectoryRacePath { get; set; }
+    public List<string> ExclusiveCreateRequests { get; } = [];
+    public List<string> DeleteDirectoryRequests { get; } = [];
     public Exception? PathValidationException { get; set; }
     public Exception? CanCreateException { get; set; }
     public string? AccessFailurePath { get; set; }
@@ -116,6 +123,25 @@ internal sealed class TestFileSystem : ISetupFileSystem
     }
     public string ComputeSha256(string path) => _inner.ComputeSha256(path);
     public void CreateDirectory(string path) => _inner.CreateDirectory(path);
+    public bool TryCreateDirectoryExclusive(string path)
+    {
+        ExclusiveCreateRequests.Add(path);
+        if (ExternalDataDirectoryRacePath is not null &&
+            PhysicalSetupFileSystem.SamePath(path, ExternalDataDirectoryRacePath))
+        {
+            Directory.CreateDirectory(path);
+            File.WriteAllText(Path.Combine(path, "foreign-owner.marker"), "external");
+            return false;
+        }
+
+        if (Directory.Exists(path) || File.Exists(path))
+        {
+            return false;
+        }
+
+        Directory.CreateDirectory(path);
+        return true;
+    }
     public void CopyFile(string source, string destination, bool overwrite) =>
         _inner.CopyFile(source, destination, overwrite);
     public void MoveDirectory(string source, string destination)
@@ -207,6 +233,13 @@ internal sealed class TestFileSystem : ISetupFileSystem
 
         return true;
     }
+    public void ValidateDataDirectoryBeforeAccess(
+        string path,
+        bool allowLegacyLocalService)
+    {
+        DataAccessValidationRequests.Add((path, allowLegacyLocalService));
+        BeforeDataAccessValidation?.Invoke(path, allowLegacyLocalService);
+    }
     public void EnsureDirectoryAccess(string path, DirectoryAccessKind accessKind)
     {
         AccessRequests.Add((path, accessKind));
@@ -270,6 +303,7 @@ internal sealed class TestFileSystem : ISetupFileSystem
 
     private void DeleteDirectoryCore(string path, bool recursive)
     {
+        DeleteDirectoryRequests.Add(path);
         if (Path.GetFileName(path).Contains(".__staging_", StringComparison.Ordinal))
         {
             StagingDirectoryCleanupAttempts++;

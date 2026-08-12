@@ -7,6 +7,15 @@ using SamsungSwitchWatch.Agent.Setup.Deployment;
 
 namespace SamsungSwitchWatch.Agent.Setup.Infrastructure;
 
+internal enum ServiceStartAction
+{
+    Complete,
+    Start,
+    WaitForRunning,
+    WaitForStopped,
+    Reject,
+}
+
 public sealed partial class WindowsServiceManager : IServiceManager
 {
     private const uint ScManagerAllAccess = 0xF003F;
@@ -361,20 +370,112 @@ public sealed partial class WindowsServiceManager : IServiceManager
             serviceName,
             ServiceStartAccess | ServiceQueryStatusAccess,
             service =>
-        {
-            if (QueryStatus(service).CurrentState == ServiceRunning)
             {
-                return;
-            }
+                var elapsed = Stopwatch.StartNew();
+                RunStartStateMachine(
+                    () => QueryStatus(service).CurrentState,
+                    () =>
+                    {
+                        if (NativeMethods.StartService(service, 0, null))
+                        {
+                            return true;
+                        }
 
-            if (!NativeMethods.StartService(service, 0, null))
-            {
-                ThrowServiceFailure();
-            }
+                        var error = Marshal.GetLastWin32Error();
+                        var observedState = QueryStatus(service).CurrentState;
+                        if (CanContinueAfterFailedStart(observedState))
+                        {
+                            // Recovery policy or another actor can restart the
+                            // service between the STOPPED read and StartService.
+                            // Re-enter the bounded state machine instead of
+                            // reporting a false start failure.
+                            return false;
+                        }
 
-            WaitForState(service, ServiceRunning, timeout);
-        });
+                        ThrowServiceFailure(error);
+                        return false;
+                    },
+                    timeout,
+                    () => elapsed.Elapsed,
+                    Thread.Sleep);
+            });
     }
+
+    internal static void RunStartStateMachine(
+        Func<uint> queryState,
+        Func<bool> requestStart,
+        TimeSpan timeout,
+        Func<TimeSpan> elapsed,
+        Action<TimeSpan> wait)
+    {
+        ArgumentNullException.ThrowIfNull(queryState);
+        ArgumentNullException.ThrowIfNull(requestStart);
+        ArgumentNullException.ThrowIfNull(elapsed);
+        ArgumentNullException.ThrowIfNull(wait);
+
+        var startRequested = false;
+        while (true)
+        {
+            var currentState = queryState();
+            switch (DecideStartAction(currentState))
+            {
+                case ServiceStartAction.Complete:
+                    return;
+
+                case ServiceStartAction.Start:
+                    if (!startRequested)
+                    {
+                        startRequested = requestStart();
+                    }
+                    break;
+
+                case ServiceStartAction.WaitForRunning:
+                case ServiceStartAction.WaitForStopped:
+                    // Both pending states are transient. Re-query the actual
+                    // state because STOPPED can be skipped by automatic restart.
+                    break;
+
+                default:
+                    throw new SetupException(
+                        SetupErrorCodes.ServiceFailed,
+                        $"Windows Agent service cannot be started from SCM state {currentState}.");
+            }
+
+            var currentElapsed = elapsed();
+            if (HasReachedServiceOperationTimeout(currentElapsed, timeout))
+            {
+                throw CreateServiceTimeoutException(
+                    "Windows service did not reach the running state within the allowed time.");
+            }
+
+            var remaining = timeout - currentElapsed;
+            wait(
+                remaining < ServiceStatePollInterval
+                    ? remaining
+                    : ServiceStatePollInterval);
+        }
+    }
+
+    internal static ServiceStartAction DecideStartAction(uint currentState) =>
+        currentState switch
+        {
+            ServiceRunning => ServiceStartAction.Complete,
+            ServiceStopped => ServiceStartAction.Start,
+            ServiceStartPending => ServiceStartAction.WaitForRunning,
+            ServiceStopPending => ServiceStartAction.WaitForStopped,
+            _ => ServiceStartAction.Reject,
+        };
+
+    internal static bool CanContinueAfterFailedStart(uint observedState) =>
+        DecideStartAction(observedState) is
+            ServiceStartAction.Complete or
+            ServiceStartAction.WaitForRunning or
+            ServiceStartAction.WaitForStopped;
+
+    internal static bool HasReachedServiceOperationTimeout(
+        TimeSpan elapsed,
+        TimeSpan timeout) =>
+        timeout <= TimeSpan.Zero || elapsed >= timeout;
 
     public void Restore(string serviceName, ServiceSnapshot snapshot) =>
         _ = RestoreWithResult(serviceName, snapshot);
@@ -843,23 +944,6 @@ public sealed partial class WindowsServiceManager : IServiceManager
         {
             Marshal.FreeHGlobal(pointer);
         }
-    }
-
-    private static void WaitForState(IntPtr service, uint expectedState, TimeSpan timeout)
-    {
-        var deadline = DateTime.UtcNow + timeout;
-        while (DateTime.UtcNow < deadline)
-        {
-            if (QueryStatus(service).CurrentState == expectedState)
-            {
-                return;
-            }
-
-            Thread.Sleep(200);
-        }
-
-        throw CreateServiceTimeoutException(
-            "Windows 서비스가 제한 시간 안에 요청한 상태가 되지 않았습니다.");
     }
 
     private static void WaitForServiceStopAndProcessExit(
