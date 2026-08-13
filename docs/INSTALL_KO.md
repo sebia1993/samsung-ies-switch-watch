@@ -2,23 +2,23 @@
 
 ## 1. 준비
 
-공식 GitHub `v0.11.10-poc` Release의 Assets에서 다음 두 파일만 받습니다.
+공식 GitHub `v0.11.11-poc` Release의 Assets에서 다음 두 파일만 받습니다.
 
-- `SamsungSwitchWatch-Agent-0.11.10-poc-win-x64.zip`
-- `SamsungSwitchWatch-Viewer-0.11.10-poc-win-x64.zip`
+- `SamsungSwitchWatch-Agent-0.11.11-poc-win-x64.zip`
+- `SamsungSwitchWatch-Viewer-0.11.11-poc-win-x64.zip`
 
 GitHub가 자동 표시하는 Source code ZIP과 tar.gz는 실행 패키지가 아닙니다. 두 ZIP은 Windows
 x64용 self-contained 빌드이므로 Python, PowerShell 모듈 또는 .NET을 온라인으로 설치하지
 않습니다. API v4가 호환되면 버전이 달라도 경고 후 연결하지만, 기능 차이와 운영 혼동을 줄이기
 위해 Agent와 Viewer는 같은 Release 조합을 권장합니다.
 
-`0.11.10-poc`는 코드 서명되지 않은 시험판입니다. SmartScreen, EDR, AppLocker 또는 WDAC가
+`0.11.11-poc`는 코드 서명되지 않은 시험판입니다. SmartScreen, EDR, AppLocker 또는 WDAC가
 경고하거나 차단할 수 있으며, 보안 정책을 우회하지 말고 공식 Release와 파일 해시를 확인한
 뒤 사내 보안 담당자의 승인 절차를 따르십시오.
 
 Agent 설치·업데이트 실패 뒤 미완료 작업이 감지되면 Setup은 상태를 읽기 전용으로 확인하고
 `설치/업데이트`를 비활성화합니다. 구형 Setup을 실행하거나 설치를 반복하지 말고, 같은
-`0.11.10-poc` Agent ZIP의 Setup에서 별도의 `이전 상태 복구`를 사용하십시오. 복구 성공 뒤에는
+`0.11.11-poc` Agent ZIP의 Setup에서 별도의 `이전 상태 복구`를 사용하십시오. 복구 성공 뒤에는
 운영자가 `설치/업데이트`를 한 번 눌러 같은 설치 작업의 내부 검사부터 새 작업을 시작해야 합니다.
 복구가 자동으로 설치를 이어서 실행하지는 않습니다.
 
@@ -29,7 +29,19 @@ Agent 설치·업데이트 실패 뒤 미완료 작업이 감지되면 Setup은 
 해제하십시오. ZIP 내부 또는 메일 첨부 미리 보기에서 실행하면 함께 제공된 파일을 찾지 못할
 수 있습니다.
 
-### 0.11.10-poc에서 달라진 안정성 경계
+### 0.11.11-poc에서 달라진 안정성 경계
+
+- Viewer Setup은 새 작업을 journal format 3으로 기록하고 기존 format 2 작업도 원래 의미대로
+  복구합니다. format 3 복구가 남아 있으면 반드시 `0.11.11-poc` 또는 더 최신 Setup으로 복구를
+  완료한 뒤에만 Viewer를 이전 버전으로 내리십시오.
+- 기존 Viewer 프로그램 폴더가 검증되지 않으면 바로 삭제하지 않고 현재 transaction의 backup으로
+  격리합니다. commit 전 실패·취소 시 원래 설치 경로로 복원하며, 성공한 경우에만 최근 제품
+  격리본 1개로 확정합니다. 경로·marker·reparse 상태가 모호하면 변경하지 않고 중단합니다.
+- 취소·중복 실행을 제외한 조치 가능한 Viewer Setup 실패와 복구 불가 검사 화면에는
+  `SWS1-XXXX-XXXX-XXXX-XXXX` 지원 코드가 표시됩니다. 이 코드는
+  제품 버전과 작업·실패·복구 상태 같은 제한된 분류만 포함하며 경로, 사용자, 파일 해시,
+  transaction ID, 자격 증명이나 장비 정보는 포함하지 않습니다. 기존 SWD1은 Agent Setup과
+  Viewer 연결 실패에 계속 사용합니다.
 
 - Telnet 로그인·enable·명령 수집은 각각 제한된 시간과 바이트 예산을 사용하며 Latin-1 출력과
   IAC 협상을 처리합니다. 끝없는 출력은 상한에서 중단하고 세션을 정리합니다.
@@ -272,7 +284,7 @@ PC·사용자명, 계정, 인증서 정보, 절대 경로, 방화벽 원문, 예
 
 복구 완료 메시지가 나타났다면 같은 실패 화면에서 설치를 자동으로 다시 시작하지 않습니다.
 Setup을 닫지 않아도 되지만, 상태가 `복구 필요 없음`으로 바뀌고 설치 버튼이 다시 활성화됐는지
-확인한 뒤 `0.11.10-poc` 패키지의 `설치/업데이트`를 한 번만 다시 실행하십시오. Setup이 내부
+확인한 뒤 `0.11.11-poc` 패키지의 `설치/업데이트`를 한 번만 다시 실행하십시오. Setup이 내부
 사전 점검부터 새 설치를 수행합니다. 같은 readiness 분류가 반복되면 재설치를 계속 반복하지
 말고 SWD1 코드 또는 `진단정보 복사` 결과를 전달하십시오.
 
@@ -332,7 +344,13 @@ Viewer 설치는 유지하고 경고를 표시합니다.
 분리해 정리한 뒤 미설치 상태로 돌아갑니다. 기존 설치와 복구 근거를 안전하게 확인할 수 없으면
 파일을 지우거나 덮어쓰지 않고 중단합니다.
 
-Setup이 관리하는 고정 설치·staging·backup·failed 경로와
+고정 Viewer 프로그램 폴더가 있지만 manifest·해시 검증을 통과하지 못하면 Setup은 그 폴더를
+이번 transaction의 backup으로 먼저 이동합니다. 새 Viewer가 commit되기 전에 설치·자체점검·
+실행이 실패하거나 사용자가 취소하면 해당 폴더를 원래 Viewer 설치 경로로 되돌립니다. 새 Viewer가
+정상 실행되어 commit된 뒤에만 기존 폴더를 제품 소유 최근 격리본으로 확정하며, 검증되지 않은
+경로나 reparse를 따라가 삭제하지 않습니다.
+
+Setup이 관리하는 고정 설치·staging·backup·failed·최근 격리 경로와
 `%LOCALAPPDATA%\SamsungSwitchWatch\Setup`의 journal·증거 파일만 정리 대상입니다. 다운로드
 폴더나 사용자가 ZIP을 푼 임의 폴더는 자동으로 삭제하지 않습니다.
 
@@ -355,6 +373,14 @@ Viewer 데이터는 `%LOCALAPPDATA%\SamsungSwitchWatch`에 저장됩니다.
 Setup이 미완료 journal을 찾으면 `설치/업데이트`를 잠그고
 `VIEWER_SETUP_RECOVERY_REQUIRED`를 표시합니다. `이전 상태 복구`를 눌러 복구 완료를 확인한
 뒤 `설치/업데이트`를 별도로 다시 실행합니다. 복구 성공이 설치를 자동으로 시작하지는 않습니다.
+format 3 journal이 남아 있을 때는 해당 작업을 만든 `0.11.11-poc` 또는 더 최신 Viewer Setup을
+사용해야 합니다. 구형 Setup으로 반복 설치하거나 작업 폴더를 수동 삭제하지 마십시오.
+
+취소·중복 실행을 제외한 조치 가능한 Viewer Setup 설치·복구 실패와 복구 불가 검사에는 별도
+`SWS1-XXXX-XXXX-XXXX-XXXX` 코드가 표시됩니다. 코드는
+읽기 전용으로 선택하거나 `복사`를 눌러 전달할 수 있고 새 작업 시작, 성공 또는 취소 시 이전 값이
+지워집니다. SWS1은 인증·페어링·비밀값이 아니며, 기존 Agent Setup과 Viewer 연결 화면의 SWD1을
+대체하거나 변경하지 않습니다.
 
 설치 실패 코드는 다음처럼 구분합니다.
 

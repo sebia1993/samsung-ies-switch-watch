@@ -162,6 +162,29 @@ public sealed class PhysicalViewerSetupFileSystem : IViewerSetupFileSystem
     public bool DirectoryHasEntries(string path) =>
         Directory.EnumerateFileSystemEntries(path).Any();
 
+    public bool IsReparsePoint(string path)
+    {
+        if (!File.Exists(path) && !Directory.Exists(path))
+        {
+            return false;
+        }
+
+        return (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0;
+    }
+
+    public bool DirectoryTreeContainsReparsePoint(string path) =>
+        ContainsReparsePoint(new DirectoryInfo(path));
+
+    public void DeleteDirectoryTreeNoFollow(string path)
+    {
+        if (!Directory.Exists(path) || File.Exists(path))
+        {
+            throw new IOException("The quarantine cleanup target is not a directory.");
+        }
+
+        DeleteDirectoryContentsNoFollow(path);
+    }
+
     private static void WriteAtomic(string path, byte[] contents)
     {
         var parent = Path.GetDirectoryName(path);
@@ -274,5 +297,68 @@ public sealed class PhysicalViewerSetupFileSystem : IViewerSetupFileSystem
             // retain the temporary name briefly; do not hide the original
             // outcome or report a committed journal replacement as failed.
         }
+    }
+
+    private static bool ContainsReparsePoint(DirectoryInfo directory)
+    {
+        directory.Refresh();
+        if ((directory.Attributes & FileAttributes.ReparsePoint) != 0)
+        {
+            return true;
+        }
+
+        foreach (var entry in directory.EnumerateFileSystemInfos())
+        {
+            entry.Refresh();
+            if ((entry.Attributes & FileAttributes.ReparsePoint) != 0)
+            {
+                return true;
+            }
+
+            if ((entry.Attributes & FileAttributes.Directory) != 0 &&
+                ContainsReparsePoint((DirectoryInfo)entry))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static void DeleteDirectoryContentsNoFollow(string path)
+    {
+        var attributes = File.GetAttributes(path);
+        if ((attributes & FileAttributes.ReparsePoint) != 0)
+        {
+            throw new SecurityException("A reparse point was found in quarantine data.");
+        }
+
+        foreach (var entry in new DirectoryInfo(path).EnumerateFileSystemInfos())
+        {
+            entry.Refresh();
+            if ((entry.Attributes & FileAttributes.ReparsePoint) != 0)
+            {
+                throw new SecurityException("A reparse point was found in quarantine data.");
+            }
+
+            if ((entry.Attributes & FileAttributes.Directory) != 0)
+            {
+                DeleteDirectoryContentsNoFollow(entry.FullName);
+            }
+            else
+            {
+                File.Delete(entry.FullName);
+            }
+        }
+
+        // Re-check immediately before deleting the directory. If another
+        // process replaced it with a junction, fail without following it.
+        attributes = File.GetAttributes(path);
+        if ((attributes & FileAttributes.ReparsePoint) != 0)
+        {
+            throw new SecurityException("Quarantine data changed during cleanup.");
+        }
+
+        Directory.Delete(path, recursive: false);
     }
 }

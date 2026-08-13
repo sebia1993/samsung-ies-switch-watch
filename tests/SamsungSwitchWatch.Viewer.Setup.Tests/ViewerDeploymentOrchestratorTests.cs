@@ -1,4 +1,5 @@
 using SamsungSwitchWatch.Viewer.Setup.Deployment;
+using SamsungSwitchWatch.Viewer.Setup.Diagnostics;
 
 namespace SamsungSwitchWatch.Viewer.Setup.Tests;
 
@@ -186,7 +187,7 @@ public sealed class ViewerDeploymentOrchestratorTests
     }
 
     [Fact]
-    public async Task Deploy_RejectsUnknownNonEmptyCanonicalInstall()
+    public async Task Deploy_QuarantinesUnknownNonEmptyCanonicalInstall()
     {
         using var workspace = new TestWorkspace();
         workspace.CreatePackage();
@@ -195,10 +196,299 @@ public sealed class ViewerDeploymentOrchestratorTests
 
         var result = await workspace.CreateOrchestrator().DeployAsync();
 
+        Assert.True(result.Succeeded, $"{result.Code}: {result.Message}");
+        Assert.False(File.Exists(foreign));
+        Assert.Equal(
+            "do-not-touch",
+            File.ReadAllText(Path.Combine(
+                workspace.Paths.QuarantineLatestDirectory,
+                "foreign.txt")));
+        Assert.True(File.Exists(workspace.Paths.QuarantineLatestMarkerPath));
+        Assert.False(File.Exists(workspace.Paths.JournalPath));
+        Assert.NotNull(result.Diagnostic);
+        Assert.Equal(
+            ViewerSetupDiagnosticPreviousInstallState.Invalid,
+            result.Diagnostic!.PreviousInstallState);
+        Assert.Equal(
+            ViewerSetupDiagnosticQuarantineState.Retained,
+            result.Diagnostic.QuarantineState);
+    }
+
+    [Fact]
+    public async Task Deploy_ExistingInstallClassificationFailure_PreservesPackageDiagnostic()
+    {
+        using var workspace = new TestWorkspace();
+        workspace.CreatePackage();
+        TestWorkspace.Write(workspace.InstallDirectory, "not-a-directory");
+
+        var result = await workspace.CreateOrchestrator().DeployAsync();
+
         Assert.False(result.Succeeded);
         Assert.Equal(ViewerSetupErrorCodes.PathInvalid, result.Code);
+        Assert.NotNull(result.Diagnostic);
+        Assert.Equal(
+            ViewerSetupDiagnosticStageState.Succeeded,
+            result.Diagnostic!.Stages.Package);
+        Assert.Equal(
+            ViewerSetupDiagnosticStageState.Failed,
+            result.Diagnostic.Stages.ExistingInstall);
+        Assert.Equal(
+            ViewerSetupDiagnosticStageState.NotRun,
+            result.Diagnostic.Stages.Activation);
+    }
+
+    [Fact]
+    public async Task Deploy_InvalidInstallSmokeFailure_RestoresExactOriginal()
+    {
+        using var workspace = new TestWorkspace();
+        workspace.CreatePackage();
+        var foreign = Path.Combine(workspace.InstallDirectory, "foreign.txt");
+        TestWorkspace.Write(foreign, "do-not-touch");
+        workspace.Process.SmokeSucceeds = false;
+
+        var result = await workspace.CreateOrchestrator().DeployAsync();
+
+        Assert.False(result.Succeeded);
+        Assert.Equal(ViewerSetupErrorCodes.SmokeFailed, result.Code);
         Assert.Equal("do-not-touch", File.ReadAllText(foreign));
+        Assert.Single(Directory.EnumerateFiles(workspace.InstallDirectory));
+        Assert.False(Directory.Exists(workspace.Paths.QuarantineLatestDirectory));
         Assert.False(File.Exists(workspace.Paths.JournalPath));
+        Assert.NotNull(result.Diagnostic);
+        Assert.Equal(ViewerSetupDiagnosticCode.SmokeFailed, result.Diagnostic!.PrimaryCode);
+        Assert.Equal(
+            ViewerSetupDiagnosticRollbackState.Succeeded,
+            result.Diagnostic.RollbackState);
+        Assert.Equal(
+            ViewerSetupDiagnosticQuarantineState.Restored,
+            result.Diagnostic.QuarantineState);
+    }
+
+    [Fact]
+    public async Task Deploy_EmptyExistingDirectory_InstallsSuccessfully()
+    {
+        using var workspace = new TestWorkspace();
+        workspace.CreatePackage();
+        Directory.CreateDirectory(workspace.InstallDirectory);
+
+        var result = await workspace.CreateOrchestrator().DeployAsync();
+
+        Assert.True(result.Succeeded, $"{result.Code}: {result.Message}");
+        Assert.True(File.Exists(workspace.Paths.ViewerExecutablePath));
+        Assert.False(File.Exists(workspace.Paths.JournalPath));
+    }
+
+    [Fact]
+    public async Task Deploy_EmptyExistingDirectorySmokeFailure_RestoresEmptyDirectory()
+    {
+        using var workspace = new TestWorkspace();
+        workspace.CreatePackage();
+        Directory.CreateDirectory(workspace.InstallDirectory);
+        workspace.Process.SmokeSucceeds = false;
+
+        var result = await workspace.CreateOrchestrator().DeployAsync();
+
+        Assert.False(result.Succeeded);
+        Assert.True(Directory.Exists(workspace.InstallDirectory));
+        Assert.Empty(Directory.EnumerateFileSystemEntries(workspace.InstallDirectory));
+        Assert.False(File.Exists(workspace.Paths.JournalPath));
+    }
+
+    [Fact]
+    public async Task Deploy_SecondInvalidInstall_RetainsOnlyNewestOwnedQuarantine()
+    {
+        using var workspace = new TestWorkspace();
+        workspace.CreatePackage();
+        TestWorkspace.Write(
+            Path.Combine(workspace.InstallDirectory, "old-invalid.txt"),
+            "old-invalid");
+        var first = await workspace.CreateOrchestrator().DeployAsync();
+        Assert.True(first.Succeeded, $"{first.Code}: {first.Message}");
+
+        Directory.Delete(workspace.InstallDirectory, recursive: true);
+        TestWorkspace.Write(
+            Path.Combine(workspace.InstallDirectory, "new-invalid.txt"),
+            "new-invalid");
+        var second = await workspace.CreateOrchestrator().DeployAsync();
+
+        Assert.True(second.Succeeded, $"{second.Code}: {second.Message}");
+        Assert.False(File.Exists(Path.Combine(
+            workspace.Paths.QuarantineLatestDirectory,
+            "old-invalid.txt")));
+        Assert.Equal("new-invalid", File.ReadAllText(Path.Combine(
+            workspace.Paths.QuarantineLatestDirectory,
+            "new-invalid.txt")));
+        Assert.False(Directory.Exists(workspace.Paths.QuarantinePreviousDirectory));
+        Assert.False(File.Exists(workspace.Paths.QuarantinePreviousMarkerPath));
+    }
+
+    [Fact]
+    public async Task Deploy_QuarantineRotationCleanupFailure_LeavesRecoverableCommittedJournal()
+    {
+        using var workspace = new TestWorkspace();
+        workspace.CreatePackage();
+        TestWorkspace.Write(
+            Path.Combine(workspace.InstallDirectory, "old-invalid.txt"),
+            "old-invalid");
+        var first = await workspace.CreateOrchestrator().DeployAsync();
+        Assert.True(first.Succeeded, $"{first.Code}: {first.Message}");
+
+        Directory.Delete(workspace.InstallDirectory, recursive: true);
+        TestWorkspace.Write(
+            Path.Combine(workspace.InstallDirectory, "new-invalid.txt"),
+            "new-invalid");
+        var fileSystem = new FaultInjectingViewerSetupFileSystem(workspace.FileSystem)
+        {
+            DeleteFailuresRemaining = 5,
+            DeleteFailurePredicate = path => string.Equals(
+                path,
+                workspace.Paths.QuarantinePreviousDirectory,
+                StringComparison.OrdinalIgnoreCase)
+        };
+
+        var second = await workspace.CreateOrchestrator(fileSystem: fileSystem).DeployAsync();
+
+        Assert.True(second.Succeeded, $"{second.Code}: {second.Message}");
+        Assert.Contains(second.Steps, step => step.Code == "COMMIT_CLEANUP_PENDING");
+        Assert.True(File.Exists(workspace.Paths.JournalPath));
+        var journal = new ViewerDeploymentJournalStore(
+            workspace.FileSystem,
+            workspace.Paths).Read();
+        Assert.True(journal.QuarantineLatestToPreviousCompleted);
+        Assert.True(journal.QuarantineBackupToLatestCompleted);
+        Assert.True(journal.QuarantinePreviousDeleteIntent);
+        Assert.False(journal.QuarantinePreviousDeleteCompleted);
+
+        var recovered = await workspace.CreateOrchestrator().RecoverAsync();
+
+        Assert.True(recovered.Succeeded, $"{recovered.Code}: {recovered.Message}");
+        Assert.False(File.Exists(workspace.Paths.JournalPath));
+        Assert.False(Directory.Exists(workspace.Paths.QuarantinePreviousDirectory));
+        Assert.Equal("new-invalid", File.ReadAllText(Path.Combine(
+            workspace.Paths.QuarantineLatestDirectory,
+            "new-invalid.txt")));
+        Assert.Equal(
+            ViewerSetupDiagnosticQuarantineState.Retained,
+            recovered.Diagnostic!.QuarantineState);
+    }
+
+    [Theory]
+    [InlineData("latest-to-previous", false)]
+    [InlineData("latest-to-previous", true)]
+    [InlineData("backup-to-latest", false)]
+    [InlineData("backup-to-latest", true)]
+    [InlineData("previous-delete", false)]
+    [InlineData("previous-delete", true)]
+    public async Task Recover_QuarantineRotationIntent_IsIdempotentAcrossCrashTopology(
+        string phase,
+        bool mutationCompletedBeforeCrash)
+    {
+        using var workspace = new TestWorkspace();
+        workspace.CreatePackage();
+        TestWorkspace.Write(
+            Path.Combine(workspace.InstallDirectory, "old-invalid.txt"),
+            "old-invalid");
+        var first = await workspace.CreateOrchestrator().DeployAsync();
+        Assert.True(first.Succeeded, $"{first.Code}: {first.Message}");
+
+        Directory.Delete(workspace.InstallDirectory, recursive: true);
+        TestWorkspace.Write(
+            Path.Combine(workspace.InstallDirectory, "new-invalid.txt"),
+            "new-invalid");
+        var fileSystem = new FaultInjectingViewerSetupFileSystem(workspace.FileSystem);
+        if (phase == "previous-delete")
+        {
+            fileSystem.DeleteFailuresRemaining = 5;
+            fileSystem.DeleteFailurePredicate = path => string.Equals(
+                path,
+                workspace.Paths.QuarantinePreviousDirectory,
+                StringComparison.OrdinalIgnoreCase);
+        }
+        else
+        {
+            fileSystem.MoveFailuresRemaining = 5;
+            fileSystem.MoveFailurePredicate = phase == "latest-to-previous"
+                ? (source, destination) =>
+                    string.Equals(
+                        source,
+                        workspace.Paths.QuarantineLatestDirectory,
+                        StringComparison.OrdinalIgnoreCase) &&
+                    string.Equals(
+                        destination,
+                        workspace.Paths.QuarantinePreviousDirectory,
+                        StringComparison.OrdinalIgnoreCase)
+                : (source, destination) =>
+                    source.StartsWith(
+                        workspace.InstallDirectory + ".__backup_",
+                        StringComparison.OrdinalIgnoreCase) &&
+                    string.Equals(
+                        destination,
+                        workspace.Paths.QuarantineLatestDirectory,
+                        StringComparison.OrdinalIgnoreCase);
+        }
+
+        var deployed = await workspace.CreateOrchestrator(
+            fileSystem: fileSystem).DeployAsync();
+
+        Assert.True(deployed.Succeeded, $"{deployed.Code}: {deployed.Message}");
+        Assert.Contains(deployed.Steps, step => step.Code == "COMMIT_CLEANUP_PENDING");
+        var journal = new ViewerDeploymentJournalStore(
+            workspace.FileSystem,
+            workspace.Paths).Read();
+        Assert.True(File.Exists(workspace.Paths.JournalPath));
+
+        switch (phase)
+        {
+            case "latest-to-previous":
+                Assert.True(journal.QuarantineLatestToPreviousIntent);
+                Assert.False(journal.QuarantineLatestToPreviousCompleted);
+                if (mutationCompletedBeforeCrash)
+                {
+                    Directory.Move(
+                        workspace.Paths.QuarantineLatestDirectory,
+                        workspace.Paths.QuarantinePreviousDirectory);
+                    File.Move(
+                        workspace.Paths.QuarantineLatestMarkerPath,
+                        workspace.Paths.QuarantinePreviousMarkerPath);
+                }
+                break;
+            case "backup-to-latest":
+                Assert.True(journal.QuarantineLatestToPreviousCompleted);
+                Assert.True(journal.QuarantineBackupToLatestIntent);
+                Assert.False(journal.QuarantineBackupToLatestCompleted);
+                if (mutationCompletedBeforeCrash)
+                {
+                    Directory.Move(
+                        journal.BackupDirectory,
+                        workspace.Paths.QuarantineLatestDirectory);
+                }
+                break;
+            case "previous-delete":
+                Assert.True(journal.QuarantineBackupToLatestCompleted);
+                Assert.True(journal.QuarantinePreviousDeleteIntent);
+                Assert.False(journal.QuarantinePreviousDeleteCompleted);
+                if (mutationCompletedBeforeCrash)
+                {
+                    Directory.Delete(
+                        workspace.Paths.QuarantinePreviousDirectory,
+                        recursive: true);
+                    File.Delete(workspace.Paths.QuarantinePreviousMarkerPath);
+                }
+                break;
+            default:
+                throw new ArgumentOutOfRangeException(nameof(phase));
+        }
+
+        var recovered = await workspace.CreateOrchestrator().RecoverAsync();
+
+        Assert.True(recovered.Succeeded, $"{recovered.Code}: {recovered.Message}");
+        Assert.False(File.Exists(workspace.Paths.JournalPath));
+        Assert.False(Directory.Exists(workspace.Paths.QuarantinePreviousDirectory));
+        Assert.False(File.Exists(workspace.Paths.QuarantinePreviousMarkerPath));
+        Assert.Equal("new-invalid", File.ReadAllText(Path.Combine(
+            workspace.Paths.QuarantineLatestDirectory,
+            "new-invalid.txt")));
+        Assert.True(File.Exists(workspace.Paths.QuarantineLatestMarkerPath));
     }
 
     [Theory]

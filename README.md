@@ -3,7 +3,7 @@
 원격 PC의 숨겨진 Windows 서비스가 삼성 iES 스위치에 Telnet으로 접속하고, 운영자 PC의
 Viewer가 장비 등록·조회 명령·결과 확인·주기 감시를 담당하는 Windows 전용 POC입니다.
 
-현재 버전은 `v0.11.10-poc`입니다. IES4224GP, IES4028XP, IES4226XP의 실제 펌웨어별
+현재 버전은 `v0.11.11-poc`입니다. IES4224GP, IES4028XP, IES4226XP의 실제 펌웨어별
 명령과 출력은 사내 현장 검증 전까지 확정된 것으로 간주하지 않습니다.
 
 ## 한눈에 보는 구조
@@ -30,8 +30,8 @@ SamsungSwitchWatch.Viewer.exe              SamsungSwitchWatchAgent 서비스
 
 공식 GitHub Release Assets에서 다음 두 ZIP만 받습니다.
 
-- `SamsungSwitchWatch-Agent-0.11.10-poc-win-x64.zip`
-- `SamsungSwitchWatch-Viewer-0.11.10-poc-win-x64.zip`
+- `SamsungSwitchWatch-Agent-0.11.11-poc-win-x64.zip`
+- `SamsungSwitchWatch-Viewer-0.11.11-poc-win-x64.zip`
 
 두 패키지는 Windows x64용 self-contained 빌드이므로 Python이나 .NET을 별도로 설치하지
 않습니다. API v4가 호환되면 버전 차이는 경고 후 연결되지만, 운영에는 같은 Release 조합을
@@ -108,8 +108,24 @@ enable 전환을 마친 뒤 읽기 전용 `show version`을 한 번 실행하고
 모델 토큰이 섞인 출력은 각각 `MODEL_NOT_DETECTED`, `MODEL_AMBIGUOUS`로 중단하며 임의 모델을
 추정하지 않습니다. 판별에 사용한 원문은 Viewer 응답·설정·로그에 남기지 않습니다.
 
-`0.11.10-poc`는 기존 운영 흐름을 유지하면서 장시간 실행과 제한된 사내 PC 환경의 실패 경계를
+`0.11.11-poc`는 기존 운영 흐름을 유지하면서 Viewer 설치 실패 복구와 짧은 현장 전달 정보를
 강화합니다.
+
+- Viewer Setup은 새 transaction을 journal format 3으로 기록하고 기존 format 2 작업도 기존
+  의미대로 복구합니다. format 3 복구가 남아 있으면 `0.11.11-poc` 또는 더 최신 Setup으로
+  복구를 완료한 뒤에만 이전 버전으로 내려가십시오.
+- 기존 Viewer 프로그램 폴더가 검증되지 않으면 즉시 삭제하지 않고 transaction backup으로
+  격리합니다. commit 전 실패·취소 시 원래 설치 경로로 되돌리고, 성공한 경우에만 최근 제품
+  격리본 1개로 확정합니다. 모호한 경로·marker·reparse 상태는 변경하지 않고 중단합니다.
+- 격리 대상은 Viewer 프로그램 폴더뿐입니다. `%LOCALAPPDATA%\SamsungSwitchWatch`의 Agent 주소,
+  화면 설정, 장비 목록, DPAPI 자격 증명과 감시 이력은 이전과 같이 보존합니다.
+- 취소·중복 실행을 제외한 조치 가능한 Viewer Setup 실패와 복구 불가 검사에는 별도
+  `SWS1-XXXX-XXXX-XXXX-XXXX` 지원 코드가 표시됩니다. 기존 Agent
+  Setup·Viewer 연결용 SWD1은 변경하지 않으며, SWS1에는 제품 버전과 작업·실패·복구 상태 같은
+  제한된 분류만 들어갑니다. 경로·사용자·해시·transaction ID·자격 증명·장비 정보는 포함하지
+  않습니다.
+
+`0.11.10-poc`에서 추가된 장시간 실행과 패키지 검증 경계도 그대로 유지합니다.
 
 - Telnet 로그인·enable·명령 수집은 각각 제한된 시간과 바이트 예산을 사용합니다. Samsung
   장비의 Latin-1 출력과 Telnet IAC 협상을 처리하되 끝없는 출력이나 세션에는 무한 대기하지
@@ -268,7 +284,7 @@ dotnet restore SamsungSwitchWatch.sln --locked-mode
 dotnet build SamsungSwitchWatch.sln -c Release --no-restore
 dotnet test SamsungSwitchWatch.sln -c Release --no-build
 .\scripts\validate.ps1 -Configuration Release
-.\scripts\build-release.ps1 -Version 0.11.10-poc
+.\scripts\build-release.ps1 -Version 0.11.11-poc
 ```
 
 실제 장비 대신 합성 Telnet 서버와 비식별 Fixture를 사용합니다. Mock 통과를 실제 펌웨어
@@ -290,6 +306,7 @@ ZIP 정확히 두 개입니다.
 - [보안 모델](docs/SECURITY.md)
 - [현장 POC 점검표](docs/FIELD_POC_CHECKLIST_KO.md)
 - [릴리스 절차](docs/RELEASE_PROCESS_KO.md)
+- [0.11.11-poc 릴리스 노트](docs/RELEASE_NOTES_0.11.11_POC_KO.md)
 - [0.11.10-poc 릴리스 노트](docs/RELEASE_NOTES_0.11.10_POC_KO.md)
 - [0.11.9-poc 릴리스 노트](docs/RELEASE_NOTES_0.11.9_POC_KO.md)
 - [0.11.8-poc 릴리스 노트](docs/RELEASE_NOTES_0.11.8_POC_KO.md)

@@ -1,4 +1,5 @@
 using SamsungSwitchWatch.Viewer.Setup.Deployment;
+using SamsungSwitchWatch.Viewer.Setup.Diagnostics;
 
 namespace SamsungSwitchWatch.Viewer.Setup.Tests;
 
@@ -55,6 +56,65 @@ public sealed class ViewerRecoveryTests
             File.ReadAllText(Path.Combine(
                 workspace.InstallDirectory,
                 ViewerSetupConstants.ViewerExecutableName)));
+    }
+
+    [Fact]
+    public async Task Recover_InvalidInstallPending_RestoresExactOriginalAndDiagnostic()
+    {
+        using var workspace = new TestWorkspace();
+        var journal = CreateInvalidJournal(workspace);
+        TestWorkspace.Write(
+            Path.Combine(journal.BackupDirectory, "foreign.txt"),
+            "restore-me");
+        WriteJournal(workspace, journal);
+
+        var result = await workspace.CreateOrchestrator().RecoverAsync();
+
+        Assert.True(result.Succeeded, $"{result.Code}: {result.Message}");
+        Assert.Equal(
+            "restore-me",
+            File.ReadAllText(Path.Combine(
+                workspace.InstallDirectory,
+                "foreign.txt")));
+        Assert.False(Directory.Exists(journal.BackupDirectory));
+        Assert.False(File.Exists(workspace.Paths.JournalPath));
+        Assert.NotNull(result.Diagnostic);
+        Assert.Equal(
+            ViewerSetupDiagnosticPreviousInstallState.Invalid,
+            result.Diagnostic!.PreviousInstallState);
+        Assert.Equal(
+            ViewerSetupDiagnosticQuarantineState.Restored,
+            result.Diagnostic.QuarantineState);
+        Assert.Equal(
+            ViewerSetupDiagnosticRollbackState.Succeeded,
+            result.Diagnostic.RollbackState);
+    }
+
+    [Fact]
+    public async Task Recover_InvalidInstallPendingWithMissingOriginal_FailsWithDiagnostic()
+    {
+        using var workspace = new TestWorkspace();
+        var journal = CreateInvalidJournal(workspace);
+        WriteJournal(workspace, journal);
+
+        var result = await workspace.CreateOrchestrator().RecoverAsync();
+
+        Assert.False(result.Succeeded);
+        Assert.Equal(ViewerSetupErrorCodes.RollbackFailed, result.Code);
+        Assert.True(File.Exists(workspace.Paths.JournalPath));
+        Assert.NotNull(result.Diagnostic);
+        Assert.Equal(
+            ViewerSetupDiagnosticPreviousInstallState.Invalid,
+            result.Diagnostic!.PreviousInstallState);
+        Assert.Equal(
+            ViewerSetupDiagnosticQuarantineState.RestoreFailed,
+            result.Diagnostic.QuarantineState);
+        Assert.Equal(
+            ViewerSetupDiagnosticRollbackState.Failed,
+            result.Diagnostic.RollbackState);
+        Assert.Equal(
+            ViewerSetupDiagnosticStage.Recovery,
+            result.Diagnostic.FailedStage);
     }
 
     [Fact]
@@ -495,6 +555,23 @@ public sealed class ViewerRecoveryTests
         Assert.False(result.Succeeded);
         Assert.Equal(ViewerSetupErrorCodes.RecoveryRequired, result.Code);
         Assert.Equal("keep", File.ReadAllText(Path.Combine(arbitrary, "keep.txt")));
+        Assert.NotNull(inspection.Diagnostic);
+        Assert.Equal(
+            ViewerSetupDiagnosticJournalState.Unreadable,
+            inspection.Diagnostic!.JournalState);
+        Assert.Equal(
+            ViewerSetupDiagnosticStage.RecoveryGate,
+            inspection.Diagnostic.FailedStage);
+        Assert.NotNull(result.Diagnostic);
+        Assert.Equal(
+            ViewerSetupDiagnosticJournalState.Unreadable,
+            result.Diagnostic!.JournalState);
+        Assert.Equal(
+            ViewerSetupDiagnosticStage.RecoveryGate,
+            result.Diagnostic.FailedStage);
+        Assert.Equal(
+            ViewerSetupDiagnosticRollbackState.NotRun,
+            result.Diagnostic.RollbackState);
     }
 
     [Fact]
@@ -635,7 +712,7 @@ public sealed class ViewerRecoveryTests
                     new string('d', 64)))
             : null;
         return new ViewerDeploymentJournal(
-            ViewerDeploymentJournalStore.CurrentFormatVersion,
+            ViewerDeploymentJournalStore.LegacyFormatVersion,
             transactionId,
             "prepared",
             "0.11.4-poc",
@@ -664,6 +741,21 @@ public sealed class ViewerRecoveryTests
                 : fallback;
         }
     }
+
+    private static ViewerDeploymentJournal CreateInvalidJournal(
+        TestWorkspace workspace) =>
+        CreateJournal(
+            workspace,
+            previousInstallExisted: true,
+            installMovedToBackup: true,
+            stagingActivated: false) with
+        {
+            FormatVersion = ViewerDeploymentJournalStore.CurrentFormatVersion,
+            Stage = "backup-move-intent",
+            PreviousManifestSha256 = null,
+            PreviousInstallKind = ViewerPreviousInstallKind.Invalid,
+            PreviousEmptyInstallDirectory = false
+        };
 
     private static void WriteJournal(
         TestWorkspace workspace,

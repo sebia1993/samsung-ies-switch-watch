@@ -10,4 +10,9 @@
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
   </PropertyGroup>
 
+  <ItemGroup>
+    <Compile Include="..\Shared\Sws1ViewerSetupSupportCode.cs"
+             Link="Shared\Sws1ViewerSetupSupportCode.cs" />
+  </ItemGroup>
+
 </Project>

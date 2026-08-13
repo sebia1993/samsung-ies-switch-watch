@@ -17,7 +17,7 @@ dotnet restore SamsungSwitchWatch.sln --locked-mode
 dotnet build SamsungSwitchWatch.sln -c Release --no-restore
 dotnet test SamsungSwitchWatch.sln -c Release --no-build
 .\scripts\validate.ps1 -Configuration Release
-.\scripts\build-release.ps1 -Version 0.11.10-poc
+.\scripts\build-release.ps1 -Version 0.11.11-poc
 ```
 
 Use the .NET 10 SDK. Release packages target `win-x64`, are self-contained, single-file, and untrimmed.
@@ -81,8 +81,18 @@ Regenerate the manual from `tools/build-user-manual.py` before a release wheneve
   installs per-user without UAC under `%LOCALAPPDATA%\Programs\SamsungSwitchWatch\Viewer`, preserves
   `%LOCALAPPDATA%\SamsungSwitchWatch`, and never registers Viewer auto-start.
 - Viewer Setup must validate and stage the package before replacing the current version, restore the
-  previous managed installation on pre-commit failure, and never delete an arbitrary extraction or
-  download directory. PowerShell/CMD Viewer deployment scripts stay source-only for legacy recovery.
+  previous installation on pre-commit failure, and never delete an arbitrary extraction or download
+  directory. A product-path installation that fails validation is moved first to the transaction
+  backup, restored on failure/cancellation, and retained as the single recent product quarantine only
+  after commit. `%LOCALAPPDATA%\SamsungSwitchWatch` data and DPAPI credentials are never quarantined.
+  PowerShell/CMD Viewer deployment scripts stay source-only for legacy recovery.
+- Viewer Setup writes journal format 3 for new transactions and must continue to recover format 2
+  without changing its meaning. A pending format 3 transaction must be completed with v0.11.11 or a
+  later Setup before downgrade. Unknown topology, path ownership, marker or reparse state fails closed.
+- Actionable Viewer Setup failures, except cancellation and a duplicate running operation, use the
+  separate 24-character `SWS1-XXXX-XXXX-XXXX-XXXX` support code. Keep
+  the existing SWD1 codec byte-for-byte compatible. SWS1 contains only bounded enum/status fields and
+  never paths, users, hashes, transaction IDs, credentials, device data, commands or exception text.
 - Preserve compatible Agent ProgramData configuration across transactional updates. Legacy trust
   and CIDR fields may be read for schema compatibility but must not control v0.11 runtime access.
 - Copy packages into protected staging and rehash them before swapping. If service quiescence,

@@ -1,3 +1,4 @@
+using System.IO;
 using System.Security;
 using SamsungSwitchWatch.Viewer.Setup.Infrastructure;
 

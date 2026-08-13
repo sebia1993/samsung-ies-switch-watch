@@ -22,13 +22,14 @@ namespace SamsungSwitchWatch.ManualCapture;
 
 internal static class Program
 {
-    private const string ManualProductVersion = "0.11.10-poc";
+    private const string ManualProductVersion = "0.11.11-poc";
 
     private static readonly string[] ExpectedScreenshotNames =
     [
         "00-agent-setup.png",
         "00-agent-setup-recovery-failed.png",
         "00-viewer-setup.png",
+        "00-viewer-setup-failed.png",
         "01-dashboard.png",
         "02-agent-connection.png",
         "02-agent-connection-failed.png",
@@ -297,6 +298,62 @@ internal static class Program
                     viewerSetupLifetime.Window,
                     Path.Combine(outputDirectory, "00-viewer-setup.png"),
                     "인터넷과 관리자 권한 없이 현재 사용자 전용 경로에 설치하는 Viewer Setup의 실제 초기 화면");
+
+                viewerSetupLifetime.Window.Height = 720;
+                var viewerSetupStatusIndicator =
+                    (System.Windows.Shapes.Ellipse)viewerSetupLifetime.Window.FindName(
+                        "StatusIndicator");
+                var viewerSetupStatusTitle =
+                    (TextBlock)viewerSetupLifetime.Window.FindName("StatusTitle");
+                var viewerSetupStatusMessage =
+                    (TextBlock)viewerSetupLifetime.Window.FindName("StatusMessage");
+                var viewerSetupStatusCode =
+                    (TextBlock)viewerSetupLifetime.Window.FindName("StatusCode");
+                var viewerSetupSteps =
+                    (ListBox)viewerSetupLifetime.Window.FindName("StepList");
+                var viewerSetupInstallButton =
+                    (Button)viewerSetupLifetime.Window.FindName("InstallButton");
+                var viewerSetupRecoverButton =
+                    (Button)viewerSetupLifetime.Window.FindName("RecoverButton");
+
+                viewerSetupStatusIndicator.Fill = Brushes.Firebrick;
+                viewerSetupStatusTitle.Text = "기존 Viewer 복구 필요";
+                viewerSetupStatusMessage.Text =
+                    "격리했던 기존 Viewer 폴더를 원래 위치로 되돌리지 못했습니다. " +
+                    "설치를 반복하지 말고 이전 상태 복구를 다시 시도하세요.";
+                viewerSetupStatusCode.Text =
+                    $"Cause: {ViewerSetupDeployment.ViewerSetupErrorCodes.RollbackFailed}";
+                viewerSetupStatusCode.Visibility = Visibility.Visible;
+                viewerSetupSteps.ItemsSource = new[]
+                {
+                    new ViewerSetupDeployment.ViewerSetupStep(
+                        "EXISTING_INSTALL_QUARANTINED",
+                        "기존 설치 보관",
+                        ViewerSetupDeployment.ViewerSetupStepState.Succeeded,
+                        "검증되지 않은 기존 Viewer 폴더를 새 설치 확인 전까지 보관했습니다."),
+                    new ViewerSetupDeployment.ViewerSetupStep(
+                        ViewerSetupDeployment.ViewerSetupErrorCodes.SmokeFailed,
+                        "새 Viewer 자체점검",
+                        ViewerSetupDeployment.ViewerSetupStepState.Failed,
+                        "새 Viewer 자체점검이 완료되지 않아 기존 설치 복구를 시작했습니다."),
+                    new ViewerSetupDeployment.ViewerSetupStep(
+                        ViewerSetupDeployment.ViewerSetupErrorCodes.RollbackFailed,
+                        "기존 설치 원복",
+                        ViewerSetupDeployment.ViewerSetupStepState.Failed,
+                        "격리했던 기존 Viewer 폴더의 원래 위치 복구를 완료하지 못했습니다.")
+                };
+                viewerSetupInstallButton.IsEnabled = false;
+                viewerSetupRecoverButton.IsEnabled = true;
+                var viewerSetupSupportCode =
+                    PresentViewerSetupFailureSupportCode(
+                        (ViewerSetupWindow)viewerSetupLifetime.Window);
+                RefreshLayout(viewerSetupLifetime.Window);
+                Capture(
+                    viewerSetupLifetime.Window,
+                    Path.Combine(outputDirectory, "00-viewer-setup-failed.png"),
+                    "검증되지 않은 기존 Viewer 자동 보관 뒤 원복 실패를 분명히 표시하고 이전 상태 복구와 선택 가능한 SWS1 지원 코드를 안내하는 Viewer Setup 화면");
+                Console.WriteLine(
+                    $"Viewer Setup failure support code: {viewerSetupSupportCode}");
             }
 
             using var dashboardLifetime = new WindowLifetime(
@@ -845,6 +902,118 @@ internal static class Program
         {
             throw new InvalidOperationException(
                 "The generated SWD1 support code did not decode.");
+        }
+    }
+
+    private static string PresentViewerSetupFailureSupportCode(
+        ViewerSetupWindow window)
+    {
+        var assembly = typeof(ViewerSetupWindow).Assembly;
+        object EnumValue(string typeName, string value) => Enum.Parse(
+            assembly.GetType(typeName, throwOnError: true)!,
+            value,
+            ignoreCase: false);
+
+        var stageStateType = assembly.GetType(
+            "SamsungSwitchWatch.Viewer.Setup.Diagnostics.ViewerSetupDiagnosticStageState",
+            throwOnError: true)!;
+        var stageStatesType = assembly.GetType(
+            "SamsungSwitchWatch.Viewer.Setup.Diagnostics.ViewerSetupDiagnosticStageStates",
+            throwOnError: true)!;
+        object StageState(string value) => Enum.Parse(
+            stageStateType,
+            value,
+            ignoreCase: false);
+        var stageStates = Activator.CreateInstance(
+            stageStatesType,
+            BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
+            binder: null,
+            args:
+            [
+                StageState("Succeeded"),
+                StageState("Succeeded"),
+                StageState("Succeeded"),
+                StageState("Succeeded"),
+                StageState("Succeeded"),
+                StageState("Failed"),
+                StageState("NotRun"),
+                StageState("NotRun"),
+                StageState("Failed")
+            ],
+            culture: null)
+            ?? throw new InvalidOperationException(
+                "The Viewer Setup diagnostic stage state could not be created.");
+
+        var factoryType = assembly.GetType(
+            "SamsungSwitchWatch.Viewer.Setup.ViewerSetupDiagnosticFactory",
+            throwOnError: true)!;
+        var createMethod = factoryType.GetMethod(
+            "Create",
+            BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic)
+            ?? throw new MissingMethodException(factoryType.FullName, "Create");
+        var snapshot = createMethod.Invoke(
+            null,
+            [
+                ManualProductVersion,
+                EnumValue(
+                    "SamsungSwitchWatch.Viewer.Setup.Diagnostics.ViewerSetupDiagnosticOperation",
+                    "Install"),
+                ViewerSetupDeployment.ViewerSetupErrorCodes.RollbackFailed,
+                ViewerSetupDeployment.ViewerSetupErrorCodes.SmokeFailed,
+                EnumValue(
+                    "SamsungSwitchWatch.Viewer.Setup.Diagnostics.ViewerSetupDiagnosticStage",
+                    "Smoke"),
+                EnumValue(
+                    "SamsungSwitchWatch.Viewer.Setup.Diagnostics.ViewerSetupDiagnosticRollbackState",
+                    "Failed"),
+                EnumValue(
+                    "SamsungSwitchWatch.Viewer.Setup.Diagnostics.ViewerSetupDiagnosticJournalState",
+                    "Recoverable"),
+                EnumValue(
+                    "SamsungSwitchWatch.Viewer.Setup.Diagnostics.ViewerSetupDiagnosticQuarantineState",
+                    "RestoreFailed"),
+                EnumValue(
+                    "SamsungSwitchWatch.Viewer.Setup.Diagnostics.ViewerSetupDiagnosticPreviousInstallState",
+                    "Invalid"),
+                stageStates
+            ])
+            ?? throw new InvalidOperationException(
+                "The Viewer Setup diagnostic snapshot could not be created.");
+        var presentMethod = typeof(ViewerSetupWindow).GetMethod(
+            "PresentSupportCode",
+            BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
+            ?? throw new MissingMethodException(
+                typeof(ViewerSetupWindow).FullName,
+                "PresentSupportCode");
+        presentMethod.Invoke(window, [snapshot, true]);
+
+        var code = ((TextBox)window.FindName("SupportCodeTextBox")).Text;
+        if (code.Length != 24 || !code.StartsWith("SWS1-", StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                "The Viewer Setup formatter did not produce a valid SWS1 shape.");
+        }
+
+        EnsureViewerSetupSupportCodeDecodes(assembly, code);
+        return code;
+    }
+
+    private static void EnsureViewerSetupSupportCodeDecodes(
+        Assembly assembly,
+        string code)
+    {
+        var codecType = assembly.GetType(
+            "SamsungSwitchWatch.Viewer.Setup.Diagnostics.Sws1ViewerSetupSupportCode",
+            throwOnError: true)!;
+        var method = codecType.GetMethod(
+            "TryDecode",
+            BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic)
+            ?? throw new MissingMethodException(codecType.FullName, "TryDecode");
+        object?[] arguments = [code, null];
+        if (method.Invoke(null, arguments) is not true || arguments[1] is null)
+        {
+            throw new InvalidOperationException(
+                "The generated SWS1 support code did not decode.");
         }
     }
 

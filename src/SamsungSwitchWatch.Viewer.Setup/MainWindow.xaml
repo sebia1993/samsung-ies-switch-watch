@@ -61,6 +61,52 @@
                                FontFamily="Consolas"
                                Foreground="{StaticResource MutedTextBrush}"
                                Visibility="Collapsed" />
+                    <Border x:Name="SupportCodePanel"
+                            Margin="0,12,0,0"
+                            Padding="12"
+                            Background="#FFFBEB"
+                            BorderBrush="#F59E0B"
+                            BorderThickness="1"
+                            CornerRadius="6"
+                            Visibility="Collapsed">
+                        <StackPanel>
+                            <TextBlock FontWeight="SemiBold"
+                                       Foreground="#92400E"
+                                       Text="Viewer 설치 지원 코드" />
+                            <TextBlock Margin="0,3,0,8"
+                                       Foreground="#92400E"
+                                       Text="아래 코드만 전달하세요. 경로, 계정, 비밀번호는 포함되지 않습니다." />
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <TextBox x:Name="SupportCodeTextBox"
+                                         MinHeight="36"
+                                         Padding="8,6"
+                                         VerticalContentAlignment="Center"
+                                         FontFamily="Consolas"
+                                         FontSize="15"
+                                         FontWeight="SemiBold"
+                                         IsReadOnly="True"
+                                         IsReadOnlyCaretVisible="True"
+                                         TextWrapping="NoWrap"
+                                         AutomationProperties.Name="Viewer 설치 지원 코드" />
+                                <Button x:Name="CopySupportCodeButton"
+                                        Grid.Column="1"
+                                        Margin="8,0,0,0"
+                                        Style="{StaticResource SecondaryButton}"
+                                        Click="CopySupportCodeButton_OnClick"
+                                        Content="복사"
+                                        AutomationProperties.Name="Viewer 설치 지원 코드 복사" />
+                            </Grid>
+                            <TextBlock x:Name="SupportCodeCopyFeedbackText"
+                                       Margin="0,6,0,0"
+                                       Foreground="#92400E"
+                                       Visibility="Collapsed"
+                                       AutomationProperties.LiveSetting="Polite" />
+                        </StackPanel>
+                    </Border>
                 </StackPanel>
             </Grid>
         </Border>

@@ -6,7 +6,7 @@
 ## 1. 반입 파일과 버전
 
 - [ ] 동일 GitHub Release에서 Agent ZIP과 Viewer ZIP을 받음
-- [ ] Agent와 Viewer 파일명이 같은 `0.11.10-poc` 버전을 표시함
+- [ ] Agent와 Viewer 파일명이 같은 `0.11.11-poc` 버전을 표시함
 - [ ] 두 ZIP의 SHA-256을 해당 GitHub Release 본문에 표시된 값과 비교함
 - [ ] Agent ZIP에 `SamsungSwitchWatch.Agent.Setup.exe`와 Agent 런타임 파일이 있음
 - [ ] Viewer ZIP에 `SamsungSwitchWatch.Viewer.Setup.exe`, `SamsungSwitchWatch.Viewer.exe`와 Viewer 런타임 파일이 있음
@@ -113,6 +113,11 @@ HTTPS는 전송 내용을 암호화하지만 Agent 신원을 인증하지 않습
 - [ ] 설치 완료 전에 smoke/실행 확인이 실패하면 기존 설치는 복구되고 최초 설치는 미설치 상태로 정리됨
 - [ ] 활성화·복구 Move/Delete의 일시적 EDR 잠금은 제한 재시도로 회복되고 취소 시 즉시 중단됨
 - [ ] commit 전 새 Viewer 파일이 손상된 경우 해당 폴더를 격리한 뒤 검증된 이전 설치를 복구·재검증함
+- [ ] 검증되지 않은 기존 Viewer 프로그램 폴더는 transaction backup으로 먼저 이동되며 commit 전
+      실패·취소 시 원래 고정 설치 경로로 정확히 복원됨
+- [ ] 새 Viewer 정상 실행과 commit 뒤에만 기존 폴더가 제품 소유 최근 격리본으로 확정됨
+- [ ] 성공한 업데이트를 반복해도 검증된 최근 격리본은 1개만 남고, marker·경로·reparse 상태가
+      모호한 자료는 삭제하지 않고 fail-closed로 중단함
 - [ ] 손상된 backup 또는 이미 존재하는 failed 증거는 삭제하지 않고 fail-closed로 중단함
 - [ ] 설치 완료 전에 Viewer가 자동 실행되고 정상 실행 유지가 확인됨
 - [ ] 설치 성공 후 압축 해제한 임시 폴더를 삭제해도 Viewer가 바로 가기로 실행됨
@@ -121,6 +126,14 @@ HTTPS는 전송 내용을 암호화하지만 Agent 신원을 인증하지 않습
 - [ ] 장비·연결·DPAPI·감시 데이터 파일은 보존되고 `Setup` 하위의 journal·증거 파일만 변경됨
 - [ ] 정상 미완료 journal에서는 설치가 잠기고 복구 완료 후 설치를 별도로 눌러야 함
 - [ ] 손상되거나 안전하지 않은 journal에서는 복구와 설치가 모두 차단됨
+- [ ] v0.11.11 Setup이 기존 format 2 journal을 원래 의미대로 복구하고 새 작업은 format 3으로 기록함
+- [ ] format 3 journal이 남은 상태에서는 v0.11.11 또는 더 최신 Setup으로 복구를 완료한 뒤에만
+      Viewer를 이전 버전으로 내림
+- [ ] 취소·중복 실행을 제외한 조치 가능한 Viewer Setup 실패와 복구 불가 검사에서만
+      `SWS1-XXXX-XXXX-XXXX-XXXX`가 표시되고 새 작업·성공·취소 시 지워짐
+- [ ] SWS1을 선택하거나 복사할 수 있고 한 글자 변경은 CRC 검사에서 거부됨
+- [ ] SWS1에 경로·사용자·해시·transaction ID·자격 증명·장비 정보·예외 원문이 없음
+- [ ] 기존 Agent Setup과 Viewer 연결 SWD1 고정 코드와 해석 결과가 바뀌지 않음
 - [ ] 다른 Windows 사용자로 Viewer 데이터를 복사해도 비밀번호가 복호화되지 않음
 - [ ] 인터넷과 Python/.NET 설치 없이 `익명 진단 저장` TXT를 생성하고 메모장에서 한글을 읽을 수 있음
 - [ ] Viewer 설정·장비·감시 JSON이 크기 상한을 넘으면 이전 상태를 정상으로 가장하지 않고 오류를 표시함
@@ -294,7 +307,7 @@ Viewer가 종료되면 감시도 중단되는 구조가 현장 운영 요구와 
       핵심 서비스 상태가 확인된 복구는 완료되며 작업 기록이 정리됨
 - [ ] 서비스 실행 파일 경로·시작 유형·계정·표시 이름·서비스 SID·이전 실행 상태 중 하나라도
       복원하지 못하면 `ROLLBACK_SERVICE_RESTORE_FAILED`로 중단하고 journal과 이전 파일을 보존함
-- [ ] `0.11.4-poc`부터 `0.11.9-poc`까지 남은 호환 journal을 `0.11.10-poc` Setup이 읽고 안전하게 복구함
+- [ ] `0.11.4-poc`부터 `0.11.9-poc`까지 남은 호환 journal을 `0.11.11-poc` Setup이 읽고 안전하게 복구함
 - [ ] 새 ProgramData 제품 루트 생성 직전에 다른 프로세스가 같은 폴더를 만들면 Setup이 해당
       폴더의 ACL·내용을 변경하거나 rollback에서 삭제하지 않음
 - [ ] journal 원자 교체가 완료된 뒤 임시 파일 정리만 실패해도 저장 완료를 실패로 바꾸지 않음

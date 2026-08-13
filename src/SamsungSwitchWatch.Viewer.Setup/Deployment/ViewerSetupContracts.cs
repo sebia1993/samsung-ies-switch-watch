@@ -1,5 +1,7 @@
 using System.Diagnostics;
 
+using SamsungSwitchWatch.Viewer.Setup.Diagnostics;
+
 namespace SamsungSwitchWatch.Viewer.Setup.Deployment;
 
 public static class ViewerSetupConstants
@@ -28,6 +30,7 @@ public static class ViewerSetupErrorCodes
     public const string SmokeFailed = "VIEWER_SETUP_SMOKE_FAILED";
     public const string LaunchFailed = "VIEWER_SETUP_LAUNCH_FAILED";
     public const string ShortcutFailed = "VIEWER_SETUP_SHORTCUT_FAILED";
+    public const string QuarantineFailed = "VIEWER_SETUP_QUARANTINE_FAILED";
     public const string RollbackFailed = "VIEWER_SETUP_ROLLBACK_FAILED";
     public const string Cancelled = "VIEWER_SETUP_CANCELLED";
     public const string Unexpected = "VIEWER_SETUP_UNEXPECTED";
@@ -94,6 +97,18 @@ public sealed record ViewerSetupPaths(
     public string JournalPath =>
         Path.Combine(OperationsDirectory, "viewer-native-setup-transaction.json");
 
+    public string QuarantineLatestDirectory =>
+        InstallDirectory + ".__quarantine_latest";
+
+    public string QuarantinePreviousDirectory =>
+        InstallDirectory + ".__quarantine_previous";
+
+    public string QuarantineLatestMarkerPath =>
+        QuarantineLatestDirectory + ".owner.json";
+
+    public string QuarantinePreviousMarkerPath =>
+        QuarantinePreviousDirectory + ".owner.json";
+
     public ViewerTransactionPaths CreateTransactionPaths(string transactionId)
     {
         if (!ViewerSetupPathGuard.IsTransactionId(transactionId))
@@ -156,6 +171,8 @@ public sealed record ViewerSetupResult(
     string Message,
     IReadOnlyList<ViewerSetupStep> Steps)
 {
+    internal ViewerSetupDiagnosticSnapshot? Diagnostic { get; init; }
+
     public static ViewerSetupResult Success(
         string message,
         IReadOnlyList<ViewerSetupStep> steps) =>
@@ -174,6 +191,8 @@ public sealed record ViewerRecoveryInspection(
     string Code,
     string Message)
 {
+    internal ViewerSetupDiagnosticSnapshot? Diagnostic { get; init; }
+
     public static ViewerRecoveryInspection None { get; } =
         new(
             false,
@@ -208,7 +227,24 @@ public sealed record ViewerDeploymentJournal(
     bool DesktopShortcutMutated,
     bool StartMenuShortcutMutated,
     bool StartupShortcutMutated,
-    bool NormalLaunchObserved);
+    bool NormalLaunchObserved,
+    ViewerPreviousInstallKind PreviousInstallKind =
+        ViewerPreviousInstallKind.Unspecified,
+    bool PreviousEmptyInstallDirectory = false,
+    bool QuarantineLatestToPreviousIntent = false,
+    bool QuarantineLatestToPreviousCompleted = false,
+    bool QuarantineBackupToLatestIntent = false,
+    bool QuarantineBackupToLatestCompleted = false,
+    bool QuarantinePreviousDeleteIntent = false,
+    bool QuarantinePreviousDeleteCompleted = false);
+
+public enum ViewerPreviousInstallKind
+{
+    Unspecified = 0,
+    None = 1,
+    Verified = 2,
+    Invalid = 3
+}
 
 public sealed record ViewerProcessCheckResult(
     bool Succeeded,
@@ -281,6 +317,9 @@ public interface IViewerSetupFileSystem
     void WriteAllBytesAtomic(string path, byte[] contents);
     void EnsureDirectoryWritable(string path);
     bool DirectoryHasEntries(string path);
+    bool IsReparsePoint(string path);
+    bool DirectoryTreeContainsReparsePoint(string path);
+    void DeleteDirectoryTreeNoFollow(string path);
 }
 
 public interface IViewerProcessManager
@@ -394,12 +433,64 @@ public static class ViewerSetupPathGuard
         ViewerSetupPaths paths,
         ViewerDeploymentJournal journal)
     {
-        if (journal.FormatVersion != ViewerDeploymentJournalStore.CurrentFormatVersion ||
-            !IsTransactionId(journal.TransactionId) ||
+        if (!IsTransactionId(journal.TransactionId) ||
             string.IsNullOrWhiteSpace(journal.Stage) ||
-            !IsSha256(journal.PackageManifestSha256) ||
-            journal.PreviousInstallExisted !=
-            IsSha256(journal.PreviousManifestSha256))
+            !IsSha256(journal.PackageManifestSha256))
+        {
+            ThrowInvalid();
+        }
+
+        var quarantineFlags =
+            journal.QuarantineLatestToPreviousIntent ||
+            journal.QuarantineLatestToPreviousCompleted ||
+            journal.QuarantineBackupToLatestIntent ||
+            journal.QuarantineBackupToLatestCompleted ||
+            journal.QuarantinePreviousDeleteIntent ||
+            journal.QuarantinePreviousDeleteCompleted;
+        if (journal.FormatVersion == ViewerDeploymentJournalStore.LegacyFormatVersion)
+        {
+            if (journal.PreviousInstallKind != ViewerPreviousInstallKind.Unspecified ||
+                journal.PreviousEmptyInstallDirectory ||
+                quarantineFlags ||
+                journal.PreviousInstallExisted !=
+                IsSha256(journal.PreviousManifestSha256))
+            {
+                ThrowInvalid();
+            }
+        }
+        else if (journal.FormatVersion == ViewerDeploymentJournalStore.CurrentFormatVersion)
+        {
+            var previousStateValid = journal.PreviousInstallKind switch
+            {
+                ViewerPreviousInstallKind.None =>
+                    journal.PreviousInstallExisted ==
+                    journal.PreviousEmptyInstallDirectory &&
+                    journal.PreviousManifestSha256 is null,
+                ViewerPreviousInstallKind.Verified =>
+                    journal.PreviousInstallExisted &&
+                    !journal.PreviousEmptyInstallDirectory &&
+                    IsSha256(journal.PreviousManifestSha256),
+                ViewerPreviousInstallKind.Invalid =>
+                    journal.PreviousInstallExisted &&
+                    !journal.PreviousEmptyInstallDirectory &&
+                    journal.PreviousManifestSha256 is null,
+                _ => false
+            };
+            var quarantineStateValid =
+                (!quarantineFlags ||
+                 journal.PreviousInstallKind == ViewerPreviousInstallKind.Invalid) &&
+                (!journal.QuarantineLatestToPreviousCompleted ||
+                 journal.QuarantineLatestToPreviousIntent) &&
+                (!journal.QuarantineBackupToLatestCompleted ||
+                 journal.QuarantineBackupToLatestIntent) &&
+                (!journal.QuarantinePreviousDeleteCompleted ||
+                 journal.QuarantinePreviousDeleteIntent);
+            if (!previousStateValid || !quarantineStateValid)
+            {
+                ThrowInvalid();
+            }
+        }
+        else
         {
             ThrowInvalid();
         }
@@ -410,6 +501,7 @@ public static class ViewerSetupPathGuard
             journal.FailedDirectory,
             journal.EvidenceDirectory);
         ValidateTransactionPaths(paths, journal.TransactionId, transaction);
+        ValidateQuarantinePaths(paths);
 
         var expectedEvidence = Full(journal.EvidenceDirectory);
         ValidateShortcutSnapshot(
@@ -427,6 +519,29 @@ public static class ViewerSetupPathGuard
             paths.StartupShortcutPath,
             expectedEvidence,
             paths.ViewerExecutablePath);
+    }
+
+    public static void ValidateQuarantinePaths(ViewerSetupPaths paths)
+    {
+        var install = Full(paths.InstallDirectory);
+        var installParent = Full(Path.GetDirectoryName(install) ?? string.Empty);
+        var latest = Full(paths.QuarantineLatestDirectory);
+        var previous = Full(paths.QuarantinePreviousDirectory);
+        var latestMarker = Full(paths.QuarantineLatestMarkerPath);
+        var previousMarker = Full(paths.QuarantinePreviousMarkerPath);
+        var expectedLatest = install + ".__quarantine_latest";
+        var expectedPrevious = install + ".__quarantine_previous";
+        if (!string.Equals(latest, expectedLatest, StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(previous, expectedPrevious, StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(latestMarker, expectedLatest + ".owner.json", StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(previousMarker, expectedPrevious + ".owner.json", StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(Full(Path.GetDirectoryName(latest) ?? string.Empty), installParent,
+                StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(Full(Path.GetDirectoryName(previous) ?? string.Empty), installParent,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            ThrowInvalid();
+        }
     }
 
     private static void ValidateShortcutSnapshot(

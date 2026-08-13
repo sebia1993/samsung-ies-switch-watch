@@ -1,3 +1,6 @@
+using System.Text.Json;
+using SamsungSwitchWatch.Viewer.Setup.Diagnostics;
+
 namespace SamsungSwitchWatch.Viewer.Setup.Deployment;
 
 public sealed class ViewerDeploymentOrchestrator(
@@ -14,6 +17,7 @@ public sealed class ViewerDeploymentOrchestrator(
     private static readonly TimeSpan SmokeTimeout = TimeSpan.FromSeconds(20);
     private static readonly TimeSpan LaunchLivenessWindow = TimeSpan.FromSeconds(2);
     private const int DirectoryMutationMaxAttempts = 5;
+    private const int MaximumQuarantineMarkerBytes = 64 * 1024;
     private static readonly TimeSpan DirectoryMutationRetryDelay =
         TimeSpan.FromMilliseconds(250);
 
@@ -21,14 +25,19 @@ public sealed class ViewerDeploymentOrchestrator(
         CancellationToken cancellationToken = default)
     {
         var steps = new ViewerSetupStepRecorder();
+        var diagnostic = new DeploymentDiagnosticState(
+            ViewerSetupDiagnosticOperation.Install);
         var gateEntered = false;
         IDisposable? lease = null;
         try
         {
+            diagnostic.ActiveStage = ViewerSetupDiagnosticStage.Lock;
             await ProcessGate.WaitAsync(cancellationToken);
             gateEntered = true;
             lease = deploymentLock.Acquire();
-            return await DeployCoreAsync(steps, cancellationToken);
+            return AttachDiagnostic(
+                await DeployCoreAsync(steps, diagnostic, cancellationToken),
+                diagnostic);
         }
         catch (OperationCanceledException)
         {
@@ -36,15 +45,19 @@ public sealed class ViewerDeploymentOrchestrator(
                 ViewerSetupErrorCodes.Cancelled,
                 "Viewer 설치",
                 "Viewer 설치가 취소되었습니다.");
-            return Failure(
+            diagnostic.PrimaryCode ??= ViewerSetupErrorCodes.Cancelled;
+            return AttachDiagnostic(Failure(
                 ViewerSetupErrorCodes.Cancelled,
                 "Viewer 설치가 취소되었습니다.",
-                steps);
+                steps), diagnostic);
         }
         catch (ViewerSetupException exception)
         {
             steps.Failed(exception.Code, "Viewer 설치", exception.Message);
-            return Failure(exception.Code, exception.Message, steps);
+            diagnostic.PrimaryCode ??= exception.Code;
+            return AttachDiagnostic(
+                Failure(exception.Code, exception.Message, steps),
+                diagnostic);
         }
         catch
         {
@@ -52,10 +65,11 @@ public sealed class ViewerDeploymentOrchestrator(
                 ViewerSetupErrorCodes.Unexpected,
                 "Viewer 설치",
                 "예상하지 못한 Windows 오류로 Viewer를 설치하지 못했습니다.");
-            return Failure(
+            diagnostic.PrimaryCode ??= ViewerSetupErrorCodes.Unexpected;
+            return AttachDiagnostic(Failure(
                 ViewerSetupErrorCodes.Unexpected,
                 "예상하지 못한 Windows 오류로 Viewer를 설치하지 못했습니다.",
-                steps);
+                steps), diagnostic);
         }
         finally
         {
@@ -85,7 +99,13 @@ public sealed class ViewerDeploymentOrchestrator(
                 journal.NormalLaunchObserved ||
                 string.Equals(journal.Stage, "committed", StringComparison.Ordinal)
                     ? "이전 설치의 정리 작업이 남아 있습니다. 이전 상태 복구를 실행하세요."
-                    : "완료되지 않은 Viewer 설치가 있습니다. 이전 상태 복구를 먼저 실행하세요.");
+                    : "완료되지 않은 Viewer 설치가 있습니다. 이전 상태 복구를 먼저 실행하세요.")
+            {
+                Diagnostic = RecoveryInspectionDiagnostic(
+                    journal,
+                    ViewerSetupDiagnosticJournalState.Recoverable,
+                    ViewerSetupDiagnosticStage.RecoveryGate)
+            };
         }
         catch (ViewerSetupException exception)
         {
@@ -93,7 +113,13 @@ public sealed class ViewerDeploymentOrchestrator(
                 true,
                 false,
                 ViewerSetupErrorCodes.RecoveryRequired,
-                exception.Message);
+                exception.Message)
+            {
+                Diagnostic = RecoveryInspectionDiagnostic(
+                    null,
+                    ViewerSetupDiagnosticJournalState.Unreadable,
+                    ViewerSetupDiagnosticStage.RecoveryGate)
+            };
         }
         catch
         {
@@ -101,7 +127,13 @@ public sealed class ViewerDeploymentOrchestrator(
                 true,
                 false,
                 ViewerSetupErrorCodes.RecoveryRequired,
-                "이전 Viewer 설치 작업을 안전하게 확인할 수 없습니다.");
+                "이전 Viewer 설치 작업을 안전하게 확인할 수 없습니다.")
+            {
+                Diagnostic = RecoveryInspectionDiagnostic(
+                    null,
+                    ViewerSetupDiagnosticJournalState.Unreadable,
+                    ViewerSetupDiagnosticStage.RecoveryGate)
+            };
         }
     }
 
@@ -109,6 +141,12 @@ public sealed class ViewerDeploymentOrchestrator(
         CancellationToken cancellationToken = default)
     {
         var steps = new ViewerSetupStepRecorder();
+        var diagnostic = new DeploymentDiagnosticState(
+            ViewerSetupDiagnosticOperation.Recovery)
+        {
+            ActiveStage = ViewerSetupDiagnosticStage.RecoveryGate,
+            JournalState = ViewerSetupDiagnosticJournalState.None
+        };
         var gateEntered = false;
         IDisposable? lease = null;
         try
@@ -124,20 +162,43 @@ public sealed class ViewerDeploymentOrchestrator(
                     "RECOVERY_NOT_REQUIRED",
                     "이전 상태 복구",
                     "복구가 필요한 이전 설치 작업이 없습니다.");
-                return ViewerSetupResult.Success(
+                diagnostic.JournalState = ViewerSetupDiagnosticJournalState.None;
+                return AttachDiagnostic(ViewerSetupResult.Success(
                     "복구가 필요한 이전 설치 작업이 없습니다.",
-                    steps);
+                    steps), diagnostic);
             }
 
-            var journal = store.Read();
+            ViewerDeploymentJournal journal;
+            try
+            {
+                journal = store.Read();
+            }
+            catch
+            {
+                diagnostic.JournalState = ViewerSetupDiagnosticJournalState.Unreadable;
+                throw;
+            }
+            diagnostic.JournalState = ViewerSetupDiagnosticJournalState.Recoverable;
+            diagnostic.ProductVersion = journal.PackageVersion;
+            diagnostic.PreviousInstallKind = EffectivePreviousInstallKind(journal);
+            diagnostic.QuarantineState = QuarantineStateFor(journal);
+            diagnostic.ActiveStage = ViewerSetupDiagnosticStage.Recovery;
             await RecoverJournalAsync(store, journal, steps, cancellationToken);
             steps.Succeeded(
                 "RECOVERY_COMPLETED",
                 "이전 상태 복구",
                 "이전 설치 상태 복구가 완료되었습니다.");
-            return ViewerSetupResult.Success(
+            diagnostic.RollbackState = ViewerSetupDiagnosticRollbackState.Succeeded;
+            diagnostic.JournalState = ViewerSetupDiagnosticJournalState.None;
+            if (diagnostic.QuarantineState ==
+                ViewerSetupDiagnosticQuarantineState.IsolatedPending)
+            {
+                diagnostic.QuarantineState =
+                    ViewerSetupDiagnosticQuarantineState.Restored;
+            }
+            return AttachDiagnostic(ViewerSetupResult.Success(
                 "이전 설치 상태 복구가 완료되었습니다.",
-                steps);
+                steps), diagnostic);
         }
         catch (OperationCanceledException)
         {
@@ -145,15 +206,29 @@ public sealed class ViewerDeploymentOrchestrator(
                 ViewerSetupErrorCodes.Cancelled,
                 "이전 상태 복구",
                 "Viewer 복구가 취소되었습니다.");
-            return Failure(
+            diagnostic.PrimaryCode ??= ViewerSetupErrorCodes.Cancelled;
+            return AttachDiagnostic(Failure(
                 ViewerSetupErrorCodes.Cancelled,
                 "Viewer 복구가 취소되었습니다.",
-                steps);
+                steps), diagnostic);
         }
         catch (ViewerSetupException exception)
         {
             steps.Failed(exception.Code, "이전 상태 복구", exception.Message);
-            return Failure(exception.Code, exception.Message, steps);
+            diagnostic.PrimaryCode ??= exception.Code;
+            if (diagnostic.ActiveStage == ViewerSetupDiagnosticStage.Recovery)
+            {
+                diagnostic.RollbackState = ViewerSetupDiagnosticRollbackState.Failed;
+                if (diagnostic.QuarantineState ==
+                    ViewerSetupDiagnosticQuarantineState.IsolatedPending)
+                {
+                    diagnostic.QuarantineState =
+                        ViewerSetupDiagnosticQuarantineState.RestoreFailed;
+                }
+            }
+            return AttachDiagnostic(
+                Failure(exception.Code, exception.Message, steps),
+                diagnostic);
         }
         catch
         {
@@ -161,10 +236,21 @@ public sealed class ViewerDeploymentOrchestrator(
                 ViewerSetupErrorCodes.RollbackFailed,
                 "이전 상태 복구",
                 "이전 Viewer 설치 상태를 완전히 복구하지 못했습니다.");
-            return Failure(
+            diagnostic.PrimaryCode ??= ViewerSetupErrorCodes.RollbackFailed;
+            if (diagnostic.ActiveStage == ViewerSetupDiagnosticStage.Recovery)
+            {
+                diagnostic.RollbackState = ViewerSetupDiagnosticRollbackState.Failed;
+                if (diagnostic.QuarantineState ==
+                    ViewerSetupDiagnosticQuarantineState.IsolatedPending)
+                {
+                    diagnostic.QuarantineState =
+                        ViewerSetupDiagnosticQuarantineState.RestoreFailed;
+                }
+            }
+            return AttachDiagnostic(Failure(
                 ViewerSetupErrorCodes.RollbackFailed,
                 "이전 Viewer 설치 상태를 완전히 복구하지 못했습니다.",
-                steps);
+                steps), diagnostic);
         }
         finally
         {
@@ -178,6 +264,7 @@ public sealed class ViewerDeploymentOrchestrator(
 
     private async Task<ViewerSetupResult> DeployCoreAsync(
         ViewerSetupStepRecorder steps,
+        DeploymentDiagnosticState diagnostic,
         CancellationToken cancellationToken)
     {
         var store = new ViewerDeploymentJournalStore(fileSystem, paths);
@@ -185,22 +272,35 @@ public sealed class ViewerDeploymentOrchestrator(
         ViewerDeploymentJournal? journal = null;
         try
         {
+            diagnostic.ActiveStage = ViewerSetupDiagnosticStage.RecoveryGate;
             if (store.Exists)
             {
+                diagnostic.JournalState = ViewerSetupDiagnosticJournalState.Recoverable;
                 throw new ViewerSetupException(
                     ViewerSetupErrorCodes.RecoveryRequired,
                     "완료되지 않은 Viewer 설치가 있습니다. 이전 상태 복구를 먼저 실행하세요.");
             }
 
+            diagnostic.ActiveStage = ViewerSetupDiagnosticStage.Path;
             ValidateBasePaths();
+            diagnostic.ActiveStage = ViewerSetupDiagnosticStage.Package;
             var package = packageValidator.Validate(paths.PackageDirectory);
+            diagnostic.ProductVersion = package.Version;
+            diagnostic.PackageState = ViewerSetupDiagnosticStageState.Succeeded;
             steps.Succeeded(
                 "PACKAGE_VALID",
                 "패키지 확인",
                 $"Viewer {package.Version} 파일 무결성이 정상입니다.");
 
-            var existingPackage = ValidateExistingInstallation();
+            diagnostic.ActiveStage = ViewerSetupDiagnosticStage.Backup;
+            var existingInstall = ClassifyExistingInstallation();
+            diagnostic.PreviousInstallKind = existingInstall.Kind;
+            diagnostic.ExistingInstallState = ViewerSetupDiagnosticStageState.Succeeded;
+            diagnostic.QuarantineState = existingInstall.Kind == ViewerPreviousInstallKind.Invalid
+                ? ViewerSetupDiagnosticQuarantineState.NotRun
+                : ViewerSetupDiagnosticQuarantineState.NotRequired;
 
+            diagnostic.ActiveStage = ViewerSetupDiagnosticStage.Shutdown;
             var shutdown = await shutdownCoordinator.EnsureStoppedAsync(
                 ViewerShutdownTimeout,
                 cancellationToken);
@@ -217,6 +317,7 @@ public sealed class ViewerDeploymentOrchestrator(
                 shutdown.Status == ViewerShutdownStatus.Stopped
                     ? "실행 중이던 Viewer가 안전하게 종료되었습니다."
                     : "실행 중인 Viewer가 없습니다.");
+            diagnostic.ShutdownState = ViewerSetupDiagnosticStageState.Succeeded;
 
             var installParent = Path.GetDirectoryName(paths.InstallDirectory) ??
                                 throw new ViewerSetupException(
@@ -249,12 +350,13 @@ public sealed class ViewerDeploymentOrchestrator(
                 "prepared",
                 package.Version,
                 package.ManifestSha256,
-                existingPackage?.ManifestSha256,
+                existingInstall.Package?.ManifestSha256,
                 transaction.StagingDirectory,
                 transaction.BackupDirectory,
                 transaction.FailedDirectory,
                 transaction.EvidenceDirectory,
-                fileSystem.DirectoryExists(paths.InstallDirectory),
+                existingInstall.Kind != ViewerPreviousInstallKind.None ||
+                    existingInstall.EmptyDirectoryExisted,
                 false,
                 false,
                 desktopSnapshot,
@@ -263,9 +365,12 @@ public sealed class ViewerDeploymentOrchestrator(
                 false,
                 false,
                 false,
-                false);
+                false,
+                existingInstall.Kind,
+                existingInstall.EmptyDirectoryExisted);
             store.Write(journal);
             ownsJournal = true;
+            diagnostic.JournalState = ViewerSetupDiagnosticJournalState.Recoverable;
 
             fileSystem.CreateDirectory(transaction.EvidenceDirectory);
             desktopSnapshot = shortcutManager.Capture(
@@ -289,7 +394,9 @@ public sealed class ViewerDeploymentOrchestrator(
             };
             store.Write(journal);
 
+            diagnostic.ActiveStage = ViewerSetupDiagnosticStage.Staging;
             StagePackage(package, transaction.StagingDirectory);
+            diagnostic.StagingState = ViewerSetupDiagnosticStageState.Succeeded;
             journal = journal with { Stage = "package-staged" };
             store.Write(journal);
             steps.Succeeded(
@@ -297,10 +404,20 @@ public sealed class ViewerDeploymentOrchestrator(
                 "파일 준비",
                 "검증된 Viewer 파일을 별도 작업 폴더에 준비했습니다.");
 
+            if (journal.PreviousEmptyInstallDirectory)
+            {
+                RemoveRecordedEmptyInstallDirectory();
+            }
+
             journal = journal with { Stage = "activation-started" };
             store.Write(journal);
-            if (journal.PreviousInstallExisted)
+            if (journal.PreviousInstallKind is
+                ViewerPreviousInstallKind.Verified or
+                ViewerPreviousInstallKind.Invalid)
             {
+                diagnostic.ActiveStage = journal.PreviousInstallKind == ViewerPreviousInstallKind.Invalid
+                    ? ViewerSetupDiagnosticStage.Quarantine
+                    : ViewerSetupDiagnosticStage.Backup;
                 journal = journal with
                 {
                     Stage = "backup-move-intent",
@@ -310,22 +427,48 @@ public sealed class ViewerDeploymentOrchestrator(
                 await MoveTransactionDirectoryAsync(
                     paths.InstallDirectory,
                     transaction.BackupDirectory,
-                    ViewerSetupErrorCodes.InstallWriteFailed,
-                    "Viewer 기존 파일을 안전하게 백업하지 못했습니다.",
+                    journal.PreviousInstallKind == ViewerPreviousInstallKind.Invalid
+                        ? ViewerSetupErrorCodes.QuarantineFailed
+                        : ViewerSetupErrorCodes.InstallWriteFailed,
+                    journal.PreviousInstallKind == ViewerPreviousInstallKind.Invalid
+                        ? "기존 Viewer 폴더를 새 설치 전 임시 격리하지 못했습니다."
+                        : "Viewer 기존 파일을 안전하게 백업하지 못했습니다.",
                     cancellationToken);
-                ValidateExpectedInstallation(
-                    transaction.BackupDirectory,
-                    journal.PreviousManifestSha256!,
-                    allowLegacy: true,
-                    ViewerSetupErrorCodes.RollbackFailed);
+                if (journal.PreviousInstallKind == ViewerPreviousInstallKind.Verified)
+                {
+                    ValidateExpectedInstallation(
+                        transaction.BackupDirectory,
+                        journal.PreviousManifestSha256!,
+                        allowLegacy: true,
+                        ViewerSetupErrorCodes.RollbackFailed);
+                }
+                else
+                {
+                    ValidateUntrustedBackupTopology(journal);
+                    diagnostic.QuarantineState =
+                        ViewerSetupDiagnosticQuarantineState.IsolatedPending;
+                    steps.Succeeded(
+                        "EXISTING_INSTALL_QUARANTINED",
+                        "기존 설치 보관",
+                        "검증되지 않은 기존 Viewer 폴더를 새 설치가 확인될 때까지 보관했습니다.");
+                }
             }
 
+            diagnostic.ActiveStage = ViewerSetupDiagnosticStage.Activation;
             journal = journal with
             {
                 Stage = "activation-move-intent",
                 StagingActivated = true
             };
             store.Write(journal);
+            if (journal.PreviousInstallKind == ViewerPreviousInstallKind.None &&
+                (fileSystem.DirectoryExists(paths.InstallDirectory) ||
+                 fileSystem.FileExists(paths.InstallDirectory)))
+            {
+                throw new ViewerSetupException(
+                    ViewerSetupErrorCodes.PathInvalid,
+                    "Viewer 설치 폴더가 설치 중 외부 작업으로 변경되었습니다.");
+            }
             await MoveTransactionDirectoryAsync(
                 transaction.StagingDirectory,
                 paths.InstallDirectory,
@@ -342,7 +485,9 @@ public sealed class ViewerDeploymentOrchestrator(
                 Stage = "files-activated"
             };
             store.Write(journal);
+            diagnostic.ActivationState = ViewerSetupDiagnosticStageState.Succeeded;
 
+            diagnostic.ActiveStage = ViewerSetupDiagnosticStage.Smoke;
             var smoke = await processManager.RunSmokeCheckAsync(
                 paths.ViewerExecutablePath,
                 SmokeTimeout,
@@ -356,11 +501,13 @@ public sealed class ViewerDeploymentOrchestrator(
 
             journal = journal with { Stage = "smoke-passed" };
             store.Write(journal);
+            diagnostic.SmokeState = ViewerSetupDiagnosticStageState.Succeeded;
             steps.Succeeded(
                 "SMOKE_PASSED",
                 "Viewer 사전 점검",
                 "설치된 Viewer의 화면 리소스 점검을 통과했습니다.");
 
+            diagnostic.ActiveStage = ViewerSetupDiagnosticStage.Shortcut;
             journal = ConfigureShortcuts(
                 store,
                 journal,
@@ -372,7 +519,9 @@ public sealed class ViewerDeploymentOrchestrator(
                     ViewerSetupErrorCodes.ShortcutFailed,
                     "바로가기 복구를 완료하지 못해 Viewer 설치를 중단했습니다.");
             }
+            diagnostic.ShortcutState = ViewerSetupDiagnosticStageState.Succeeded;
 
+            diagnostic.ActiveStage = ViewerSetupDiagnosticStage.Launch;
             journal = journal with { Stage = "normal-launch-started" };
             store.Write(journal);
             var launch = await processManager.LaunchAndVerifyAsync(
@@ -399,13 +548,25 @@ public sealed class ViewerDeploymentOrchestrator(
 
             try
             {
+                diagnostic.ActiveStage = ViewerSetupDiagnosticStage.CommitCleanup;
                 await CleanupCommittedTransactionAsync(
                     store,
                     journal,
                     cancellationToken);
+                diagnostic.JournalState = ViewerSetupDiagnosticJournalState.None;
+                if (diagnostic.PreviousInstallKind == ViewerPreviousInstallKind.Invalid)
+                {
+                    diagnostic.QuarantineState =
+                        ViewerSetupDiagnosticQuarantineState.Retained;
+                }
             }
             catch
             {
+                if (diagnostic.PreviousInstallKind == ViewerPreviousInstallKind.Invalid)
+                {
+                    diagnostic.QuarantineState =
+                        ViewerSetupDiagnosticQuarantineState.FinalizationPending;
+                }
                 steps.Warning(
                     "COMMIT_CLEANUP_PENDING",
                     "설치 정리",
@@ -416,8 +577,14 @@ public sealed class ViewerDeploymentOrchestrator(
                 "Viewer 설치 또는 업데이트가 완료되었습니다.",
                 steps);
         }
-        catch
+        catch (Exception primaryException)
         {
+            diagnostic.PrimaryCode ??= primaryException switch
+            {
+                ViewerSetupException setupException => setupException.Code,
+                OperationCanceledException => ViewerSetupErrorCodes.Cancelled,
+                _ => ViewerSetupErrorCodes.Unexpected
+            };
             if (ownsJournal && journal is not null && !journal.NormalLaunchObserved)
             {
                 try
@@ -427,9 +594,28 @@ public sealed class ViewerDeploymentOrchestrator(
                         store.Exists ? store.Read() : journal,
                         steps,
                         CancellationToken.None);
+                    diagnostic.RollbackState =
+                        ViewerSetupDiagnosticRollbackState.Succeeded;
+                    diagnostic.JournalState = ViewerSetupDiagnosticJournalState.None;
+                    if (diagnostic.QuarantineState ==
+                        ViewerSetupDiagnosticQuarantineState.IsolatedPending)
+                    {
+                        diagnostic.QuarantineState =
+                            ViewerSetupDiagnosticQuarantineState.Restored;
+                    }
                 }
                 catch (Exception rollbackException)
                 {
+                    diagnostic.RollbackState =
+                        ViewerSetupDiagnosticRollbackState.Failed;
+                    diagnostic.JournalState =
+                        ViewerSetupDiagnosticJournalState.Recoverable;
+                    if (diagnostic.QuarantineState ==
+                        ViewerSetupDiagnosticQuarantineState.IsolatedPending)
+                    {
+                        diagnostic.QuarantineState =
+                            ViewerSetupDiagnosticQuarantineState.RestoreFailed;
+                    }
                     throw new ViewerSetupException(
                         ViewerSetupErrorCodes.RollbackFailed,
                         "이전 Viewer 설치 상태를 완전히 복구하지 못했습니다.",
@@ -492,6 +678,75 @@ public sealed class ViewerDeploymentOrchestrator(
             throw new ViewerSetupException(
                 ViewerSetupErrorCodes.RollbackFailed,
                 "Viewer 설치 또는 백업 경로가 폴더가 아니어서 복구를 중단했습니다.");
+        }
+
+        if (journal.FormatVersion == ViewerDeploymentJournalStore.CurrentFormatVersion &&
+            journal.PreviousInstallKind == ViewerPreviousInstallKind.None &&
+            journal.PreviousEmptyInstallDirectory)
+        {
+            await RestoreEmptyExistingInstallAsync(
+                journal,
+                installExists,
+                cancellationToken);
+            RestoreShortcutIfMutated(
+                journal.DesktopShortcutMutated,
+                journal.DesktopShortcut);
+            RestoreShortcutIfMutated(
+                journal.StartMenuShortcutMutated,
+                journal.StartMenuShortcut);
+            RestoreShortcutIfMutated(
+                journal.StartupShortcutMutated,
+                journal.StartupShortcut);
+            journal = journal with
+            {
+                Stage = "rollback-restored",
+                DesktopShortcutMutated = false,
+                StartMenuShortcutMutated = false,
+                StartupShortcutMutated = false
+            };
+            store.Write(journal);
+            await CleanupTransactionArtifactsAsync(store, journal, cancellationToken);
+            steps.Succeeded(
+                "ROLLBACK_COMPLETED",
+                "자동 복구",
+                "설치 전 비어 있던 Viewer 폴더를 복구했습니다.");
+            return;
+        }
+
+        if (journal.FormatVersion == ViewerDeploymentJournalStore.CurrentFormatVersion &&
+            journal.PreviousInstallKind == ViewerPreviousInstallKind.Invalid)
+        {
+            await RestoreInvalidExistingInstallAsync(
+                journal,
+                backupExists,
+                installExists,
+                cancellationToken);
+            RestoreShortcutIfMutated(
+                journal.DesktopShortcutMutated,
+                journal.DesktopShortcut);
+            RestoreShortcutIfMutated(
+                journal.StartMenuShortcutMutated,
+                journal.StartMenuShortcut);
+            RestoreShortcutIfMutated(
+                journal.StartupShortcutMutated,
+                journal.StartupShortcut);
+            journal = journal with
+            {
+                Stage = "rollback-restored",
+                DesktopShortcutMutated = false,
+                StartMenuShortcutMutated = false,
+                StartupShortcutMutated = false
+            };
+            store.Write(journal);
+            await CleanupTransactionArtifactsAsync(
+                store,
+                journal,
+                cancellationToken);
+            steps.Succeeded(
+                "ROLLBACK_COMPLETED",
+                "자동 복구",
+                "설치 전 Viewer 폴더와 바로가기를 복구했습니다.");
+            return;
         }
 
         if (backupExists)
@@ -781,10 +1036,145 @@ public sealed class ViewerDeploymentOrchestrator(
             journal.PackageManifestSha256,
             allowLegacy: false,
             ViewerSetupErrorCodes.RollbackFailed);
+        if (journal.FormatVersion == ViewerDeploymentJournalStore.CurrentFormatVersion &&
+            journal.PreviousInstallKind == ViewerPreviousInstallKind.Invalid)
+        {
+            journal = await FinalizeInvalidQuarantineAsync(
+                store,
+                journal,
+                cancellationToken);
+        }
         await CleanupTransactionArtifactsAsync(
             store,
             journal,
             cancellationToken);
+    }
+
+    private async Task RestoreInvalidExistingInstallAsync(
+        ViewerDeploymentJournal journal,
+        bool backupExists,
+        bool installExists,
+        CancellationToken cancellationToken)
+    {
+        if (backupExists)
+        {
+            ValidateUntrustedBackupTopology(journal);
+            if (installExists)
+            {
+                if (!journal.StagingActivated)
+                {
+                    throw new ViewerSetupException(
+                        ViewerSetupErrorCodes.RollbackFailed,
+                        "기존 Viewer 격리 이후 설치 경로가 예기치 않게 다시 생성되었습니다.");
+                }
+
+                ValidateExpectedInstallation(
+                    paths.InstallDirectory,
+                    journal.PackageManifestSha256,
+                    allowLegacy: false,
+                    ViewerSetupErrorCodes.RollbackFailed);
+                await MoveTransactionDirectoryAsync(
+                    paths.InstallDirectory,
+                    journal.FailedDirectory,
+                    ViewerSetupErrorCodes.RollbackFailed,
+                    "실패한 새 Viewer를 복구 영역으로 이동하지 못했습니다.",
+                    cancellationToken);
+            }
+
+            await MoveTransactionDirectoryAsync(
+                journal.BackupDirectory,
+                paths.InstallDirectory,
+                ViewerSetupErrorCodes.RollbackFailed,
+                "격리했던 기존 Viewer 폴더를 원래 위치로 복구하지 못했습니다.",
+                cancellationToken);
+            ValidateRestoredUntrustedInstall(journal);
+            return;
+        }
+
+        var stagingExists = fileSystem.DirectoryExists(journal.StagingDirectory);
+        if (!journal.StagingActivated && installExists ||
+            journal.StagingActivated && stagingExists && installExists)
+        {
+            ValidateRestoredUntrustedInstall(journal);
+            return;
+        }
+
+        throw new ViewerSetupException(
+            ViewerSetupErrorCodes.RollbackFailed,
+            "격리했던 기존 Viewer 폴더의 위치를 확인할 수 없습니다.");
+    }
+
+    private async Task RestoreEmptyExistingInstallAsync(
+        ViewerDeploymentJournal journal,
+        bool installExists,
+        CancellationToken cancellationToken)
+    {
+        if (installExists)
+        {
+            if (journal.StagingActivated)
+            {
+                ValidateExpectedInstallation(
+                    paths.InstallDirectory,
+                    journal.PackageManifestSha256,
+                    allowLegacy: false,
+                    ViewerSetupErrorCodes.RollbackFailed);
+                await MoveTransactionDirectoryAsync(
+                    paths.InstallDirectory,
+                    journal.FailedDirectory,
+                    ViewerSetupErrorCodes.RollbackFailed,
+                    "실패한 새 Viewer를 복구 영역으로 이동하지 못했습니다.",
+                    cancellationToken);
+            }
+            else if (fileSystem.IsReparsePoint(paths.InstallDirectory) ||
+                     fileSystem.DirectoryHasEntries(paths.InstallDirectory))
+            {
+                throw new ViewerSetupException(
+                    ViewerSetupErrorCodes.RollbackFailed,
+                    "비어 있던 Viewer 설치 폴더의 상태가 변경되었습니다.");
+            }
+        }
+
+        if (!fileSystem.DirectoryExists(paths.InstallDirectory))
+        {
+            fileSystem.CreateDirectory(paths.InstallDirectory);
+        }
+
+        if (fileSystem.FileExists(paths.InstallDirectory) ||
+            fileSystem.IsReparsePoint(paths.InstallDirectory) ||
+            fileSystem.DirectoryHasEntries(paths.InstallDirectory))
+        {
+            throw new ViewerSetupException(
+                ViewerSetupErrorCodes.RollbackFailed,
+                "비어 있던 Viewer 설치 폴더를 복구하지 못했습니다.");
+        }
+    }
+
+    private void ValidateUntrustedBackupTopology(ViewerDeploymentJournal journal)
+    {
+        if (!fileSystem.DirectoryExists(journal.BackupDirectory) ||
+            fileSystem.FileExists(journal.BackupDirectory) ||
+            fileSystem.IsReparsePoint(journal.BackupDirectory) ||
+            fileSystem.DirectoryTreeContainsReparsePoint(journal.BackupDirectory))
+        {
+            throw new ViewerSetupException(
+                ViewerSetupErrorCodes.RollbackFailed,
+                "격리한 기존 Viewer 폴더의 경로 상태를 안전하게 확인할 수 없습니다.");
+        }
+    }
+
+    private void ValidateRestoredUntrustedInstall(ViewerDeploymentJournal journal)
+    {
+        if (!fileSystem.DirectoryExists(paths.InstallDirectory) ||
+            fileSystem.FileExists(paths.InstallDirectory) ||
+            fileSystem.IsReparsePoint(paths.InstallDirectory) ||
+            fileSystem.DirectoryTreeContainsReparsePoint(paths.InstallDirectory) ||
+            fileSystem.DirectoryExists(journal.BackupDirectory) ||
+            fileSystem.FileExists(journal.BackupDirectory))
+        {
+            throw new ViewerSetupException(
+                ViewerSetupErrorCodes.RollbackFailed,
+                "기존 Viewer 폴더 원복 상태를 확인할 수 없습니다.");
+        }
     }
 
     private async Task CleanupTransactionArtifactsAsync(
@@ -806,6 +1196,396 @@ public sealed class ViewerDeploymentOrchestrator(
             cancellationToken);
         store.Delete();
     }
+
+    private async Task<ViewerDeploymentJournal> FinalizeInvalidQuarantineAsync(
+        ViewerDeploymentJournalStore store,
+        ViewerDeploymentJournal journal,
+        CancellationToken cancellationToken)
+    {
+        if (!journal.QuarantineLatestToPreviousCompleted)
+        {
+            if (!journal.QuarantineLatestToPreviousIntent)
+            {
+                journal = journal with
+                {
+                    Stage = "quarantine-latest-to-previous-intent",
+                    QuarantineLatestToPreviousIntent = true
+                };
+                store.Write(journal);
+            }
+
+            await MoveLatestQuarantineToPreviousAsync(cancellationToken);
+            journal = journal with
+            {
+                Stage = "quarantine-latest-to-previous-completed",
+                QuarantineLatestToPreviousCompleted = true
+            };
+            store.Write(journal);
+        }
+
+        if (!journal.QuarantineBackupToLatestCompleted)
+        {
+            if (!journal.QuarantineBackupToLatestIntent)
+            {
+                journal = journal with
+                {
+                    Stage = "quarantine-backup-to-latest-intent",
+                    QuarantineBackupToLatestIntent = true
+                };
+                store.Write(journal);
+            }
+
+            await MoveBackupQuarantineToLatestAsync(journal, cancellationToken);
+            journal = journal with
+            {
+                Stage = "quarantine-backup-to-latest-completed",
+                QuarantineBackupToLatestCompleted = true
+            };
+            store.Write(journal);
+        }
+
+        if (!journal.QuarantinePreviousDeleteCompleted)
+        {
+            if (!journal.QuarantinePreviousDeleteIntent)
+            {
+                journal = journal with
+                {
+                    Stage = "quarantine-previous-delete-intent",
+                    QuarantinePreviousDeleteIntent = true
+                };
+                store.Write(journal);
+            }
+
+            await DeleteOwnedQuarantineAsync(
+                paths.QuarantinePreviousDirectory,
+                paths.QuarantinePreviousMarkerPath,
+                cancellationToken);
+            journal = journal with
+            {
+                Stage = "quarantine-previous-delete-completed",
+                QuarantinePreviousDeleteCompleted = true
+            };
+            store.Write(journal);
+        }
+
+        ValidateOwnedQuarantinePair(
+            paths.QuarantineLatestDirectory,
+            paths.QuarantineLatestMarkerPath,
+            journal.TransactionId);
+        return journal;
+    }
+
+    private async Task MoveLatestQuarantineToPreviousAsync(
+        CancellationToken cancellationToken)
+    {
+        ViewerSetupPathGuard.ValidateQuarantinePaths(paths);
+        var latestExists = fileSystem.DirectoryExists(paths.QuarantineLatestDirectory);
+        var latestFile = fileSystem.FileExists(paths.QuarantineLatestDirectory);
+        var latestMarker = fileSystem.FileExists(paths.QuarantineLatestMarkerPath);
+        var previousExists = fileSystem.DirectoryExists(paths.QuarantinePreviousDirectory);
+        var previousFile = fileSystem.FileExists(paths.QuarantinePreviousDirectory);
+        var previousMarker = fileSystem.FileExists(paths.QuarantinePreviousMarkerPath);
+        if (latestFile || previousFile)
+        {
+            throw QuarantineFailure("Viewer 격리 보관 경로가 폴더가 아닙니다.");
+        }
+
+        if (previousExists)
+        {
+            if (latestExists)
+            {
+                throw QuarantineFailure("Viewer 격리 보관 폴더가 동시에 존재합니다.");
+            }
+
+            if (!previousMarker && latestMarker)
+            {
+                MoveOwnedMarker(
+                    paths.QuarantineLatestMarkerPath,
+                    paths.QuarantinePreviousMarkerPath);
+                previousMarker = true;
+                latestMarker = false;
+            }
+            else if (previousMarker && latestMarker)
+            {
+                var previousOwner = ReadQuarantineMarker(paths.QuarantinePreviousMarkerPath);
+                var latestOwner = ReadQuarantineMarker(paths.QuarantineLatestMarkerPath);
+                if (!string.Equals(
+                        previousOwner.TransactionId,
+                        latestOwner.TransactionId,
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    throw QuarantineFailure("Viewer 격리 소유 정보가 서로 일치하지 않습니다.");
+                }
+
+                fileSystem.DeleteFile(paths.QuarantineLatestMarkerPath);
+                latestMarker = false;
+            }
+
+            if (!previousMarker || latestMarker)
+            {
+                throw QuarantineFailure("Viewer 격리 이동 상태를 확인할 수 없습니다.");
+            }
+
+            ValidateOwnedQuarantinePair(
+                paths.QuarantinePreviousDirectory,
+                paths.QuarantinePreviousMarkerPath);
+            return;
+        }
+
+        if (!latestExists)
+        {
+            if (latestMarker || previousMarker)
+            {
+                throw QuarantineFailure("Viewer 격리 소유 정보만 남아 있습니다.");
+            }
+
+            return;
+        }
+
+        if (previousMarker)
+        {
+            throw QuarantineFailure("이전 Viewer 격리 소유 정보가 이미 존재합니다.");
+        }
+
+        ValidateOwnedQuarantinePair(
+            paths.QuarantineLatestDirectory,
+            paths.QuarantineLatestMarkerPath);
+        await MoveTransactionDirectoryAsync(
+            paths.QuarantineLatestDirectory,
+            paths.QuarantinePreviousDirectory,
+            ViewerSetupErrorCodes.QuarantineFailed,
+            "기존 Viewer 격리본을 회전하지 못했습니다.",
+            cancellationToken);
+        MoveOwnedMarker(
+            paths.QuarantineLatestMarkerPath,
+            paths.QuarantinePreviousMarkerPath);
+        ValidateOwnedQuarantinePair(
+            paths.QuarantinePreviousDirectory,
+            paths.QuarantinePreviousMarkerPath);
+    }
+
+    private async Task MoveBackupQuarantineToLatestAsync(
+        ViewerDeploymentJournal journal,
+        CancellationToken cancellationToken)
+    {
+        var backupExists = fileSystem.DirectoryExists(journal.BackupDirectory);
+        var latestExists = fileSystem.DirectoryExists(paths.QuarantineLatestDirectory);
+        if (fileSystem.FileExists(journal.BackupDirectory) ||
+            fileSystem.FileExists(paths.QuarantineLatestDirectory))
+        {
+            throw QuarantineFailure("Viewer 격리 대상 경로가 폴더가 아닙니다.");
+        }
+
+        if (backupExists && latestExists)
+        {
+            throw QuarantineFailure("새 Viewer 격리본과 임시 보관 폴더가 동시에 존재합니다.");
+        }
+
+        if (backupExists)
+        {
+            ValidateUntrustedBackupTopology(journal);
+            if (fileSystem.FileExists(paths.QuarantineLatestMarkerPath))
+            {
+                throw QuarantineFailure("새 Viewer 격리 소유 정보가 이미 존재합니다.");
+            }
+
+            await MoveTransactionDirectoryAsync(
+                journal.BackupDirectory,
+                paths.QuarantineLatestDirectory,
+                ViewerSetupErrorCodes.QuarantineFailed,
+                "기존 Viewer 폴더를 최종 격리 위치로 이동하지 못했습니다.",
+                cancellationToken);
+        }
+        else if (!latestExists)
+        {
+            throw QuarantineFailure("최종 보관할 Viewer 격리본을 찾을 수 없습니다.");
+        }
+
+        if (!fileSystem.FileExists(paths.QuarantineLatestMarkerPath))
+        {
+            WriteQuarantineMarker(
+                paths.QuarantineLatestMarkerPath,
+                journal.TransactionId);
+        }
+
+        ValidateOwnedQuarantinePair(
+            paths.QuarantineLatestDirectory,
+            paths.QuarantineLatestMarkerPath,
+            journal.TransactionId);
+    }
+
+    private async Task DeleteOwnedQuarantineAsync(
+        string directory,
+        string markerPath,
+        CancellationToken cancellationToken)
+    {
+        var directoryExists = fileSystem.DirectoryExists(directory);
+        var markerExists = fileSystem.FileExists(markerPath);
+        if (!directoryExists)
+        {
+            if (fileSystem.FileExists(directory))
+            {
+                throw QuarantineFailure("Viewer 격리 정리 경로가 폴더가 아닙니다.");
+            }
+
+            if (markerExists)
+            {
+                _ = ReadQuarantineMarker(markerPath);
+                fileSystem.DeleteFile(markerPath);
+                if (fileSystem.FileExists(markerPath))
+                {
+                    throw QuarantineFailure("Viewer 격리 소유 정보를 정리하지 못했습니다.");
+                }
+            }
+
+            return;
+        }
+
+        ValidateOwnedQuarantinePair(directory, markerPath);
+        for (var attempt = 1; attempt <= DirectoryMutationMaxAttempts; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                fileSystem.DeleteDirectoryTreeNoFollow(directory);
+            }
+            catch (Exception exception) when (IsTransientDirectoryMutation(exception))
+            {
+                if (fileSystem.DirectoryExists(directory) &&
+                    attempt < DirectoryMutationMaxAttempts)
+                {
+                    await Task.Delay(DirectoryMutationRetryDelay, cancellationToken);
+                    continue;
+                }
+
+                if (fileSystem.DirectoryExists(directory) || fileSystem.FileExists(directory))
+                {
+                    throw QuarantineFailure(
+                        "이전 Viewer 격리본을 안전하게 정리하지 못했습니다.",
+                        exception);
+                }
+            }
+
+            break;
+        }
+
+        if (fileSystem.DirectoryExists(directory) || fileSystem.FileExists(directory))
+        {
+            throw QuarantineFailure("이전 Viewer 격리본을 안전하게 정리하지 못했습니다.");
+        }
+
+        _ = ReadQuarantineMarker(markerPath);
+        fileSystem.DeleteFile(markerPath);
+        if (fileSystem.FileExists(markerPath))
+        {
+            throw QuarantineFailure("이전 Viewer 격리 소유 정보를 정리하지 못했습니다.");
+        }
+    }
+
+    private void ValidateOwnedQuarantinePair(
+        string directory,
+        string markerPath,
+        string? expectedTransactionId = null)
+    {
+        if (!fileSystem.DirectoryExists(directory) ||
+            fileSystem.FileExists(directory) ||
+            fileSystem.IsReparsePoint(directory) ||
+            fileSystem.DirectoryTreeContainsReparsePoint(directory) ||
+            !fileSystem.FileExists(markerPath))
+        {
+            throw QuarantineFailure("Viewer 격리본의 소유 상태를 안전하게 확인할 수 없습니다.");
+        }
+
+        var marker = ReadQuarantineMarker(markerPath);
+        if (expectedTransactionId is not null &&
+            !string.Equals(
+                marker.TransactionId,
+                expectedTransactionId,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            throw QuarantineFailure("Viewer 격리본의 작업 식별자가 일치하지 않습니다.");
+        }
+    }
+
+    private void MoveOwnedMarker(string source, string destination)
+    {
+        var marker = ReadQuarantineMarker(source);
+        if (fileSystem.FileExists(destination))
+        {
+            throw QuarantineFailure("Viewer 격리 소유 정보가 이미 존재합니다.");
+        }
+
+        WriteQuarantineMarker(destination, marker.TransactionId, marker.CapturedUtc);
+        fileSystem.DeleteFile(source);
+        if (fileSystem.FileExists(source))
+        {
+            throw QuarantineFailure("Viewer 격리 소유 정보를 이동하지 못했습니다.");
+        }
+    }
+
+    private void WriteQuarantineMarker(
+        string markerPath,
+        string transactionId,
+        DateTimeOffset? capturedUtc = null)
+    {
+        if (!ViewerSetupPathGuard.IsTransactionId(transactionId))
+        {
+            throw QuarantineFailure("Viewer 격리 작업 식별자가 올바르지 않습니다.");
+        }
+
+        fileSystem.WriteAllTextAtomic(
+            markerPath,
+            JsonSerializer.Serialize(
+                new ViewerQuarantineMarker(
+                    1,
+                    ViewerSetupConstants.ProductName,
+                    transactionId.ToLowerInvariant(),
+                    capturedUtc ?? DateTimeOffset.UtcNow)));
+    }
+
+    private ViewerQuarantineMarker ReadQuarantineMarker(string markerPath)
+    {
+        try
+        {
+            var marker = JsonSerializer.Deserialize<ViewerQuarantineMarker>(
+                fileSystem.ReadAllTextBounded(
+                    markerPath,
+                    MaximumQuarantineMarkerBytes));
+            if (marker is null ||
+                marker.FormatVersion != 1 ||
+                !string.Equals(
+                    marker.Product,
+                    ViewerSetupConstants.ProductName,
+                    StringComparison.Ordinal) ||
+                !ViewerSetupPathGuard.IsTransactionId(marker.TransactionId) ||
+                marker.CapturedUtc.Offset != TimeSpan.Zero)
+            {
+                throw new JsonException();
+            }
+
+            return marker;
+        }
+        catch (Exception exception) when (
+            exception is JsonException or IOException or
+                UnauthorizedAccessException or
+                System.Text.DecoderFallbackException)
+        {
+            throw QuarantineFailure(
+                "Viewer 격리 소유 정보를 확인할 수 없습니다.",
+                exception);
+        }
+    }
+
+    private static ViewerSetupException QuarantineFailure(
+        string message,
+        Exception? inner = null) =>
+        new(ViewerSetupErrorCodes.QuarantineFailed, message, inner);
+
+    private sealed record ViewerQuarantineMarker(
+        int FormatVersion,
+        string Product,
+        string TransactionId,
+        DateTimeOffset CapturedUtc);
 
     private async Task DeleteTransactionDirectoryAsync(
         string directory,
@@ -989,6 +1769,8 @@ public sealed class ViewerDeploymentOrchestrator(
         var install = Normalize(paths.InstallDirectory);
         var data = Normalize(paths.DataDirectory);
         var operations = Normalize(paths.OperationsDirectory);
+        var quarantineLatest = Normalize(paths.QuarantineLatestDirectory);
+        var quarantinePrevious = Normalize(paths.QuarantinePreviousDirectory);
         var installParent = Normalize(
             Path.GetDirectoryName(paths.InstallDirectory) ?? string.Empty);
         var packageManagedSibling = IsManagedTransactionSource(
@@ -999,6 +1781,10 @@ public sealed class ViewerDeploymentOrchestrator(
             IsWithin(install, package) ||
             string.Equals(package, operations, StringComparison.OrdinalIgnoreCase) ||
             IsWithin(operations, package) ||
+            string.Equals(package, quarantineLatest, StringComparison.OrdinalIgnoreCase) ||
+            IsWithin(quarantineLatest, package) ||
+            string.Equals(package, quarantinePrevious, StringComparison.OrdinalIgnoreCase) ||
+            IsWithin(quarantinePrevious, package) ||
             packageManagedSibling ||
             string.Equals(data, install, StringComparison.OrdinalIgnoreCase) ||
             IsWithin(install, data))
@@ -1009,29 +1795,105 @@ public sealed class ViewerDeploymentOrchestrator(
         }
     }
 
-    private ViewerPackage? ValidateExistingInstallation()
+    private ExistingInstallClassification ClassifyExistingInstallation()
     {
-        if (!fileSystem.DirectoryExists(paths.InstallDirectory) ||
-            !fileSystem.DirectoryHasEntries(paths.InstallDirectory))
+        if (fileSystem.FileExists(paths.InstallDirectory))
         {
-            return null;
+            throw new ViewerSetupException(
+                ViewerSetupErrorCodes.PathInvalid,
+                "기존 Viewer 설치 경로가 폴더가 아닙니다.");
+        }
+
+        if (!fileSystem.DirectoryExists(paths.InstallDirectory))
+        {
+            return new ExistingInstallClassification(
+                ViewerPreviousInstallKind.None,
+                null,
+                false);
+        }
+
+        if (fileSystem.IsReparsePoint(paths.InstallDirectory) ||
+            fileSystem.DirectoryTreeContainsReparsePoint(paths.InstallDirectory))
+        {
+            throw new ViewerSetupException(
+                ViewerSetupErrorCodes.PathInvalid,
+                "기존 Viewer 설치 폴더의 연결 경로를 안전하게 확인할 수 없습니다.");
+        }
+
+        if (!fileSystem.DirectoryHasEntries(paths.InstallDirectory))
+        {
+            return new ExistingInstallClassification(
+                ViewerPreviousInstallKind.None,
+                null,
+                true);
         }
 
         try
         {
-            return packageValidator.ValidateExisting(paths.InstallDirectory);
+            return new ExistingInstallClassification(
+                ViewerPreviousInstallKind.Verified,
+                packageValidator.ValidateExisting(paths.InstallDirectory),
+                false);
         }
-        catch (ViewerSetupException exception)
+        catch (ViewerSetupException exception) when (
+            exception.Code is ViewerSetupErrorCodes.PackageNotFound or
+                ViewerSetupErrorCodes.ManifestInvalid or
+                ViewerSetupErrorCodes.PackageHashMismatch or
+                ViewerSetupErrorCodes.PackageInvalid)
         {
-            throw new ViewerSetupException(
-                ViewerSetupErrorCodes.PathInvalid,
-                "기존 Viewer 설치 폴더를 제품 소유의 완전한 설치로 확인할 수 없습니다.",
-                exception);
+            return new ExistingInstallClassification(
+                ViewerPreviousInstallKind.Invalid,
+                null,
+                false);
         }
     }
 
+    private void RemoveRecordedEmptyInstallDirectory()
+    {
+        if (!fileSystem.DirectoryExists(paths.InstallDirectory) ||
+            fileSystem.FileExists(paths.InstallDirectory) ||
+            fileSystem.IsReparsePoint(paths.InstallDirectory) ||
+            fileSystem.DirectoryHasEntries(paths.InstallDirectory))
+        {
+            throw new ViewerSetupException(
+                ViewerSetupErrorCodes.PathInvalid,
+                "비어 있던 Viewer 설치 폴더가 설치 중 변경되었습니다.");
+        }
+
+        fileSystem.DeleteDirectory(paths.InstallDirectory, recursive: false);
+        if (fileSystem.DirectoryExists(paths.InstallDirectory) ||
+            fileSystem.FileExists(paths.InstallDirectory))
+        {
+            throw new ViewerSetupException(
+                ViewerSetupErrorCodes.InstallWriteFailed,
+                "비어 있는 Viewer 설치 폴더를 준비하지 못했습니다.");
+        }
+    }
+
+    private sealed record ExistingInstallClassification(
+        ViewerPreviousInstallKind Kind,
+        ViewerPackage? Package,
+        bool EmptyDirectoryExisted);
+
     private void ValidateRestoredInstallation(ViewerDeploymentJournal journal)
     {
+        if (journal.FormatVersion == ViewerDeploymentJournalStore.CurrentFormatVersion &&
+            journal.PreviousInstallKind == ViewerPreviousInstallKind.None &&
+            journal.PreviousEmptyInstallDirectory)
+        {
+            if (!fileSystem.DirectoryExists(paths.InstallDirectory) ||
+                fileSystem.FileExists(paths.InstallDirectory) ||
+                fileSystem.IsReparsePoint(paths.InstallDirectory) ||
+                fileSystem.DirectoryHasEntries(paths.InstallDirectory))
+            {
+                throw new ViewerSetupException(
+                    ViewerSetupErrorCodes.RollbackFailed,
+                    "비어 있던 Viewer 설치 폴더 복구 상태를 확인할 수 없습니다.");
+            }
+
+            return;
+        }
+
         if (!journal.PreviousInstallExisted)
         {
             if (fileSystem.DirectoryExists(paths.InstallDirectory))
@@ -1039,6 +1901,23 @@ public sealed class ViewerDeploymentOrchestrator(
                 throw new ViewerSetupException(
                     ViewerSetupErrorCodes.RollbackFailed,
                     "첫 설치 이전 상태가 완전히 복구되지 않았습니다.");
+            }
+
+            return;
+        }
+
+        if (journal.FormatVersion == ViewerDeploymentJournalStore.CurrentFormatVersion &&
+            journal.PreviousInstallKind == ViewerPreviousInstallKind.Invalid)
+        {
+            if (!fileSystem.DirectoryExists(paths.InstallDirectory) ||
+                fileSystem.FileExists(paths.InstallDirectory) ||
+                fileSystem.IsReparsePoint(paths.InstallDirectory) ||
+                fileSystem.DirectoryExists(journal.BackupDirectory) ||
+                fileSystem.FileExists(journal.BackupDirectory))
+            {
+                throw new ViewerSetupException(
+                    ViewerSetupErrorCodes.RollbackFailed,
+                    "기존 Viewer 폴더 원복 상태를 확인할 수 없습니다.");
             }
 
             return;
@@ -1147,6 +2026,177 @@ public sealed class ViewerDeploymentOrchestrator(
         IReadOnlyList<ViewerSetupStep> steps) =>
         ViewerSetupResult.Failure(PublicCode(internalCode), message, steps);
 
+    private static ViewerSetupResult AttachDiagnostic(
+        ViewerSetupResult result,
+        DeploymentDiagnosticState state)
+    {
+        var finalCode = result.Code;
+        state.MarkFailureForActiveStage(result.Succeeded);
+        return result with
+        {
+            Diagnostic = ViewerSetupDiagnosticFactory.Create(
+                state.ProductVersion,
+                state.Operation,
+                finalCode,
+                state.PrimaryCode ?? finalCode,
+                result.Succeeded
+                    ? ViewerSetupDiagnosticStage.None
+                    : state.ActiveStage,
+                state.RollbackState,
+                state.JournalState,
+                state.QuarantineState,
+                state.PreviousInstallKind switch
+                {
+                    ViewerPreviousInstallKind.None =>
+                        ViewerSetupDiagnosticPreviousInstallState.None,
+                    ViewerPreviousInstallKind.Verified =>
+                        ViewerSetupDiagnosticPreviousInstallState.Verified,
+                    ViewerPreviousInstallKind.Invalid =>
+                        ViewerSetupDiagnosticPreviousInstallState.Invalid,
+                    _ => ViewerSetupDiagnosticPreviousInstallState.Unknown
+                },
+                state.Stages)
+        };
+    }
+
+    private static ViewerSetupDiagnosticSnapshot RecoveryInspectionDiagnostic(
+        ViewerDeploymentJournal? journal,
+        ViewerSetupDiagnosticJournalState journalState,
+        ViewerSetupDiagnosticStage failedStage) =>
+        ViewerSetupDiagnosticFactory.Create(
+            journal?.PackageVersion ?? "UNKNOWN",
+            ViewerSetupDiagnosticOperation.RecoveryInspection,
+            ViewerSetupErrorCodes.RecoveryRequired,
+            failedStage: failedStage,
+            journalState: journalState,
+            quarantineState: journal is null
+                ? ViewerSetupDiagnosticQuarantineState.Unknown
+                : QuarantineStateFor(journal),
+            previousInstallState: journal is null
+                ? ViewerSetupDiagnosticPreviousInstallState.Unknown
+                : EffectivePreviousInstallKind(journal) switch
+                {
+                    ViewerPreviousInstallKind.None =>
+                        ViewerSetupDiagnosticPreviousInstallState.None,
+                    ViewerPreviousInstallKind.Verified =>
+                        ViewerSetupDiagnosticPreviousInstallState.Verified,
+                    ViewerPreviousInstallKind.Invalid =>
+                        ViewerSetupDiagnosticPreviousInstallState.Invalid,
+                    _ => ViewerSetupDiagnosticPreviousInstallState.Unknown
+                });
+
+    private static ViewerPreviousInstallKind EffectivePreviousInstallKind(
+        ViewerDeploymentJournal journal) =>
+        journal.FormatVersion == ViewerDeploymentJournalStore.LegacyFormatVersion
+            ? journal.PreviousInstallExisted
+                ? ViewerPreviousInstallKind.Verified
+                : ViewerPreviousInstallKind.None
+            : journal.PreviousInstallKind;
+
+    private static ViewerSetupDiagnosticQuarantineState QuarantineStateFor(
+        ViewerDeploymentJournal journal)
+    {
+        if (EffectivePreviousInstallKind(journal) != ViewerPreviousInstallKind.Invalid)
+        {
+            return ViewerSetupDiagnosticQuarantineState.NotRequired;
+        }
+
+        if (journal.QuarantineBackupToLatestCompleted)
+        {
+            return ViewerSetupDiagnosticQuarantineState.Retained;
+        }
+
+        if (journal.NormalLaunchObserved ||
+            string.Equals(journal.Stage, "committed", StringComparison.Ordinal) ||
+            journal.QuarantineLatestToPreviousIntent ||
+            journal.QuarantineBackupToLatestIntent)
+        {
+            return ViewerSetupDiagnosticQuarantineState.FinalizationPending;
+        }
+
+        return journal.InstallMovedToBackup
+            ? ViewerSetupDiagnosticQuarantineState.IsolatedPending
+            : ViewerSetupDiagnosticQuarantineState.NotRun;
+    }
+
+    private sealed class DeploymentDiagnosticState(
+        ViewerSetupDiagnosticOperation operation)
+    {
+        public ViewerSetupDiagnosticOperation Operation { get; } = operation;
+        public string ProductVersion { get; set; } = "UNKNOWN";
+        public string? PrimaryCode { get; set; }
+        public ViewerSetupDiagnosticStage ActiveStage { get; set; } =
+            ViewerSetupDiagnosticStage.Lock;
+        public ViewerSetupDiagnosticRollbackState RollbackState { get; set; } =
+            ViewerSetupDiagnosticRollbackState.NotRun;
+        public ViewerSetupDiagnosticJournalState JournalState { get; set; } =
+            ViewerSetupDiagnosticJournalState.None;
+        public ViewerSetupDiagnosticQuarantineState QuarantineState { get; set; } =
+            ViewerSetupDiagnosticQuarantineState.NotRun;
+        public ViewerPreviousInstallKind PreviousInstallKind { get; set; } =
+            ViewerPreviousInstallKind.Unspecified;
+        public ViewerSetupDiagnosticStageState PackageState { get; set; }
+        public ViewerSetupDiagnosticStageState ExistingInstallState { get; set; }
+        public ViewerSetupDiagnosticStageState ShutdownState { get; set; }
+        public ViewerSetupDiagnosticStageState StagingState { get; set; }
+        public ViewerSetupDiagnosticStageState ActivationState { get; set; }
+        public ViewerSetupDiagnosticStageState SmokeState { get; set; }
+        public ViewerSetupDiagnosticStageState ShortcutState { get; set; }
+        public ViewerSetupDiagnosticStageState LaunchState { get; set; }
+
+        public ViewerSetupDiagnosticStageStates Stages => new(
+            PackageState,
+            ExistingInstallState,
+            ShutdownState,
+            StagingState,
+            ActivationState,
+            SmokeState,
+            ShortcutState,
+            LaunchState,
+            RollbackState == ViewerSetupDiagnosticRollbackState.Succeeded
+                ? ViewerSetupDiagnosticStageState.Succeeded
+                : RollbackState == ViewerSetupDiagnosticRollbackState.Failed
+                    ? ViewerSetupDiagnosticStageState.Failed
+                    : ViewerSetupDiagnosticStageState.NotRun);
+
+        public void MarkFailureForActiveStage(bool succeeded)
+        {
+            if (succeeded)
+            {
+                return;
+            }
+
+            switch (ActiveStage)
+            {
+                case ViewerSetupDiagnosticStage.Package:
+                    PackageState = ViewerSetupDiagnosticStageState.Failed;
+                    break;
+                case ViewerSetupDiagnosticStage.Shutdown:
+                    ShutdownState = ViewerSetupDiagnosticStageState.Failed;
+                    break;
+                case ViewerSetupDiagnosticStage.Staging:
+                    StagingState = ViewerSetupDiagnosticStageState.Failed;
+                    break;
+                case ViewerSetupDiagnosticStage.Backup:
+                case ViewerSetupDiagnosticStage.Quarantine:
+                    ExistingInstallState = ViewerSetupDiagnosticStageState.Failed;
+                    break;
+                case ViewerSetupDiagnosticStage.Activation:
+                    ActivationState = ViewerSetupDiagnosticStageState.Failed;
+                    break;
+                case ViewerSetupDiagnosticStage.Smoke:
+                    SmokeState = ViewerSetupDiagnosticStageState.Failed;
+                    break;
+                case ViewerSetupDiagnosticStage.Shortcut:
+                    ShortcutState = ViewerSetupDiagnosticStageState.Failed;
+                    break;
+                case ViewerSetupDiagnosticStage.Launch:
+                    LaunchState = ViewerSetupDiagnosticStageState.Failed;
+                    break;
+            }
+        }
+    }
+
     internal static string PublicCode(string internalCode) =>
         internalCode switch
         {
@@ -1171,6 +2221,8 @@ public sealed class ViewerDeploymentOrchestrator(
                 ViewerSetupErrorCodes.LaunchFailed,
             ViewerSetupErrorCodes.ShortcutFailed =>
                 ViewerSetupErrorCodes.ShortcutFailed,
+            ViewerSetupErrorCodes.QuarantineFailed =>
+                ViewerSetupErrorCodes.QuarantineFailed,
             ViewerSetupErrorCodes.PathInvalid =>
                 ViewerSetupErrorCodes.PathInvalid,
             ViewerSetupErrorCodes.PathNotWritable =>
