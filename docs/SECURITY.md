@@ -108,6 +108,19 @@ snapshot은 독립적으로 복원 결과를 남깁니다. 최초 설치·업데
 증거 정리를 진행합니다. 작업 기록과 `Agent.__staging_*`, `Agent.__backup_*`,
 `Agent.__failed_*` 폴더를 사용자가 삭제·이동·이름 변경해 이 검사를 우회해서는 안 됩니다.
 
+Viewer Setup도 새 transaction 전에 package를 검증하고 format 3 journal을 원자적으로 기록합니다.
+기존 Viewer 프로그램 폴더가 완전한 package 검증을 통과하지 못하면 그 내용을 삭제하지 않고 고유
+transaction backup으로 먼저 이동합니다. 새 Viewer가 commit되기 전 실패·취소되면 기존 폴더를
+canonical 설치 경로로 되돌리고, commit 뒤에만 제품 소유 최근 격리본으로 확정합니다. 이전 격리본
+정리는 marker, exact path와 non-reparse 상태가 모두 검증된 경우로 제한하며 모호한 증거는 보존합니다.
+format 2 journal은 기존 의미대로 복구하고 format 3 작업은 v0.11.11 또는 더 최신 Setup으로 복구를
+완료한 뒤에만 downgrade합니다.
+
+Viewer 프로그램 transaction과 사용자 데이터 경계는 분리되어 있습니다.
+`%LOCALAPPDATA%\SamsungSwitchWatch`의 Agent 주소, 화면 설정, 장비 목록, DPAPI CurrentUser 자격 증명,
+감시 기준선과 이력은 격리·회전·삭제 대상이 아닙니다. Setup은 임의의 다운로드·압축 해제 폴더나
+검증되지 않은 reparse 경로를 따라가 정리하지 않습니다.
+
 v0.11 업데이트는 기존 DataDirectory와 호환 설정을 유지할 수 있지만, 과거 Viewer IP·대상 CIDR과
 인증서 신뢰 값은 접근 권한 또는 TLS 신뢰 판단에 사용하지 않습니다. 새 Agent는 시작할 때마다
 임시 HTTPS 인증서를 만들고 고정된 RFC1918 정책을 적용합니다.
@@ -235,6 +248,9 @@ Viewer가 종료되면 주기 감시도 중단됩니다. Agent는 독립적으�
   빌드·아키텍처, 작업 결과, 실패 단계, 권장 조치 코드와 압축된 핵심 상태
 - 실패 화면의 `SWD1-XXXX-XXXX-XXXX-XXXX` 지원 코드에 매핑된 제품 버전, 컴포넌트,
   작업·오류·단계, readiness 하위 원인과 제한된 상태 분류
+- 취소·중복 실행을 제외한 조치 가능한 Viewer Setup 실패와 복구 불가 검사 화면의
+  `SWS1-XXXX-XXXX-XXXX-XXXX` 지원 코드에 매핑된 제품 버전,
+  설치·복구 작업, 최초 실패·단계, package·journal·격리·원복·commit의 제한된 상태 분류
 
 진단에 기록하지 않는 정보:
 
@@ -246,6 +262,7 @@ Viewer가 종료되면 주기 감시도 중단됩니다. Agent는 독립적으�
 - Agent Setup의 실제 IP/CIDR, PC·사용자명, 절대 경로, 트랜잭션 ID, 서비스 계정,
   서비스 PID, 방화벽 규칙 원문, 인증서와 설치 명령
 - Viewer에 입력한 Agent 주소와 DNS 이름, 연결 후보 주소, 예외 원문과 로컬 저장 경로
+- SWS1의 실제 설치·격리 경로, 사용자명, 파일명·해시, transaction ID, 자격 증명과 장비 정보
 
 Agent Setup의 `진단정보 복사`는 실패 화면에서만 표시하고 진단 파일을 만들지 않으며,
 위 허용 범위의 요약만 클립보드에 복사합니다. 대표 오류 코드는
@@ -270,6 +287,12 @@ SWD1 지원 코드는 실패 화면에서만 로컬 생성하며 파일 저장�
 출력은 codec 입력에 포함하지 않습니다. 끝의 CRC-8은 전화·메신저 전달 과정의 오타를 찾기 위한
 무결성 검사일 뿐 암호화, 서명 또는 신원 인증이 아닙니다. 따라서 코드는 비밀값, 로그인 토큰,
 페어링 토큰, 인증서 지문이나 접근 승인 값으로 취급하지 않습니다.
+
+SWS1도 같은 비밀정보 제외와 CRC-8 성격을 따르지만, 취소·중복 실행을 제외한 조치 가능한
+Viewer Setup 실패와 복구 불가 검사 전용의 별도 codec입니다.
+기존 SWD1의 비트 배치, 고정 벡터와 Agent Setup·Viewer 연결 해석은 변경하지 않습니다. SWS1은
+실패 화면에서만 만들고 새 작업·성공·취소 시 지우며, 파일 저장이나 네트워크 전송을 자동으로
+수행하지 않습니다.
 
 자동화·Mock 검증은 rollback 단계 순서, 오류 분리와 민감정보 제외 계약을 확인할 수 있지만,
 Windows SCM, 방화벽 COM, 실제 ACL, EDR 파일 잠금과 전원 중단 조합을 모두 증명하지는

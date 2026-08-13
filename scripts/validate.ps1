@@ -20,7 +20,11 @@ Write-SswStep '솔루션 빌드'
 if ($LASTEXITCODE -ne 0) { throw 'build 실패' }
 
 Write-SswStep '테스트 실행'
-& $dotnet test $solution -c $Configuration --no-build --logger 'console;verbosity=normal'
+# Several integration suites inspect the same Windows user certificate-key
+# directory. Run project test hosts serially so one suite cannot make another
+# suite report a false key-leak failure while both are creating ephemeral TLS
+# identities.
+& $dotnet test $solution -c $Configuration --no-build -m:1 --logger 'console;verbosity=normal' -- RunConfiguration.MaxCpuCount=1
 if ($LASTEXITCODE -ne 0) { throw 'test 실패' }
 
 Write-SswStep 'C# 서식 검사'

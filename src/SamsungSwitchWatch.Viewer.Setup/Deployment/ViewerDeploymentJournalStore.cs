@@ -6,7 +6,8 @@ public sealed class ViewerDeploymentJournalStore(
     IViewerSetupFileSystem fileSystem,
     ViewerSetupPaths paths)
 {
-    public const int CurrentFormatVersion = 2;
+    public const int LegacyFormatVersion = 2;
+    public const int CurrentFormatVersion = 3;
 
     public bool Exists => fileSystem.FileExists(paths.JournalPath);
 

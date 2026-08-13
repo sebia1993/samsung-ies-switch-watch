@@ -46,4 +46,10 @@ public static class ViewerSetupUiPolicy
                 new("완료", SuccessMessage),
             _ => new("설치 실패", result.Message)
         };
+
+    internal static bool ShouldShowSupportCode(ViewerSetupResult result) =>
+        ViewerSetupSupportCodePolicy.ShouldShow(result.Code, result.Succeeded);
+
+    internal static bool ShouldShowSupportCode(ViewerRecoveryInspection recovery) =>
+        recovery.Exists && !recovery.CanRecover;
 }

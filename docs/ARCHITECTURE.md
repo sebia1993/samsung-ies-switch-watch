@@ -158,6 +158,18 @@ Viewer Setup에는 UAC, PowerShell, CMD, 인터넷과 `Program Files` 설치 단
 분리하여 보존합니다. 공개 ZIP에는 PowerShell·CMD 설치 스크립트를 넣지 않으며, 저장소의
 유지보수용 스크립트는 source-only 자료입니다.
 
+Viewer Setup은 새 transaction을 journal format 3으로 기록하고 format 2 journal을 기존 의미대로
+복구합니다. 현재 Viewer 프로그램 폴더가 완전한 package 검증을 통과하지 못하면 즉시 삭제하지 않고
+고유 transaction backup으로 이동합니다. 새 패키지 활성화·smoke·정상 실행이 commit되기 전 실패하거나
+취소되면 해당 backup을 canonical Viewer 설치 경로로 되돌립니다. commit 뒤에만 기존 폴더를 제품 소유
+최근 격리본으로 확정하고, 검증된 marker·exact path·non-reparse 조건을 만족하는 이전 격리본만
+정리합니다. 모호한 topology와 증거는 보존하고 fail-closed로 중단합니다.
+
+format 3 복구가 남아 있으면 같은 형식을 이해하는 v0.11.11 또는 더 최신 Setup으로 복구를 완료해야
+합니다. 이전 Setup은 format 3을 변경하지 않고 복구 필요로 중단합니다. 이 transaction은 Viewer
+프로그램 폴더와 `%LOCALAPPDATA%\SamsungSwitchWatch\Setup`의 작업 근거만 다루며 장비 목록, 연결 설정,
+DPAPI 자격 증명과 감시 데이터는 격리·회전·삭제 대상이 아닙니다.
+
 ## 3. 사용자 입력부터 결과까지
 
 ### Agent 연결
@@ -186,6 +198,13 @@ Viewer는 연결할 때 다음 단계를 순서대로 확인합니다.
 Viewer의 실패 지원 코드도 같은 SWD1 codec을 사용하되 Viewer 포매터가 일반/같은-PC 모드,
 실패 단계, 단계별 상태, 제한된 후보 수와 확인된 Agent/API 버전만 전달합니다. 지원 코드는
 네트워크 전송 없이 로컬에서 생성되며 성공 상태에서는 만들지 않습니다.
+
+Viewer Setup은 취소·중복 실행을 제외한 조치 가능한 실패와 복구 불가 검사에서 기존 SWD1을
+확장하지 않고 별도 `SWS1-XXXX-XXXX-XXXX-XXXX` codec을 사용합니다.
+SWS1은 제품 버전, 설치·복구 작업, 최초 실패·실패 단계, 기존 설치 분류, package·journal·격리·
+원복·commit의 제한된 enum 상태를 24자 코드와 CRC-8로 표현합니다. 경로, 사용자, 파일명·해시,
+transaction ID, 자격 증명, 장비 정보, 명령·출력과 예외 원문은 codec 입력이 아닙니다. 새 작업,
+성공 또는 취소에서는 이전 코드를 지우며 SWD1 고정 벡터와 기존 해석 계약은 변경하지 않습니다.
 
 Agent와 Viewer가 같은 PC이면 Agent 주소에 `localhost` 또는 `127.0.0.1`을 입력해 같은 연결
 검사를 수행할 수 있습니다. 이 성공은 로컬 서비스·TCP/18443·HTTPS와 API까지만 증명하며,

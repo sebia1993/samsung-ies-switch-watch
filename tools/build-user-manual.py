@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the Korean Samsung Switch Watch v0.11.10 operator manual.
+"""Build the Korean Samsung Switch Watch v0.11.11 operator manual.
 
 The manual is intentionally generated from sanitized, deterministic WPF
 screenshots. It never needs a company switch, a real IP address, or a secret.
@@ -20,7 +20,7 @@ from docx.oxml.ns import qn
 from docx.shared import Inches, Pt, RGBColor
 
 
-VERSION = "0.11.10-poc"
+VERSION = "0.11.11-poc"
 DOCUMENT_DATE = "2026-08-13"
 FONT = "맑은 고딕"
 MONO = "Consolas"
@@ -1096,8 +1096,19 @@ Viewer 허용 범위      : 10/8, 172.16/12, 192.168/16
         "복구 완료를 확인한 다음 설치/업데이트를 별도로 다시 누르세요. 복구 성공이 설치를 "
         "자동으로 시작하지는 않습니다. 장비·연결·DPAPI·감시 데이터는 보존되고 Setup 전용 "
         "journal과 증거 파일만 정리됩니다. 활성화·복구 파일 이동과 삭제는 취소 가능한 제한 "
-        "재시도로 일시적인 EDR 잠금을 처리합니다. commit 전 새 Viewer가 손상된 경우에는 해당 "
-        "세대를 failed 위치로 격리한 뒤 검증된 이전 설치를 복구하고 다시 확인합니다.",
+        "재시도로 일시적인 EDR 잠금을 처리합니다. 새 작업은 journal format 3으로 기록하고 기존 "
+        "format 2도 원래 의미대로 복구합니다. format 3 복구가 남으면 이 버전 또는 더 최신 "
+        "Viewer Setup으로 복구를 완료한 뒤에만 이전 버전으로 내리세요.",
+        "warning",
+    )
+    add_callout(
+        doc,
+        "검증되지 않은 기존 프로그램의 자동 격리",
+        "기존 Viewer 프로그램 폴더가 package 검증을 통과하지 못하면 바로 삭제하지 않고 이번 "
+        "transaction backup으로 이동합니다. 새 Viewer가 commit되기 전 실패하거나 취소되면 원래 "
+        "설치 경로로 되돌리고, 정상 실행 뒤에만 최근 제품 격리본 1개로 확정합니다. 모호한 "
+        "경로·marker·reparse 상태는 변경하지 않습니다. %LOCALAPPDATA%\\SamsungSwitchWatch의 "
+        "장비·연결·DPAPI 자격 증명과 감시 데이터는 격리 대상이 아닙니다.",
         "warning",
     )
     add_image(
@@ -1108,6 +1119,25 @@ Viewer 허용 범위      : 10/8, 172.16/12, 192.168/16
         alt_text="인터넷과 관리자 권한 없이 현재 사용자 전용 경로에 설치하고 사용자 데이터를 보존하는 Viewer Setup 화면",
         caption="그림 3. 사용자 전용 Viewer 설치 및 업데이트 화면",
     )
+    add_image(
+        doc,
+        images_dir / "00-viewer-setup-failed.png",
+        width=4.8,
+        title="Viewer Setup 실패와 SWS1 지원 코드",
+        alt_text="기존 Viewer 자동 격리와 복구 상태, 선택·복사 가능한 SWS1 지원 코드를 보여 주는 Viewer Setup 실패 화면",
+        caption="그림 4. Viewer 자동 격리 복구와 짧은 SWS1 지원 코드",
+    )
+    add_callout(
+        doc,
+        "Viewer Setup 전용 SWS1",
+        "취소·중복 실행을 제외한 조치 가능한 Viewer Setup 설치·복구 실패와 복구 불가 검사에는 "
+        "SWS1-XXXX-XXXX-XXXX-XXXX 형식의 별도 지원 코드가 표시됩니다. 코드를 선택하거나 "
+        "복사해 전달할 수 있고 새 작업·성공·취소 때 이전 값이 "
+        "지워집니다. SWS1에는 제품 버전과 작업·실패·복구 상태 같은 제한된 분류만 들어가며 "
+        "경로, 사용자, 파일 해시, transaction ID, 자격 증명, 장비 정보와 예외 원문은 들어가지 "
+        "않습니다. 기존 Agent Setup과 Viewer 연결 실패의 SWD1은 그대로 유지됩니다.",
+        "info",
+    )
     add_heading(doc, "Viewer에서 Agent 연결", 2, heading_num_id)
     add_image(
         doc,
@@ -1115,7 +1145,7 @@ Viewer 허용 범위      : 10/8, 172.16/12, 192.168/16
         width=3.5,
         title="Agent 연결 창",
         alt_text="Agent PC 주소 하나와 자동 HTTPS 연결 단계, 연결 확인 및 저장 버튼을 보여 주는 연결 설정 창",
-        caption="그림 4. Agent 주소만 입력하는 연결 설정",
+        caption="그림 5. Agent 주소만 입력하는 연결 설정",
     )
     add_unnumbered_heading(
         doc,
@@ -1129,7 +1159,7 @@ Viewer 허용 범위      : 10/8, 172.16/12, 192.168/16
         width=3.5,
         title="Agent 연결 실패와 지원 코드",
         alt_text="TCP 18443 연결 거부 단계와 선택 가능한 SWD1 지원 코드를 함께 표시하는 Viewer Agent 연결 실패 창",
-        caption="그림 5. Viewer Agent 연결 실패와 짧은 SWD1 지원 코드",
+        caption="그림 6. Viewer Agent 연결 실패와 짧은 SWD1 지원 코드",
     )
     add_bullets(
         doc,
@@ -1171,12 +1201,13 @@ Viewer 허용 범위      : 10/8, 172.16/12, 192.168/16
     )
     add_callout(
         doc,
-        "세 가지 진단을 구분하세요",
-        "SWD1은 Agent Setup 또는 Viewer 연결 실패를 전화·메신저로 짧게 전달하는 코드입니다. "
+        "지원 코드와 진단을 구분하세요",
+        "SWD1은 Agent Setup 또는 Viewer 연결 실패를, SWS1은 Viewer Setup 실패를 전화·메신저로 "
+        "짧게 전달하는 서로 다른 코드입니다. "
         "Agent Setup의 '진단정보 복사'는 실패 전용 긴 비식별 요약을 클립보드에 복사하고, "
         "'익명 진단 저장'은 작업이나 연결 검사가 끝난 뒤 SSW_FIELD_DIAGNOSTIC/2 한 장용 TXT를 "
-        "사용자가 선택해 저장합니다. SWD1은 기존 진단을 대체하지 않으며 접속 권한을 부여하지 "
-        "않습니다.",
+        "사용자가 선택해 저장합니다. SWD1과 SWS1은 기존 진단을 대체하지 않으며 접속 권한을 "
+        "부여하지 않습니다.",
         "warning",
     )
     add_heading(
@@ -1192,7 +1223,7 @@ Viewer 허용 범위      : 10/8, 172.16/12, 192.168/16
         width=5.5,
         title="장비 관리 창",
         alt_text="장비명, IPv4, 계정 ID와 비밀번호를 입력하고 자동 판별된 모델과 감시 설정을 확인하는 창",
-        caption="그림 6. Viewer가 보관하는 장비 및 계정 입력 화면",
+        caption="그림 7. Viewer가 보관하는 장비 및 계정 입력 화면",
     )
     add_callout(
         doc,
@@ -1245,7 +1276,7 @@ Viewer 허용 범위      : 10/8, 172.16/12, 192.168/16
         width=4.35,
         title="장비 명령 실행 화면",
         alt_text="show port status를 입력하고 데모 스위치의 익명화된 결과를 확인하는 장비 명령 탭",
-        caption="그림 7. 한 줄 show 명령 실행과 메모리 내 결과 확인",
+        caption="그림 8. 한 줄 show 명령 실행과 메모리 내 결과 확인",
     )
     add_table(
         doc,
@@ -1346,7 +1377,7 @@ Viewer 허용 범위      : 10/8, 172.16/12, 192.168/16
         width=5.2,
         title="Viewer 대시보드",
         alt_text="장비 목록, 선택 장비 상태, 최근 이벤트와 Viewer 감시 상태를 보여 주는 대시보드",
-        caption="그림 8. Viewer 중심 대시보드 전체 화면",
+        caption="그림 9. Viewer 중심 대시보드 전체 화면",
     )
     add_table(
         doc,
@@ -1385,7 +1416,7 @@ Viewer 허용 범위      : 10/8, 172.16/12, 192.168/16
         width=3.25,
         title="항상 위 미니 창",
         alt_text="정상, 경고, 장애 수와 최근 문제를 보여 주는 작은 항상 위 창",
-        caption="그림 9. 반복 운영용 미니 창",
+        caption="그림 10. 반복 운영용 미니 창",
     )
     add_image(
         doc,
@@ -1393,7 +1424,7 @@ Viewer 허용 범위      : 10/8, 172.16/12, 192.168/16
         width=3.45,
         title="장애 알림 팝업",
         alt_text="데모 업링크 포트 Down 장애와 발생 시각을 보여 주는 알림 팝업",
-        caption="그림 10. 새 장애 알림 팝업",
+        caption="그림 11. 새 장애 알림 팝업",
     )
     add_bullets(
         doc,
@@ -1500,6 +1531,8 @@ Viewer 허용 범위      : 10/8, 172.16/12, 192.168/16
             ("VIEWER_SETUP_PATH_INVALID / VIEWER_SETUP_PATH_NOT_WRITABLE / VIEWER_SETUP_INSTALL_WRITE_FAILED", "공식 ZIP 위치, LocalAppData 쓰기 권한과 EDR 차단 기록 확인"),
             ("VIEWER_SETUP_SMOKE_FAILED / VIEWER_SETUP_LAUNCH_FAILED", "새 Viewer 자체점검 또는 실행 유지 실패. 이전 설치 복구 결과와 EDR 차단 확인"),
             ("VIEWER_SETUP_ROLLBACK_FAILED", "반복 설치와 폴더 수동 삭제를 중지하고 남은 Setup journal·증거를 Windows 관리자에게 전달"),
+            ("Viewer format 3 복구 필요", "v0.11.11 또는 더 최신 Viewer Setup으로 이전 상태 복구 완료 → 설치/업데이트 별도 실행 → 그 뒤에만 downgrade"),
+            ("SWS1 지원 코드", "Viewer Setup 실패 전용 코드만 전달 → 경로·사용자·해시·transaction ID·자격 증명·장비 정보는 포함되지 않음"),
             ("TARGET_NOT_ALLOWED", "장비 IPv4가 10/8, 172.16/12 또는 192.168/16인지 확인"),
             ("TCP_TIMEOUT", "Agent PC에서 장비 TCP/23 경로, ACL, 장비 Telnet 상태 확인"),
             ("AUTH_FAILED", "감시를 즉시 차단함. ID/PW와 login local 적용 여부 확인"),

@@ -458,4 +458,27 @@ internal sealed class FaultInjectingViewerSetupFileSystem(
         inner.EnsureDirectoryWritable(path);
     public bool DirectoryHasEntries(string path) =>
         inner.DirectoryHasEntries(path);
+    public bool IsReparsePoint(string path) => inner.IsReparsePoint(path);
+    public bool DirectoryTreeContainsReparsePoint(string path) =>
+        inner.DirectoryTreeContainsReparsePoint(path);
+    public void DeleteDirectoryTreeNoFollow(string path)
+    {
+        if (DeleteFailurePredicate?.Invoke(path) == true)
+        {
+            MatchingDeleteAttempts++;
+            if (DeleteFailuresRemaining > 0)
+            {
+                DeleteFailuresRemaining--;
+                if (CompleteDeleteBeforeFailure)
+                {
+                    inner.DeleteDirectoryTreeNoFollow(path);
+                }
+
+                BeforeDeleteFailure?.Invoke();
+                throw new IOException("synthetic EDR no-follow delete lock");
+            }
+        }
+
+        inner.DeleteDirectoryTreeNoFollow(path);
+    }
 }

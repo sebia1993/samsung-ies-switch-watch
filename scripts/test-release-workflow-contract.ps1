@@ -13,6 +13,7 @@ $agentsPath = Join-Path $repoRoot 'AGENTS.md'
 $readmePath = Join-Path $repoRoot 'README.md'
 $installPath = Join-Path $repoRoot 'docs\INSTALL_KO.md'
 $manualBuilderPath = Join-Path $repoRoot 'tools\build-user-manual.py'
+$manualCapturePath = Join-Path $repoRoot 'tools\SamsungSwitchWatch.ManualCapture\Program.cs'
 foreach ($path in @(
     $workflowPath,
     $buildScriptPath,
@@ -23,7 +24,8 @@ foreach ($path in @(
     $agentsPath,
     $readmePath,
     $installPath,
-    $manualBuilderPath
+    $manualBuilderPath,
+    $manualCapturePath
 )) {
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Required release file is missing: $path" }
 }
@@ -38,6 +40,7 @@ $agents = Get-Content -LiteralPath $agentsPath -Raw -Encoding UTF8
 $readme = Get-Content -LiteralPath $readmePath -Raw -Encoding UTF8
 $install = Get-Content -LiteralPath $installPath -Raw -Encoding UTF8
 $manualBuilder = Get-Content -LiteralPath $manualBuilderPath -Raw -Encoding UTF8
+$manualCapture = Get-Content -LiteralPath $manualCapturePath -Raw -Encoding UTF8
 
 function Assert-Pattern {
     param(
@@ -529,6 +532,27 @@ Assert-Pattern $releaseProcess ([regex]::Escape("git tag -a v$workflowVersion"))
     'Release process tag command must use the active version.'
 Assert-Pattern $manualBuilder "VERSION\s*=\s*`"$escapedVersion`"" `
     'User manual builder must use the active version.'
+if ($manualCapture -notmatch '(?s)ExpectedScreenshotNames\s*=\s*\[(?<body>.*?)\];') {
+    throw 'Manual capture expected screenshot allowlist is missing.'
+}
+$expectedScreenshotCount = [regex]::Matches(
+    $Matches.body,
+    '"[^"\r\n]+\.png"').Count
+if ($expectedScreenshotCount -le 0) {
+    throw 'Manual capture expected screenshot allowlist is empty.'
+}
+$documentedScreenshotCounts = @(
+    [regex]::Matches(
+        $releaseProcess,
+        'WPF[^\r\n0-9]+(?<count>[0-9]+)') |
+        ForEach-Object { [int]$_.Groups['count'].Value }
+)
+if ($documentedScreenshotCounts.Count -ne 2 -or
+    @($documentedScreenshotCounts | Where-Object {
+        $_ -ne $expectedScreenshotCount
+    }).Count -gt 0) {
+    throw 'Release process screenshot count must match the manual capture allowlist.'
+}
 
 $staleGuardPassed = $false
 try {
