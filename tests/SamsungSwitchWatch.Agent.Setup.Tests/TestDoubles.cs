@@ -49,6 +49,9 @@ internal sealed class TestFileSystem : ISetupFileSystem
     public Action<string, string>? MoveFailureObserved { get; set; }
     public Func<string, string, bool>? MoveThenFailPredicate { get; set; }
     public int MoveThenFailFailuresRemaining { get; set; }
+    public Action<string>? AfterReadAllText { get; set; }
+    public Action<string>? BeforeReadAllTextBounded { get; set; }
+    public Action<string, string>? BeforeCopyFile { get; set; }
     public Func<string, string, bool>? CreateDestinationThenFailPredicate { get; set; }
     public int CreateDestinationThenFailFailuresRemaining { get; set; }
     public List<(string Source, string Destination)> MoveRequests { get; } = [];
@@ -99,7 +102,24 @@ internal sealed class TestFileSystem : ISetupFileSystem
             HiddenCleanupDirectoryUntilAccessNormalization)
             ? false
             : _inner.DirectoryExists(path);
-    public string ReadAllText(string path) => _inner.ReadAllText(path);
+    public IReadOnlyList<string> EnumerateTopLevelFiles(string path) =>
+        _inner.EnumerateTopLevelFiles(path);
+    public IReadOnlyList<string> EnumerateTopLevelDirectories(string path) =>
+        _inner.EnumerateTopLevelDirectories(path);
+    public long GetFileLength(string path) => _inner.GetFileLength(path);
+    public string ReadAllText(string path)
+    {
+        var contents = _inner.ReadAllText(path);
+        AfterReadAllText?.Invoke(path);
+        return contents;
+    }
+    public string ReadAllTextBounded(string path, int maximumBytes)
+    {
+        BeforeReadAllTextBounded?.Invoke(path);
+        var contents = _inner.ReadAllTextBounded(path, maximumBytes);
+        AfterReadAllText?.Invoke(path);
+        return contents;
+    }
     public void WriteAllTextAtomic(string path, string contents)
     {
         BeforeAtomicWrite?.Invoke(path, contents);
@@ -142,8 +162,11 @@ internal sealed class TestFileSystem : ISetupFileSystem
         Directory.CreateDirectory(path);
         return true;
     }
-    public void CopyFile(string source, string destination, bool overwrite) =>
+    public void CopyFile(string source, string destination, bool overwrite)
+    {
+        BeforeCopyFile?.Invoke(source, destination);
         _inner.CopyFile(source, destination, overwrite);
+    }
     public void MoveDirectory(string source, string destination)
     {
         MoveRequests.Add((source, destination));

@@ -130,4 +130,129 @@ public sealed class ViewerPackageValidatorTests
 
         Assert.Equal(ViewerSetupErrorCodes.ManifestInvalid, exception.Code);
     }
+
+    [Fact]
+    public void Validate_RejectsCaseInsensitiveDuplicateManifestFileName()
+    {
+        using var workspace = new TestWorkspace();
+        workspace.CreatePackage();
+        var manifestPath = Path.Combine(
+            workspace.PackageDirectory,
+            ViewerSetupConstants.ManifestFileName);
+        using var document = JsonDocument.Parse(File.ReadAllText(manifestPath));
+        var root = document.RootElement;
+        var files = root.GetProperty("files")
+            .EnumerateArray()
+            .Select(item => new
+            {
+                name = item.GetProperty("name").GetString()!,
+                size = item.GetProperty("size").GetInt64(),
+                sha256 = item.GetProperty("sha256").GetString()!
+            })
+            .ToList();
+        var companion = files.Single(file => file.name == "viewer-companion.dll");
+        files.Add(new
+        {
+            name = "VIEWER-COMPANION.DLL",
+            companion.size,
+            companion.sha256
+        });
+        var replacement = new
+        {
+            manifestVersion = root.GetProperty("manifestVersion").GetInt32(),
+            product = root.GetProperty("product").GetString(),
+            packageKind = root.GetProperty("packageKind").GetString(),
+            version = root.GetProperty("version").GetString(),
+            sourceCommit = root.GetProperty("sourceCommit").GetString(),
+            executable = JsonSerializer.Deserialize<object>(
+                root.GetProperty("executable").GetRawText()),
+            files
+        };
+        File.WriteAllText(manifestPath, JsonSerializer.Serialize(replacement));
+
+        var exception = Assert.Throws<ViewerSetupException>(() =>
+            new ViewerPackageValidator(workspace.FileSystem)
+                .Validate(workspace.PackageDirectory));
+
+        Assert.Equal(ViewerSetupErrorCodes.ManifestInvalid, exception.Code);
+    }
+
+    [Fact]
+    public void Validate_ResolvesEntrypointManifestFileNameCaseInsensitivelyOnWindows()
+    {
+        using var workspace = new TestWorkspace();
+        workspace.CreatePackage();
+        var manifestPath = Path.Combine(
+            workspace.PackageDirectory,
+            ViewerSetupConstants.ManifestFileName);
+        using var document = JsonDocument.Parse(File.ReadAllText(manifestPath));
+        var root = document.RootElement;
+        var files = root.GetProperty("files")
+            .EnumerateArray()
+            .Select(item => new
+            {
+                name = string.Equals(
+                    item.GetProperty("name").GetString(),
+                    ViewerSetupConstants.SetupExecutableName,
+                    StringComparison.Ordinal)
+                    ? ViewerSetupConstants.SetupExecutableName.ToUpperInvariant()
+                    : item.GetProperty("name").GetString()!,
+                size = item.GetProperty("size").GetInt64(),
+                sha256 = item.GetProperty("sha256").GetString()!
+            })
+            .ToList();
+        var replacement = new
+        {
+            manifestVersion = root.GetProperty("manifestVersion").GetInt32(),
+            product = root.GetProperty("product").GetString(),
+            packageKind = root.GetProperty("packageKind").GetString(),
+            version = root.GetProperty("version").GetString(),
+            sourceCommit = root.GetProperty("sourceCommit").GetString(),
+            executable = JsonSerializer.Deserialize<object>(
+                root.GetProperty("executable").GetRawText()),
+            files
+        };
+        File.WriteAllText(manifestPath, JsonSerializer.Serialize(replacement));
+
+        var package = new ViewerPackageValidator(workspace.FileSystem)
+            .Validate(workspace.PackageDirectory);
+
+        Assert.Contains(package.VerifiedFiles, file => string.Equals(
+            file.Name,
+            ViewerSetupConstants.SetupExecutableName,
+            StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void Validate_WhenManifestGrowsAfterLengthCheck_BoundedReadRejectsIt()
+    {
+        using var workspace = new TestWorkspace();
+        workspace.CreatePackage();
+        var manifestPath = Path.Combine(
+            workspace.PackageDirectory,
+            ViewerSetupConstants.ManifestFileName);
+        var growthInjected = false;
+        var fileSystem = new FaultInjectingViewerSetupFileSystem(
+            workspace.FileSystem)
+        {
+            BeforeReadAllTextBounded = path =>
+            {
+                if (!growthInjected && string.Equals(
+                        path,
+                        manifestPath,
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    growthInjected = true;
+                    File.WriteAllText(path, new string('x', 2 * 1024 * 1024 + 1));
+                }
+            }
+        };
+
+        var exception = Assert.Throws<ViewerSetupException>(() =>
+            new ViewerPackageValidator(fileSystem)
+                .Validate(workspace.PackageDirectory));
+
+        Assert.True(growthInjected);
+        Assert.Equal(ViewerSetupErrorCodes.ManifestInvalid, exception.Code);
+    }
 }

@@ -11,19 +11,29 @@ public sealed class TelnetCredentials
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(username);
         ArgumentNullException.ThrowIfNull(password);
-        if (username.Length > 128 || username.IndexOfAny(['\r', '\n', '\0']) >= 0)
-        {
-            throw new ArgumentException("Telnet username must be at most 128 characters and contain no line or NUL characters.", nameof(username));
-        }
-        if (password.Length is 0 or > 512 || password.IndexOfAny(['\r', '\n', '\0']) >= 0)
-        {
-            throw new ArgumentException("Telnet password must be 1 to 512 characters and contain no line or NUL characters.", nameof(password));
-        }
-        if (enablePassword is not null &&
-            (enablePassword.Length is 0 or > 512 || enablePassword.IndexOfAny(['\r', '\n', '\0']) >= 0))
+        if (username.Length > 128 ||
+            username.IndexOfAny(['\r', '\n', '\0']) >= 0 ||
+            ContainsNonLatin1Character(username))
         {
             throw new ArgumentException(
-                "Enable password must be 1 to 512 characters and contain no line or NUL characters.",
+                "Telnet username must be at most 128 Latin-1 characters and contain no line or NUL characters.",
+                nameof(username));
+        }
+        if (password.Length is 0 or > 512 ||
+            password.IndexOfAny(['\r', '\n', '\0']) >= 0 ||
+            ContainsNonLatin1Character(password))
+        {
+            throw new ArgumentException(
+                "Telnet password must be 1 to 512 Latin-1 characters and contain no line or NUL characters.",
+                nameof(password));
+        }
+        if (enablePassword is not null &&
+            (enablePassword.Length is 0 or > 512 ||
+             enablePassword.IndexOfAny(['\r', '\n', '\0']) >= 0 ||
+             ContainsNonLatin1Character(enablePassword)))
+        {
+            throw new ArgumentException(
+                "Enable password must be 1 to 512 Latin-1 characters and contain no line or NUL characters.",
                 nameof(enablePassword));
         }
         Username = username;
@@ -39,6 +49,9 @@ public sealed class TelnetCredentials
 
     public override string ToString() =>
         "TelnetCredentials { Username = [REDACTED], Password = [REDACTED], EnablePassword = [REDACTED] }";
+
+    private static bool ContainsNonLatin1Character(string value) =>
+        value.Any(static character => character > '\u00ff');
 }
 
 public sealed record TelnetTimeouts(

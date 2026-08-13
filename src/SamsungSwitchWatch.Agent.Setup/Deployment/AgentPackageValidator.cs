@@ -1,9 +1,12 @@
+using System.Text;
 using System.Text.Json;
 
 namespace SamsungSwitchWatch.Agent.Setup.Deployment;
 
 public sealed class AgentPackageValidator(ISetupFileSystem fileSystem) : IAgentPackageValidator
 {
+    private const int MaximumManifestBytes = 2 * 1024 * 1024;
+
     public AgentPackage Validate(string packageDirectory)
     {
         var packageRoot = Path.GetFullPath(packageDirectory);
@@ -21,13 +24,36 @@ public sealed class AgentPackageValidator(ISetupFileSystem fileSystem) : IAgentP
         }
 
         BuildManifest? manifest;
+        string manifestSha256;
         try
         {
-            manifest = JsonSerializer.Deserialize<BuildManifest>(
-                fileSystem.ReadAllText(manifestPath),
-                JsonOptions);
+            if (fileSystem.GetFileLength(manifestPath) > MaximumManifestBytes)
+            {
+                throw new JsonException();
+            }
+
+            var beforeReadHash = fileSystem.ComputeSha256(manifestPath);
+            var json = fileSystem.ReadAllTextBounded(
+                manifestPath,
+                MaximumManifestBytes);
+            manifestSha256 = fileSystem.ComputeSha256(manifestPath);
+            if (!string.Equals(
+                    beforeReadHash,
+                    manifestSha256,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                throw new IOException("The package manifest changed while it was read.");
+            }
+
+            if (json.Length > MaximumManifestBytes)
+            {
+                throw new JsonException();
+            }
+
+            manifest = JsonSerializer.Deserialize<BuildManifest>(json, JsonOptions);
         }
-        catch (JsonException exception)
+        catch (Exception exception) when (
+            exception is JsonException or IOException or DecoderFallbackException)
         {
             throw new SetupException(
                 SetupErrorCodes.ManifestInvalid,
@@ -57,7 +83,10 @@ public sealed class AgentPackageValidator(ISetupFileSystem fileSystem) : IAgentP
         }
 
         var verifiedFiles = new List<PackageFile>();
-        var seenNames = new HashSet<string>(StringComparer.Ordinal);
+        // NTFS/Windows resolves package file names case-insensitively. Reject
+        // aliases such as companion.dll and COMPANION.DLL before either name
+        // can be treated as a distinct manifest entry for the same file.
+        var seenNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var entry in manifest.Files)
         {
             if (entry is null ||
@@ -81,7 +110,8 @@ public sealed class AgentPackageValidator(ISetupFileSystem fileSystem) : IAgentP
             }
 
             var fileHash = fileSystem.ComputeSha256(filePath);
-            if (!string.Equals(fileHash, entry.Sha256, StringComparison.OrdinalIgnoreCase))
+            if (fileSystem.GetFileLength(filePath) != entry.Size ||
+                !string.Equals(fileHash, entry.Sha256, StringComparison.OrdinalIgnoreCase))
             {
                 throw new SetupException(
                     SetupErrorCodes.PackageHashMismatch,
@@ -95,10 +125,32 @@ public sealed class AgentPackageValidator(ISetupFileSystem fileSystem) : IAgentP
                 entry.Size));
         }
 
+        var actualNames = fileSystem
+            .EnumerateTopLevelFiles(packageRoot)
+            .Select(Path.GetFileName)
+            .Where(name => !string.IsNullOrWhiteSpace(name))
+            .Cast<string>()
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var expectedNames = seenNames.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        expectedNames.Add(SetupConstants.ManifestFileName);
+        if (!actualNames.SetEquals(expectedNames) ||
+            fileSystem.EnumerateTopLevelDirectories(packageRoot).Count != 0)
+        {
+            throw new SetupException(
+                SetupErrorCodes.ManifestInvalid,
+                "Agent 패키지 파일 목록이 빌드 목록과 일치하지 않습니다.");
+        }
+
         var setupFile = verifiedFiles.SingleOrDefault(file =>
-            string.Equals(file.Name, SetupConstants.SetupExecutableName, StringComparison.Ordinal));
+            string.Equals(
+                file.Name,
+                SetupConstants.SetupExecutableName,
+                StringComparison.OrdinalIgnoreCase));
         var agentFile = verifiedFiles.SingleOrDefault(file =>
-            string.Equals(file.Name, SetupConstants.AgentExecutableName, StringComparison.Ordinal));
+            string.Equals(
+                file.Name,
+                SetupConstants.AgentExecutableName,
+                StringComparison.OrdinalIgnoreCase));
         if (setupFile is null || agentFile is null)
         {
             throw new SetupException(
@@ -123,7 +175,10 @@ public sealed class AgentPackageValidator(ISetupFileSystem fileSystem) : IAgentP
             agentExecutablePath,
             manifestPath,
             agentFile.Sha256,
-            verifiedFiles);
+            verifiedFiles)
+        {
+            ManifestSha256 = manifestSha256
+        };
     }
 
     private static bool IsSha256(string? value) =>

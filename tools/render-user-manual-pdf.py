@@ -13,7 +13,15 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
+from xml.etree import ElementTree
+from zipfile import ZIP_DEFLATED, ZipFile
+
+
+APP_PROPERTIES_NAMESPACE = (
+    "http://schemas.openxmlformats.org/officeDocument/2006/extended-properties"
+)
 
 
 def find_renderer(explicit: Path | None) -> Path:
@@ -104,7 +112,54 @@ def render_docx(
     pages = sorted(render_dir.glob("page-*.png"))
     if not pages:
         raise RuntimeError(f"Renderer did not emit QA page images in {render_dir}")
+    update_docx_page_count(input_path, len(pages))
     return pages
+
+
+def update_docx_page_count(input_path: Path, page_count: int) -> None:
+    """Synchronize the DOCX extended Pages property with the verified render."""
+    if page_count < 1:
+        raise ValueError("page_count must be positive")
+
+    app_part = "docProps/app.xml"
+    with ZipFile(input_path, "r") as source:
+        if app_part not in source.namelist():
+            raise RuntimeError(f"DOCX extended properties were not found: {app_part}")
+        app_xml = source.read(app_part)
+        root = ElementTree.fromstring(app_xml)
+        pages = root.find(f"{{{APP_PROPERTIES_NAMESPACE}}}Pages")
+        if pages is None:
+            raise RuntimeError("DOCX extended Pages property was not found")
+        if pages.text == str(page_count):
+            return
+        pages.text = str(page_count)
+        updated_app_xml = ElementTree.tostring(
+            root,
+            encoding="utf-8",
+            xml_declaration=True,
+        )
+        package_items = [
+            (item, source.read(item.filename))
+            for item in source.infolist()
+        ]
+
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{input_path.name}.",
+        suffix=".tmp",
+        dir=input_path.parent,
+    )
+    os.close(descriptor)
+    temporary_path = Path(temporary_name)
+    try:
+        with ZipFile(temporary_path, "w", compression=ZIP_DEFLATED) as target:
+            for item, data in package_items:
+                target.writestr(
+                    item,
+                    updated_app_xml if item.filename == app_part else data,
+                )
+        os.replace(temporary_path, input_path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
 
 
 def render_with_word_and_pymupdf(

@@ -181,6 +181,133 @@ public sealed class DashboardViewModelTests
     }
 
     [Fact]
+    public async Task OversizedOutOfOrderPage_RebaselinesRecentStateAndKeepsBufferBounded()
+    {
+        using var fixture = new ViewModelFixture();
+        var now = DateTimeOffset.UtcNow;
+        var highWatermark = DashboardViewModel.MaximumBufferedEventChanges + 2L;
+        fixture.Client.Snapshot = Snapshot(now, highWatermark, []);
+        fixture.Client.Recent = [Event(42, now)];
+        fixture.Client.ChangePages.Enqueue(new EventChangePageDto(
+            highWatermark,
+            highWatermark,
+            false,
+            Enumerable.Range(2, DashboardViewModel.MaximumBufferedEventChanges + 1)
+                .Select(sequence => Change(sequence, Event(sequence, now.AddSeconds(sequence))))
+                .ToArray()));
+        var viewModel = fixture.CreateViewModel(CursorSettings(0));
+
+        await viewModel.InitializeAsync();
+
+        Assert.Equal(highWatermark, viewModel.AppliedChangeCursor);
+        Assert.Equal(0, viewModel.BufferedEventChangeCount);
+        Assert.Equal("event-42", Assert.Single(viewModel.RecentEvents).AgentEventId);
+        Assert.Contains("EVENT_FEED_RESET", viewModel.OperationMessage, StringComparison.Ordinal);
+        Assert.Equal(AgentConnectionState.Connected, viewModel.ConnectionState);
+        await viewModel.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task LiveEventBurstWhileSyncIsBlocked_UsesOneBoundedPumpAndRebaselines()
+    {
+        using var fixture = new ViewModelFixture();
+        var now = DateTimeOffset.UtcNow;
+        var highWatermark = DashboardViewModel.MaximumBufferedEventChanges + 2L;
+        fixture.Client.Snapshot = Snapshot(now, 0, []);
+        fixture.Client.Recent = [Event(42, now)];
+        var viewModel = fixture.CreateViewModel(CursorSettings(0));
+        await viewModel.InitializeAsync();
+
+        fixture.Client.BlockRecentAfterCalls = 1;
+        viewModel.RefreshCommand.Execute(null);
+        await fixture.Client.RecentBlocked.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        fixture.Client.Emit(Change(2, Event(2, now.AddSeconds(2))));
+        await WaitUntilAsync(() => viewModel.LiveEventPumpObservedSignalVersion == 1);
+
+        for (var sequence = 3;
+             sequence <= highWatermark;
+             sequence++)
+        {
+            fixture.Client.Emit(Change(sequence, Event(sequence, now.AddSeconds(sequence))));
+        }
+
+        Assert.True(
+            viewModel.BufferedEventChangeCount <= DashboardViewModel.MaximumBufferedEventChanges);
+        Assert.True(viewModel.IsLiveEventPumpScheduled);
+        Assert.Equal(1, viewModel.LiveEventPumpStartCount);
+
+        fixture.Client.ReleaseRecent.TrySetResult();
+        await WaitUntilAsync(() =>
+            viewModel.AppliedChangeCursor == highWatermark
+            && !viewModel.IsLiveEventPumpScheduled
+            && !viewModel.IsBusy);
+
+        Assert.Equal(0, viewModel.BufferedEventChangeCount);
+        Assert.Equal("event-42", Assert.Single(viewModel.RecentEvents).AgentEventId);
+        Assert.Contains("EVENT_FEED_RESET", viewModel.OperationMessage, StringComparison.Ordinal);
+        await viewModel.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task OldClientRebaseline_CompletingAfterStatelessSwitchDoesNotMutateNewView()
+    {
+        var folder = Path.Combine(
+            Path.GetTempPath(),
+            "SamsungSwitchWatch-ViewerTests",
+            Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(folder);
+        try
+        {
+            var now = DateTimeOffset.UtcNow;
+            var original = new FakeAgentClient
+            {
+                Snapshot = Snapshot(now, 0, []),
+                Recent = [Event(42, now)],
+                BlockExactRecentCall = 2,
+                BlockRecentAfterCalls = 2
+            };
+            var replacement = new FakeAgentClient { SupportsStatelessV4 = true };
+            var store = new ViewerSettingsStore(Path.Combine(folder, "settings.json"));
+            var viewModel = new DashboardViewModel(
+                CursorSettings(0),
+                store,
+                new QueueFactory(original, replacement));
+            await viewModel.InitializeAsync();
+
+            viewModel.RefreshCommand.Execute(null);
+            await original.ExactRecentBlocked.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            for (var sequence = 2;
+                 sequence <= DashboardViewModel.MaximumBufferedEventChanges + 2;
+                 sequence++)
+            {
+                original.Emit(Change(sequence, Event(sequence, now.AddSeconds(sequence))));
+            }
+            original.ReleaseExactRecent.TrySetResult();
+            await original.RecentBlocked.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+            await viewModel.SwitchClientAsync(new ViewerSettings
+            {
+                DemoMode = false,
+                AgentUri = "https://replacement.example.test:18443"
+            });
+            original.ReleaseRecent.TrySetResult();
+            await WaitUntilAsync(() =>
+                !viewModel.IsLiveEventPumpScheduled
+                && !viewModel.IsBusy);
+
+            Assert.Empty(viewModel.RecentEvents);
+            Assert.Equal(AgentConnectionState.Connected, viewModel.ConnectionState);
+            Assert.DoesNotContain("EVENT_FEED_RESET", viewModel.OperationMessage, StringComparison.Ordinal);
+            await viewModel.DisposeAsync();
+        }
+        finally
+        {
+            if (Directory.Exists(folder)) Directory.Delete(folder, true);
+        }
+    }
+
+    [Fact]
     public async Task ManualRefresh_ReconcilesRecentEventsAfterServerRetention()
     {
         using var fixture = new ViewModelFixture();
@@ -1050,7 +1177,10 @@ public sealed class DashboardViewModelTests
         viewModel.ReadOnlyQueryCommand = "  show port status  ";
 
         viewModel.ExecuteReadOnlyQueryCommand.Execute(null);
-        await WaitUntilAsync(() => fixture.Client.ReadOnlyQueryCalls == 1 && !viewModel.IsReadOnlyQueryRunning);
+        await WaitUntilAsync(() =>
+            fixture.Client.ReadOnlyQueryCalls == 1
+            && !viewModel.IsReadOnlyQueryRunning
+            && viewModel.ExecuteReadOnlyQueryCommand.CanExecute(null));
 
         Assert.Equal("a", fixture.Client.LastReadOnlyQueryDeviceId);
         Assert.Equal("show port status", fixture.Client.LastReadOnlyQueryCommand);
@@ -1096,7 +1226,9 @@ public sealed class DashboardViewModelTests
         viewModel.ExecuteReadOnlyQueryCommand.Execute(null);
         await WaitUntilAsync(() => viewModel.IsReadOnlyQueryRunning);
         viewModel.CancelReadOnlyQueryCommand.Execute(null);
-        await WaitUntilAsync(() => !viewModel.IsReadOnlyQueryRunning);
+        await WaitUntilAsync(() =>
+            !viewModel.IsReadOnlyQueryRunning
+            && viewModel.ExecuteReadOnlyQueryCommand.CanExecute(null));
 
         Assert.StartsWith("취소됨", viewModel.ReadOnlyQueryStatusText, StringComparison.Ordinal);
         await viewModel.DisposeAsync();
@@ -1198,13 +1330,18 @@ public sealed class DashboardViewModelTests
         await viewModel.InitializeAsync();
 
         viewModel.ExecuteReadOnlyQueryCommand.Execute(null);
-        await WaitUntilAsync(() => fixture.Client.ReadOnlyQueryCalls == 1 && !viewModel.IsReadOnlyQueryRunning);
+        await WaitUntilAsync(() =>
+            fixture.Client.ReadOnlyQueryCalls == 1
+            && !viewModel.IsReadOnlyQueryRunning
+            && viewModel.ExecuteReadOnlyQueryCommand.CanExecute(null));
 
         fixture.Client.BlockReadOnlyQuery = true;
         viewModel.ExecuteReadOnlyQueryCommand.Execute(null);
         await WaitUntilAsync(() => fixture.Client.ReadOnlyQueryCalls == 2 && viewModel.IsReadOnlyQueryRunning);
         viewModel.CancelReadOnlyQueryCommand.Execute(null);
-        await WaitUntilAsync(() => !viewModel.IsReadOnlyQueryRunning);
+        await WaitUntilAsync(() =>
+            !viewModel.IsReadOnlyQueryRunning
+            && viewModel.ExecuteReadOnlyQueryCommand.CanExecute(null));
 
         fixture.Client.BlockReadOnlyQuery = false;
         viewModel.ExecuteReadOnlyQueryCommand.Execute(null);
@@ -1547,8 +1684,11 @@ public sealed class DashboardViewModelTests
         private int _recentCalls;
         public int RecentCalls => Volatile.Read(ref _recentCalls);
         public int BlockRecentAfterCalls { get; set; } = int.MaxValue;
+        public int BlockExactRecentCall { get; set; } = int.MaxValue;
         public TaskCompletionSource RecentBlocked { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource ReleaseRecent { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource ExactRecentBlocked { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource ReleaseExactRecent { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public bool DisposeCalled { get; private set; }
         public Exception? DisposeException { get; set; }
         public string? LastExecutedDeviceId { get; private set; }
@@ -1628,6 +1768,11 @@ public sealed class DashboardViewModelTests
         {
             var result = Recent.Take(limit).ToArray();
             var call = Interlocked.Increment(ref _recentCalls);
+            if (call == BlockExactRecentCall)
+            {
+                ExactRecentBlocked.TrySetResult();
+                await ReleaseExactRecent.Task.WaitAsync(cancellationToken);
+            }
             if (call > BlockRecentAfterCalls)
             {
                 RecentBlocked.TrySetResult();

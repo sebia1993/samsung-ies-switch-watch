@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using System.Security;
 using System.Text;
 using SamsungSwitchWatch.Viewer.Setup.Deployment;
 
@@ -19,9 +20,58 @@ public sealed class PhysicalViewerSetupFileSystem : IViewerSetupFileSystem
     public string ReadAllText(string path) =>
         File.ReadAllText(path, new UTF8Encoding(false, true));
 
+    public string ReadAllTextBounded(string path, int maximumBytes) =>
+        ReadUtf8TextBounded(path, maximumBytes);
+
     public byte[] ReadAllBytes(string path) => File.ReadAllBytes(path);
 
     public long GetFileLength(string path) => new FileInfo(path).Length;
+
+    internal static string ReadUtf8TextBounded(string path, int maximumBytes)
+    {
+        if (maximumBytes <= 0 || maximumBytes == int.MaxValue)
+        {
+            throw new ArgumentOutOfRangeException(nameof(maximumBytes));
+        }
+
+        var buffer = GC.AllocateUninitializedArray<byte>(maximumBytes + 1);
+        var totalRead = 0;
+        using (var stream = new FileStream(
+                   path,
+                   FileMode.Open,
+                   FileAccess.Read,
+                   FileShare.Read,
+                   bufferSize: 64 * 1024,
+                   FileOptions.SequentialScan))
+        {
+            while (totalRead < buffer.Length)
+            {
+                var read = stream.Read(buffer, totalRead, buffer.Length - totalRead);
+                if (read == 0)
+                {
+                    break;
+                }
+
+                totalRead += read;
+            }
+        }
+
+        if (totalRead > maximumBytes)
+        {
+            throw new IOException("The text file exceeds the allowed size.");
+        }
+
+        var offset = totalRead >= 3
+                     && buffer[0] == 0xef
+                     && buffer[1] == 0xbb
+                     && buffer[2] == 0xbf
+            ? 3
+            : 0;
+        return new UTF8Encoding(false, true).GetString(
+            buffer,
+            offset,
+            totalRead - offset);
+    }
 
     public string ComputeSha256(string path)
     {
@@ -138,14 +188,91 @@ public sealed class PhysicalViewerSetupFileSystem : IViewerSetupFileSystem
                 stream.Flush(flushToDisk: true);
             }
 
-            File.Move(temporary, path, overwrite: true);
+            if (File.Exists(path))
+            {
+                // Replace the journal in one filesystem operation. A backup is
+                // intentionally omitted because transaction recovery owns the
+                // previous state and EDR cleanup of an unused backup must not
+                // turn a committed write into a false failure.
+                File.Replace(
+                    temporary,
+                    path,
+                    destinationBackupFileName: null,
+                    ignoreMetadataErrors: true);
+            }
+            else
+            {
+                File.Move(temporary, path);
+            }
+
+            FlushCommittedFileBestEffort(path, FlushCommittedFile);
         }
         finally
         {
-            if (File.Exists(temporary))
-            {
-                File.Delete(temporary);
-            }
+            DeleteTemporaryFileBestEffort(temporary, File.Exists, File.Delete);
+        }
+    }
+
+    internal static void FlushCommittedFileBestEffort(
+        string path,
+        Action<string> flush)
+    {
+        ArgumentNullException.ThrowIfNull(flush);
+        try
+        {
+            flush(path);
+        }
+        catch (Exception exception) when (
+            IsIgnorablePostCommitFlushFailure(path, exception))
+        {
+            // File.Replace/File.Move already committed the new journal. A
+            // scanner can temporarily block only the durability re-open; do
+            // not report a false write failure after the visible state changed.
+        }
+    }
+
+    private static bool IsIgnorablePostCommitFlushFailure(
+        string path,
+        Exception exception) =>
+        exception is not FileNotFoundException
+        && exception is not DirectoryNotFoundException
+        && exception is IOException or UnauthorizedAccessException or SecurityException
+        && File.Exists(path);
+
+    private static void FlushCommittedFile(string path)
+    {
+        using var committedStream = new FileStream(
+            path,
+            FileMode.Open,
+            FileAccess.ReadWrite,
+            FileShare.Read,
+            bufferSize: 1,
+            FileOptions.WriteThrough);
+        committedStream.Flush(flushToDisk: true);
+    }
+
+    internal static void DeleteTemporaryFileBestEffort(
+        string path,
+        Func<string, bool> exists,
+        Action<string> delete)
+    {
+        ArgumentNullException.ThrowIfNull(exists);
+        ArgumentNullException.ThrowIfNull(delete);
+        if (!exists(path))
+        {
+            return;
+        }
+
+        try
+        {
+            delete(path);
+        }
+        catch (Exception exception) when (
+            exception is IOException or UnauthorizedAccessException or SecurityException)
+        {
+            // The destination write is already authoritative. A scanner may
+            // retain the temporary name briefly; do not hide the original
+            // outcome or report a committed journal replacement as failed.
         }
     }
 }

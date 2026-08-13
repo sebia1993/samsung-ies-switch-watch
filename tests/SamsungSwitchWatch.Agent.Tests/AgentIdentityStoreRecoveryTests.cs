@@ -243,6 +243,51 @@ public sealed class AgentIdentityStoreRecoveryTests
         }
     }
 
+    [Theory]
+    [InlineData(AgentIdentityStore.MetadataFileName, AgentIdentityStore.MaximumMetadataBytes)]
+    [InlineData(
+        AgentIdentityStore.CertificateFileName,
+        AgentIdentityStore.MaximumProtectedCertificateBytes)]
+    public void OversizedCommittedIdentity_FailsClosedWithoutLargeStartupRead(
+        string fileName,
+        int maximumBytes)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        var folder = NewTemporaryFolder();
+        try
+        {
+            using (AgentIdentityStore.LoadOrCreate(CreateOptions(folder)))
+            {
+            }
+
+            var path = Path.Combine(folder, fileName);
+            using (var stream = new FileStream(
+                       path,
+                       FileMode.Create,
+                       FileAccess.Write,
+                       FileShare.None))
+            {
+                stream.SetLength((long)maximumBytes + 1);
+                stream.Flush(flushToDisk: true);
+            }
+            var before = CaptureFiles(folder);
+
+            var exception = Assert.Throws<AgentConfigurationException>(() =>
+                AgentIdentityStore.LoadOrCreate(CreateOptions(folder)));
+
+            Assert.Equal(AgentErrorCodes.TlsIdentityInvalid, exception.Code);
+            AssertFileSnapshot(before, CaptureFiles(folder));
+        }
+        finally
+        {
+            Directory.Delete(folder, true);
+        }
+    }
+
     [Fact]
     public void MarkedInitialCreation_WithCorruptCommittedFiles_FailsClosedAndPreservesEvidence()
     {

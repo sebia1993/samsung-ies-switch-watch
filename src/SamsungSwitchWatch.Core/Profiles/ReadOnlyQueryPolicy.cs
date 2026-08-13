@@ -40,6 +40,15 @@ public static class ReadOnlyQueryPolicy
             return ReadOnlyQueryValidation.Blocked(ReadOnlyQueryRejection.ControlCharacter);
         }
 
+        // Telnet transmits CLI data as ISO-8859-1. Reject characters that the
+        // wire encoding cannot represent instead of silently replacing them
+        // with '?' and executing a different command on the switch. Preserve
+        // the established control-character classification above.
+        if (command.Any(static character => character > '\u00ff'))
+        {
+            return ReadOnlyQueryValidation.Blocked(ReadOnlyQueryRejection.UnsupportedCharacter);
+        }
+
         if (command.IndexOfAny([';', '|', '&', '`', '$', '<', '>']) >= 0)
         {
             return ReadOnlyQueryValidation.Blocked(ReadOnlyQueryRejection.Separator);
@@ -71,7 +80,8 @@ public enum ReadOnlyQueryRejection
     TooLong,
     ControlCharacter,
     Separator,
-    NotShowCommand
+    NotShowCommand,
+    UnsupportedCharacter
 }
 
 public sealed record ReadOnlyQueryValidation(

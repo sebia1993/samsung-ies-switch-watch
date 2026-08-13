@@ -53,15 +53,20 @@ internal sealed class TestWorkspace : IDisposable
             Path.Combine(Root, "startup", ViewerSetupConstants.ShortcutFileName));
 
     public ViewerDeploymentOrchestrator CreateOrchestrator(
-        ViewerSetupPaths? paths = null) =>
+        ViewerSetupPaths? paths = null,
+        IViewerSetupFileSystem? fileSystem = null)
+    {
+        var effectiveFileSystem = fileSystem ?? FileSystem;
+        return
         new(
-            new ViewerPackageValidator(FileSystem),
-            FileSystem,
+            new ViewerPackageValidator(effectiveFileSystem),
+            effectiveFileSystem,
             Process,
             Shutdown,
             Shortcuts,
             new NoOpDeploymentLock(),
             paths ?? Paths);
+    }
 
     public void CreatePackage(
         string directory,
@@ -365,4 +370,92 @@ internal sealed class NoOpDeploymentLock : IViewerDeploymentLock
         {
         }
     }
+}
+
+internal sealed class FaultInjectingViewerSetupFileSystem(
+    IViewerSetupFileSystem inner) : IViewerSetupFileSystem
+{
+    public Func<string, string, bool>? MoveFailurePredicate { get; set; }
+    public int MoveFailuresRemaining { get; set; }
+    public bool CompleteMoveBeforeFailure { get; set; }
+    public Action? BeforeMoveFailure { get; set; }
+    public int MatchingMoveAttempts { get; private set; }
+
+    public Func<string, bool>? DeleteFailurePredicate { get; set; }
+    public int DeleteFailuresRemaining { get; set; }
+    public bool CompleteDeleteBeforeFailure { get; set; }
+    public Action? BeforeDeleteFailure { get; set; }
+    public int MatchingDeleteAttempts { get; private set; }
+
+    public bool FileExists(string path) => inner.FileExists(path);
+    public bool DirectoryExists(string path) => inner.DirectoryExists(path);
+    public IReadOnlyList<string> EnumerateTopLevelFiles(string path) =>
+        inner.EnumerateTopLevelFiles(path);
+    public IReadOnlyList<string> EnumerateTopLevelDirectories(string path) =>
+        inner.EnumerateTopLevelDirectories(path);
+    public string ReadAllText(string path) => inner.ReadAllText(path);
+    public Action<string>? BeforeReadAllTextBounded { get; set; }
+    public string ReadAllTextBounded(string path, int maximumBytes)
+    {
+        BeforeReadAllTextBounded?.Invoke(path);
+        return inner.ReadAllTextBounded(path, maximumBytes);
+    }
+    public byte[] ReadAllBytes(string path) => inner.ReadAllBytes(path);
+    public long GetFileLength(string path) => inner.GetFileLength(path);
+    public string ComputeSha256(string path) => inner.ComputeSha256(path);
+    public void CreateDirectory(string path) => inner.CreateDirectory(path);
+    public void CopyFile(string source, string destination, bool overwrite) =>
+        inner.CopyFile(source, destination, overwrite);
+
+    public void MoveDirectory(string source, string destination)
+    {
+        if (MoveFailurePredicate?.Invoke(source, destination) == true)
+        {
+            MatchingMoveAttempts++;
+            if (MoveFailuresRemaining > 0)
+            {
+                MoveFailuresRemaining--;
+                if (CompleteMoveBeforeFailure)
+                {
+                    inner.MoveDirectory(source, destination);
+                }
+
+                BeforeMoveFailure?.Invoke();
+                throw new IOException("synthetic EDR move lock");
+            }
+        }
+
+        inner.MoveDirectory(source, destination);
+    }
+
+    public void DeleteDirectory(string path, bool recursive)
+    {
+        if (DeleteFailurePredicate?.Invoke(path) == true)
+        {
+            MatchingDeleteAttempts++;
+            if (DeleteFailuresRemaining > 0)
+            {
+                DeleteFailuresRemaining--;
+                if (CompleteDeleteBeforeFailure)
+                {
+                    inner.DeleteDirectory(path, recursive);
+                }
+
+                BeforeDeleteFailure?.Invoke();
+                throw new IOException("synthetic EDR delete lock");
+            }
+        }
+
+        inner.DeleteDirectory(path, recursive);
+    }
+
+    public void DeleteFile(string path) => inner.DeleteFile(path);
+    public void WriteAllTextAtomic(string path, string contents) =>
+        inner.WriteAllTextAtomic(path, contents);
+    public void WriteAllBytesAtomic(string path, byte[] contents) =>
+        inner.WriteAllBytesAtomic(path, contents);
+    public void EnsureDirectoryWritable(string path) =>
+        inner.EnsureDirectoryWritable(path);
+    public bool DirectoryHasEntries(string path) =>
+        inner.DirectoryHasEntries(path);
 }

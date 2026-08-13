@@ -13,6 +13,9 @@ public sealed class ViewerDeploymentOrchestrator(
     private static readonly TimeSpan ViewerShutdownTimeout = TimeSpan.FromSeconds(8);
     private static readonly TimeSpan SmokeTimeout = TimeSpan.FromSeconds(20);
     private static readonly TimeSpan LaunchLivenessWindow = TimeSpan.FromSeconds(2);
+    private const int DirectoryMutationMaxAttempts = 5;
+    private static readonly TimeSpan DirectoryMutationRetryDelay =
+        TimeSpan.FromMilliseconds(250);
 
     public async Task<ViewerSetupResult> DeployAsync(
         CancellationToken cancellationToken = default)
@@ -304,9 +307,12 @@ public sealed class ViewerDeploymentOrchestrator(
                     InstallMovedToBackup = true
                 };
                 store.Write(journal);
-                fileSystem.MoveDirectory(
+                await MoveTransactionDirectoryAsync(
                     paths.InstallDirectory,
-                    transaction.BackupDirectory);
+                    transaction.BackupDirectory,
+                    ViewerSetupErrorCodes.InstallWriteFailed,
+                    "Viewer 기존 파일을 안전하게 백업하지 못했습니다.",
+                    cancellationToken);
                 ValidateExpectedInstallation(
                     transaction.BackupDirectory,
                     journal.PreviousManifestSha256!,
@@ -320,9 +326,12 @@ public sealed class ViewerDeploymentOrchestrator(
                 StagingActivated = true
             };
             store.Write(journal);
-            fileSystem.MoveDirectory(
+            await MoveTransactionDirectoryAsync(
                 transaction.StagingDirectory,
-                paths.InstallDirectory);
+                paths.InstallDirectory,
+                ViewerSetupErrorCodes.InstallWriteFailed,
+                "Viewer 파일을 안전하게 교체하지 못했습니다.",
+                cancellationToken);
             ValidateExpectedInstallation(
                 paths.InstallDirectory,
                 journal.PackageManifestSha256,
@@ -390,7 +399,10 @@ public sealed class ViewerDeploymentOrchestrator(
 
             try
             {
-                CleanupCommittedTransaction(store, journal);
+                await CleanupCommittedTransactionAsync(
+                    store,
+                    journal,
+                    cancellationToken);
             }
             catch
             {
@@ -439,7 +451,10 @@ public sealed class ViewerDeploymentOrchestrator(
         if (journal.NormalLaunchObserved ||
             string.Equals(journal.Stage, "committed", StringComparison.Ordinal))
         {
-            CleanupCommittedTransaction(store, journal);
+            await CleanupCommittedTransactionAsync(
+                store,
+                journal,
+                cancellationToken);
             return;
         }
 
@@ -449,7 +464,10 @@ public sealed class ViewerDeploymentOrchestrator(
                 StringComparison.Ordinal))
         {
             ValidateRestoredInstallation(journal);
-            CleanupTransactionArtifacts(store, journal);
+            await CleanupTransactionArtifactsAsync(
+                store,
+                journal,
+                cancellationToken);
             return;
         }
 
@@ -468,6 +486,14 @@ public sealed class ViewerDeploymentOrchestrator(
 
         var backupExists = fileSystem.DirectoryExists(journal.BackupDirectory);
         var installExists = fileSystem.DirectoryExists(paths.InstallDirectory);
+        if (fileSystem.FileExists(journal.BackupDirectory) ||
+            fileSystem.FileExists(paths.InstallDirectory))
+        {
+            throw new ViewerSetupException(
+                ViewerSetupErrorCodes.RollbackFailed,
+                "Viewer 설치 또는 백업 경로가 폴더가 아니어서 복구를 중단했습니다.");
+        }
+
         if (backupExists)
         {
             ValidateExpectedInstallation(
@@ -477,19 +503,28 @@ public sealed class ViewerDeploymentOrchestrator(
                 ViewerSetupErrorCodes.RollbackFailed);
             if (installExists)
             {
-                if (fileSystem.DirectoryExists(journal.FailedDirectory))
+                if (fileSystem.DirectoryExists(journal.FailedDirectory) ||
+                    fileSystem.FileExists(journal.FailedDirectory))
                 {
-                    fileSystem.DeleteDirectory(journal.FailedDirectory, recursive: true);
+                    throw new ViewerSetupException(
+                        ViewerSetupErrorCodes.RollbackFailed,
+                        "Viewer 복구 폴더와 현재 설치가 동시에 남아 있어 복구를 중단했습니다.");
                 }
 
-                fileSystem.MoveDirectory(
+                await MoveTransactionDirectoryAsync(
                     paths.InstallDirectory,
-                    journal.FailedDirectory);
+                    journal.FailedDirectory,
+                    ViewerSetupErrorCodes.RollbackFailed,
+                    "새 Viewer 파일을 복구 영역으로 이동하지 못했습니다.",
+                    cancellationToken);
             }
 
-            fileSystem.MoveDirectory(
+            await MoveTransactionDirectoryAsync(
                 journal.BackupDirectory,
-                paths.InstallDirectory);
+                paths.InstallDirectory,
+                ViewerSetupErrorCodes.RollbackFailed,
+                "이전 Viewer 파일을 안전하게 복구하지 못했습니다.",
+                cancellationToken);
             ValidateExpectedInstallation(
                 paths.InstallDirectory,
                 journal.PreviousManifestSha256!,
@@ -522,14 +557,20 @@ public sealed class ViewerDeploymentOrchestrator(
         }
         else if (journal.StagingActivated && installExists)
         {
-            if (fileSystem.DirectoryExists(journal.FailedDirectory))
+            if (fileSystem.DirectoryExists(journal.FailedDirectory) ||
+                fileSystem.FileExists(journal.FailedDirectory))
             {
-                fileSystem.DeleteDirectory(journal.FailedDirectory, recursive: true);
+                throw new ViewerSetupException(
+                    ViewerSetupErrorCodes.RollbackFailed,
+                    "Viewer 복구 폴더와 현재 설치가 동시에 남아 있어 복구를 중단했습니다.");
             }
 
-            fileSystem.MoveDirectory(
+            await MoveTransactionDirectoryAsync(
                 paths.InstallDirectory,
-                journal.FailedDirectory);
+                journal.FailedDirectory,
+                ViewerSetupErrorCodes.RollbackFailed,
+                "새 Viewer 파일을 복구 영역으로 이동하지 못했습니다.",
+                cancellationToken);
         }
 
         RestoreShortcutIfMutated(
@@ -551,16 +592,24 @@ public sealed class ViewerDeploymentOrchestrator(
         };
         store.Write(journal);
 
-        DeleteTransactionDirectory(journal.StagingDirectory);
-        DeleteTransactionDirectory(journal.FailedDirectory);
+        await DeleteTransactionDirectoryAsync(
+            journal.StagingDirectory,
+            cancellationToken);
+        await DeleteTransactionDirectoryAsync(
+            journal.FailedDirectory,
+            cancellationToken);
         if (fileSystem.DirectoryExists(journal.BackupDirectory))
         {
             // A backup remains only when no move was necessary. It is still a
             // validated product transaction path, never the extraction folder.
-            DeleteTransactionDirectory(journal.BackupDirectory);
+            await DeleteTransactionDirectoryAsync(
+                journal.BackupDirectory,
+                cancellationToken);
         }
 
-        DeleteTransactionDirectory(journal.EvidenceDirectory);
+        await DeleteTransactionDirectoryAsync(
+            journal.EvidenceDirectory,
+            cancellationToken);
         store.Delete();
         steps.Succeeded(
             "ROLLBACK_COMPLETED",
@@ -722,36 +771,185 @@ public sealed class ViewerDeploymentOrchestrator(
         return journal;
     }
 
-    private void CleanupCommittedTransaction(
+    private async Task CleanupCommittedTransactionAsync(
         ViewerDeploymentJournalStore store,
-        ViewerDeploymentJournal journal)
+        ViewerDeploymentJournal journal,
+        CancellationToken cancellationToken)
     {
         ValidateExpectedInstallation(
             paths.InstallDirectory,
             journal.PackageManifestSha256,
             allowLegacy: false,
             ViewerSetupErrorCodes.RollbackFailed);
-        CleanupTransactionArtifacts(store, journal);
+        await CleanupTransactionArtifactsAsync(
+            store,
+            journal,
+            cancellationToken);
     }
 
-    private void CleanupTransactionArtifacts(
+    private async Task CleanupTransactionArtifactsAsync(
         ViewerDeploymentJournalStore store,
-        ViewerDeploymentJournal journal)
+        ViewerDeploymentJournal journal,
+        CancellationToken cancellationToken)
     {
-        DeleteTransactionDirectory(journal.StagingDirectory);
-        DeleteTransactionDirectory(journal.BackupDirectory);
-        DeleteTransactionDirectory(journal.FailedDirectory);
-        DeleteTransactionDirectory(journal.EvidenceDirectory);
+        await DeleteTransactionDirectoryAsync(
+            journal.StagingDirectory,
+            cancellationToken);
+        await DeleteTransactionDirectoryAsync(
+            journal.BackupDirectory,
+            cancellationToken);
+        await DeleteTransactionDirectoryAsync(
+            journal.FailedDirectory,
+            cancellationToken);
+        await DeleteTransactionDirectoryAsync(
+            journal.EvidenceDirectory,
+            cancellationToken);
         store.Delete();
     }
 
-    private void DeleteTransactionDirectory(string directory)
+    private async Task DeleteTransactionDirectoryAsync(
+        string directory,
+        CancellationToken cancellationToken)
     {
-        if (fileSystem.DirectoryExists(directory))
+        for (var attempt = 1; attempt <= DirectoryMutationMaxAttempts; attempt++)
         {
-            fileSystem.DeleteDirectory(directory, recursive: true);
+            cancellationToken.ThrowIfCancellationRequested();
+            var directoryExists = fileSystem.DirectoryExists(directory);
+            var fileExists = fileSystem.FileExists(directory);
+            if (!directoryExists && !fileExists)
+            {
+                return;
+            }
+
+            if (!directoryExists || fileExists)
+            {
+                throw new ViewerSetupException(
+                    ViewerSetupErrorCodes.RollbackFailed,
+                    "Viewer 설치 작업 폴더 상태가 모호하여 정리를 중단했습니다.");
+            }
+
+            try
+            {
+                fileSystem.DeleteDirectory(directory, recursive: true);
+            }
+            catch (Exception exception) when (IsTransientDirectoryMutation(exception))
+            {
+                directoryExists = fileSystem.DirectoryExists(directory);
+                fileExists = fileSystem.FileExists(directory);
+                if (!directoryExists && !fileExists)
+                {
+                    return;
+                }
+
+                if (!directoryExists || fileExists ||
+                    attempt == DirectoryMutationMaxAttempts)
+                {
+                    throw new ViewerSetupException(
+                        ViewerSetupErrorCodes.RollbackFailed,
+                        "Viewer 설치 작업 폴더를 정리하지 못했습니다.",
+                        exception);
+                }
+            }
+
+            if (!fileSystem.DirectoryExists(directory) &&
+                !fileSystem.FileExists(directory))
+            {
+                return;
+            }
+
+            if (attempt == DirectoryMutationMaxAttempts)
+            {
+                throw new ViewerSetupException(
+                    ViewerSetupErrorCodes.RollbackFailed,
+                    "Viewer 설치 작업 폴더를 정리하지 못했습니다.");
+            }
+
+            await Task.Delay(DirectoryMutationRetryDelay, cancellationToken);
         }
     }
+
+    private async Task MoveTransactionDirectoryAsync(
+        string source,
+        string destination,
+        string failureCode,
+        string safeMessage,
+        CancellationToken cancellationToken)
+    {
+        var moveAttempted = false;
+        for (var attempt = 1; attempt <= DirectoryMutationMaxAttempts; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var sourceDirectoryExists = fileSystem.DirectoryExists(source);
+            var sourceFileExists = fileSystem.FileExists(source);
+            var destinationDirectoryExists = fileSystem.DirectoryExists(destination);
+            var destinationFileExists = fileSystem.FileExists(destination);
+
+            if (!sourceDirectoryExists && !sourceFileExists &&
+                destinationDirectoryExists && !destinationFileExists)
+            {
+                if (moveAttempted)
+                {
+                    return;
+                }
+
+                throw new ViewerSetupException(failureCode, safeMessage);
+            }
+
+            if (!sourceDirectoryExists || sourceFileExists ||
+                destinationDirectoryExists || destinationFileExists)
+            {
+                throw new ViewerSetupException(failureCode, safeMessage);
+            }
+
+            try
+            {
+                moveAttempted = true;
+                fileSystem.MoveDirectory(source, destination);
+            }
+            catch (Exception exception) when (IsTransientDirectoryMutation(exception))
+            {
+                sourceDirectoryExists = fileSystem.DirectoryExists(source);
+                sourceFileExists = fileSystem.FileExists(source);
+                destinationDirectoryExists = fileSystem.DirectoryExists(destination);
+                destinationFileExists = fileSystem.FileExists(destination);
+                if (!sourceDirectoryExists && !sourceFileExists &&
+                    destinationDirectoryExists && !destinationFileExists)
+                {
+                    return;
+                }
+
+                if (!sourceDirectoryExists || sourceFileExists ||
+                    destinationDirectoryExists || destinationFileExists ||
+                    attempt == DirectoryMutationMaxAttempts)
+                {
+                    throw new ViewerSetupException(
+                        failureCode,
+                        safeMessage,
+                        exception);
+                }
+
+                await Task.Delay(DirectoryMutationRetryDelay, cancellationToken);
+                continue;
+            }
+
+            if (!fileSystem.DirectoryExists(source) &&
+                !fileSystem.FileExists(source) &&
+                fileSystem.DirectoryExists(destination) &&
+                !fileSystem.FileExists(destination))
+            {
+                return;
+            }
+
+            throw new ViewerSetupException(failureCode, safeMessage);
+        }
+
+        throw new ViewerSetupException(failureCode, safeMessage);
+    }
+
+    private static bool IsTransientDirectoryMutation(Exception exception) =>
+        exception is IOException or
+            UnauthorizedAccessException or
+            System.Security.SecurityException;
 
     private void RestoreShortcutIfMutated(
         bool mutated,

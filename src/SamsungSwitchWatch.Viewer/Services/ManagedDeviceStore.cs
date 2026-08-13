@@ -317,6 +317,10 @@ public class ManagedDeviceStore
         {
             storedJson = _persistence.ReadIfExists(_path);
         }
+        catch (ViewerStoreSizeLimitException exception)
+        {
+            throw CreateCorruptLoadException(exception);
+        }
         catch (DecoderFallbackException exception)
         {
             throw CreateCorruptLoadException(exception);
@@ -634,8 +638,6 @@ internal interface IManagedDevicePersistence
 
 internal sealed class PhysicalManagedDevicePersistence : IManagedDevicePersistence
 {
-    private static readonly UTF8Encoding StrictUtf8 = new(false, true);
-
     public static PhysicalManagedDevicePersistence Instance { get; } = new();
 
     private PhysicalManagedDevicePersistence()
@@ -643,48 +645,18 @@ internal sealed class PhysicalManagedDevicePersistence : IManagedDevicePersisten
     }
 
     public string? ReadIfExists(string path)
-    {
-        try
-        {
-            return File.ReadAllText(path, StrictUtf8);
-        }
-        catch (FileNotFoundException)
-        {
-            return null;
-        }
-        catch (DirectoryNotFoundException)
-        {
-            return null;
-        }
-    }
+        => BoundedUtf8File.ReadIfExists(
+            path,
+            ViewerStoreFileLimits.ManagedDevicesBytes,
+            "VIEWER_DEVICE_STORE_TOO_LARGE");
 
     public void WriteAtomically(string path, string content)
-    {
-        var directory = System.IO.Path.GetDirectoryName(System.IO.Path.GetFullPath(path))
-                        ?? throw new InvalidOperationException("VIEWER_DEVICE_PATH_INVALID");
-        Directory.CreateDirectory(directory);
-        var temporaryPath = path + $".{Guid.NewGuid():N}.tmp";
-        try
-        {
-            File.WriteAllText(temporaryPath, content, new UTF8Encoding(false));
-            File.Move(temporaryPath, path, true);
-        }
-        finally
-        {
-            try
-            {
-                File.Delete(temporaryPath);
-            }
-            catch (IOException)
-            {
-                // Best-effort cleanup only; do not mask the primary write result.
-            }
-            catch (UnauthorizedAccessException)
-            {
-                // See IOException comment above.
-            }
-        }
-    }
+        => AtomicUtf8File.Write(
+            path,
+            content,
+            ViewerStoreFileLimits.ManagedDevicesBytes,
+            "VIEWER_DEVICE_PATH_INVALID",
+            "VIEWER_DEVICE_STORE_TOO_LARGE");
 
     public void Quarantine(string path, string destination) =>
         File.Move(path, destination, false);

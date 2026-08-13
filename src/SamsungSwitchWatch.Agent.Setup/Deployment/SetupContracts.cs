@@ -140,7 +140,10 @@ public sealed record AgentPackage(
     string ExecutablePath,
     string ManifestPath,
     string ExecutableSha256,
-    IReadOnlyList<PackageFile> VerifiedFiles);
+    IReadOnlyList<PackageFile> VerifiedFiles)
+{
+    public string ManifestSha256 { get; init; } = string.Empty;
+}
 
 public sealed record PackageFile(string Name, string Path, string Sha256, long Size);
 
@@ -549,7 +552,11 @@ public interface ISetupFileSystem
 {
     bool FileExists(string path);
     bool DirectoryExists(string path);
+    IReadOnlyList<string> EnumerateTopLevelFiles(string path);
+    IReadOnlyList<string> EnumerateTopLevelDirectories(string path);
+    long GetFileLength(string path);
     string ReadAllText(string path);
+    string ReadAllTextBounded(string path, int maximumBytes);
     void WriteAllTextAtomic(string path, string contents);
     string ComputeSha256(string path);
     void CreateDirectory(string path);
