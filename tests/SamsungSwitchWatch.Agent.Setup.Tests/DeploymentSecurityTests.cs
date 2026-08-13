@@ -7,6 +7,57 @@ namespace SamsungSwitchWatch.Agent.Setup.Tests;
 
 public sealed class DeploymentSecurityTests
 {
+    [Theory]
+    [InlineData(typeof(IOException))]
+    [InlineData(typeof(UnauthorizedAccessException))]
+    [InlineData(typeof(System.Security.SecurityException))]
+    public void FlushCommittedFileBestEffort_DoesNotReportCommittedWriteAsFailed(
+        Type exceptionType)
+    {
+        using var folder = new TemporaryFolder();
+        var path = folder.Combine("committed.json");
+        File.WriteAllText(path, "committed");
+        var exception = (Exception)Activator.CreateInstance(exceptionType)!;
+
+        var result = Record.Exception(() =>
+            PhysicalSetupFileSystem.FlushCommittedFileBestEffort(
+                path,
+                _ => throw exception));
+
+        Assert.Null(result);
+    }
+
+    [Theory]
+    [InlineData(typeof(FileNotFoundException))]
+    [InlineData(typeof(DirectoryNotFoundException))]
+    public void FlushCommittedFileBestEffort_MissingDestinationRemainsFailure(
+        Type exceptionType)
+    {
+        using var folder = new TemporaryFolder();
+        var path = folder.Combine("missing.json");
+        var exception = (Exception)Activator.CreateInstance(exceptionType)!;
+
+        Assert.Throws(exceptionType, () =>
+            PhysicalSetupFileSystem.FlushCommittedFileBestEffort(
+                path,
+                _ => throw exception));
+    }
+
+    [Fact]
+    public void ReadUtf8TextBounded_AcceptsUtf8BomWithoutLeakingItIntoJson()
+    {
+        using var folder = new TemporaryFolder();
+        var path = folder.Combine("manifest.json");
+        File.WriteAllBytes(path, [0xef, 0xbb, 0xbf, (byte)'{', (byte)'}']);
+
+        var result = PhysicalSetupFileSystem.ReadUtf8TextBounded(
+            path,
+            1024,
+            new System.Text.UTF8Encoding(false, true));
+
+        Assert.Equal("{}", result);
+    }
+
     [Fact]
     public void TryCreateDirectoryExclusive_CreatesOnlyOnce()
     {

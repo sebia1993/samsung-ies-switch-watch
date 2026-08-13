@@ -17,7 +17,7 @@ dotnet restore SamsungSwitchWatch.sln --locked-mode
 dotnet build SamsungSwitchWatch.sln -c Release --no-restore
 dotnet test SamsungSwitchWatch.sln -c Release --no-build
 .\scripts\validate.ps1 -Configuration Release
-.\scripts\build-release.ps1 -Version 0.11.9-poc
+.\scripts\build-release.ps1 -Version 0.11.10-poc
 ```
 
 Use the .NET 10 SDK. Release packages target `win-x64`, are self-contained, single-file, and untrimmed.
@@ -37,6 +37,9 @@ Regenerate the manual from `tools/build-user-manual.py` before a release wheneve
 - Each request uses a fresh bounded Telnet session and always disconnects. If the device closes the
   connection during command execution, reconnect at most once and execute only unfinished commands;
   never retry authentication/enable failures or command timeouts.
+- Keep login, enable and command collection under separate bounded time/byte budgets. Preserve
+  Telnet IAC negotiation and Latin-1 device output compatibility; never replace those boundaries
+  with an unbounded read or wait.
 - A v4 login test executes only `show version` after authentication, detects exactly one registered
   model token, and returns only the canonical model name. Never return or persist the raw detection output.
 - The manual Viewer UI accepts one normalized `show` command at a time; one Agent API request may carry at most eight validated commands for monitoring.
@@ -61,6 +64,9 @@ Regenerate the manual from `tools/build-user-manual.py` before a release wheneve
 - A legacy `install-receipt.json`, when present, must remain Administrators-owned with
   SYSTEM/Administrators-only ACL. It is not a Viewer or target address authority.
 - Keep stable sanitized error codes; never log passwords, enable passwords, commands, or raw output.
+- Keep Agent identity inputs and Viewer-owned JSON files size-bounded and fail closed on malformed,
+  oversized or unsupported content. A post-commit durability re-open blocked by AV/EDR must not turn
+  an already committed atomic replacement into a false write failure.
 - Do not claim live validation from mock tests.
 - Do not perform live network writes or company-network testing from Codex.
 
@@ -94,6 +100,13 @@ Regenerate the manual from `tools/build-user-manual.py` before a release wheneve
   text, PID, address or path data.
 - Viewer automatic status must distinguish awaiting/deferred collection and current unavailable
   from a confirmed current result. Dispose replaced HTTP clients without racing active requests.
+- Bound and coalesce the Viewer event feed, and reject results from stale client generations. Keep
+  the main window usable on small work areas through scrolling and clamp restored bounds on-screen.
+- Agent and Viewer Setup package validation must use strict bounded UTF-8 manifest reads, detect
+  read-time mutation, enforce declared size/hash and the exact Windows case-insensitive top-level
+  file set, and reject package subdirectories. Viewer activation/recovery Move/Delete retries must
+  remain bounded and cancellation-aware; quarantine a corrupt non-committed active generation before
+  restoring and revalidating a trusted backup.
 - Run the extracted executable smoke gate for Viewer, Mock Agent and Agent Setup in an elevated
   Windows CI environment. This does not replace field checks for Samsung firmware, EDR, firewall
   routing or the full native installation path.

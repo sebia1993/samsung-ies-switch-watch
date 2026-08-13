@@ -46,8 +46,39 @@ public sealed class WpfSmokeTests
                 var window = new MainWindow(viewModel);
                 window.Show();
                 window.UpdateLayout();
-                Assert.Equal(1280, window.MinWidth);
-                Assert.Equal(720, window.MinHeight);
+                Assert.True(window.MinWidth <= 1280);
+                Assert.True(window.MinHeight <= 720);
+                Assert.Equal(
+                    System.Windows.Controls.ScrollBarVisibility.Auto,
+                    window.MainViewportScrollViewer.HorizontalScrollBarVisibility);
+                Assert.Equal(
+                    System.Windows.Controls.ScrollBarVisibility.Auto,
+                    window.MainViewportScrollViewer.VerticalScrollBarVisibility);
+                Assert.Equal(1180, window.DashboardLayoutRoot.MinWidth);
+                Assert.Equal(680, window.DashboardLayoutRoot.MinHeight);
+                Assert.NotNull(System.Windows.Data.BindingOperations.GetBindingExpression(
+                    window.DashboardLayoutRoot,
+                    FrameworkElement.WidthProperty));
+                Assert.NotNull(System.Windows.Data.BindingOperations.GetBindingExpression(
+                    window.DashboardLayoutRoot,
+                    FrameworkElement.HeightProperty));
+                window.MinWidth = 1;
+                window.MinHeight = 1;
+                window.Width = 900;
+                window.Height = 600;
+                window.UpdateLayout();
+                Assert.True(window.MainViewportScrollViewer.ScrollableWidth > 0);
+                Assert.True(window.MainViewportScrollViewer.ScrollableHeight > 0);
+                window.MainViewportScrollViewer.ScrollToRightEnd();
+                window.MainViewportScrollViewer.ScrollToBottom();
+                window.UpdateLayout();
+                Assert.True(window.MainViewportScrollViewer.HorizontalOffset > 0);
+                Assert.True(window.MainViewportScrollViewer.VerticalOffset > 0);
+                window.Width = 1440;
+                window.Height = 900;
+                window.UpdateLayout();
+                Assert.True(System.Windows.Controls.VirtualizingStackPanel.GetIsVirtualizing(
+                    window.RecentEventsList));
                 Assert.True(window.IsVisible);
                 Assert.Equal(System.Windows.Visibility.Visible, window.DevicesEmptyStateText.Visibility);
                 Assert.Same(window.DevicesList, System.Windows.Input.FocusManager.GetFocusedElement(window));

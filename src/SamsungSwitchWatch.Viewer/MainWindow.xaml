@@ -127,7 +127,17 @@
         <KeyBinding Key="F5" Command="{Binding RefreshCommand}" />
     </Window.InputBindings>
 
-    <Grid Background="{StaticResource CanvasBrush}">
+    <ScrollViewer x:Name="MainViewportScrollViewer"
+                  HorizontalScrollBarVisibility="Auto"
+                  VerticalScrollBarVisibility="Auto"
+                  HorizontalContentAlignment="Stretch"
+                  VerticalContentAlignment="Stretch"
+                  AutomationProperties.Name="대시보드 작업 영역">
+    <Grid x:Name="DashboardLayoutRoot"
+          Width="{Binding ViewportWidth, ElementName=MainViewportScrollViewer}"
+          Height="{Binding ViewportHeight, ElementName=MainViewportScrollViewer}"
+          MinWidth="1180" MinHeight="680"
+          Background="{StaticResource CanvasBrush}">
         <Grid.RowDefinitions>
             <RowDefinition Height="72" />
             <RowDefinition Height="138" />
@@ -765,4 +775,5 @@
             </Grid>
         </Border>
     </Grid>
+    </ScrollViewer>
 </Window>

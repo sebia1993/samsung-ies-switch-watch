@@ -76,7 +76,7 @@ public sealed class TelnetClient : ITelnetClient, IAdHocTelnetClient
         var sessionCount = 0;
         var reconnectCount = 0;
 
-        foreach (var batch in PlanCommandBatches(commands))
+        foreach (var batch in PlanCommandBatches(commands, includeEnable: false))
         {
             IReadOnlyList<ReadOnlyCommandDefinition> remaining = batch;
             var closeRetries = 0;
@@ -90,7 +90,7 @@ public sealed class TelnetClient : ITelnetClient, IAdHocTelnetClient
                             credentials,
                             profile.Telnet,
                             remaining,
-                            CalculateSessionBudget(remaining),
+                            CalculateSessionBudget(),
                             cancellationToken)
                         .ConfigureAwait(false);
                     outputs.AddRange(attempt);
@@ -177,7 +177,9 @@ public sealed class TelnetClient : ITelnetClient, IAdHocTelnetClient
         IReadOnlyList<IReadOnlyList<ReadOnlyCommandDefinition>> batches =
             definitions.Length == 0
                 ? [Array.Empty<ReadOnlyCommandDefinition>()]
-                : PlanCommandBatches(definitions);
+                : PlanCommandBatches(
+                    definitions,
+                    includeEnable: credentials.EnablePassword is not null);
         foreach (var batch in batches)
         {
             IReadOnlyList<ReadOnlyCommandDefinition> remaining = batch;
@@ -191,7 +193,7 @@ public sealed class TelnetClient : ITelnetClient, IAdHocTelnetClient
                             credentials,
                             promptProfile,
                             remaining,
-                            CalculateSessionBudget(remaining),
+                            CalculateSessionBudget(),
                             cancellationToken)
                         .ConfigureAwait(false);
                     outputs.AddRange(lastResult.Outputs);
@@ -503,11 +505,13 @@ public sealed class TelnetClient : ITelnetClient, IAdHocTelnetClient
     }
 
     private IReadOnlyList<IReadOnlyList<ReadOnlyCommandDefinition>> PlanCommandBatches(
-        IReadOnlyList<ReadOnlyCommandDefinition> commands)
+        IReadOnlyList<ReadOnlyCommandDefinition> commands,
+        bool includeEnable)
     {
         var batches = new List<IReadOnlyList<ReadOnlyCommandDefinition>>();
         var current = new List<ReadOnlyCommandDefinition>();
-        var currentBudget = SessionOverhead();
+        var sessionOverhead = SessionOverhead(includeEnable);
+        var currentBudget = sessionOverhead;
         foreach (var command in commands)
         {
             var nextBudget = currentBudget + CommandBudget();
@@ -515,7 +519,7 @@ public sealed class TelnetClient : ITelnetClient, IAdHocTelnetClient
             {
                 batches.Add(current.ToArray());
                 current = [];
-                currentBudget = SessionOverhead();
+                currentBudget = sessionOverhead;
             }
             current.Add(command);
             currentBudget += CommandBudget();
@@ -527,18 +531,29 @@ public sealed class TelnetClient : ITelnetClient, IAdHocTelnetClient
         return batches;
     }
 
-    private TimeSpan CalculateSessionBudget(IReadOnlyList<ReadOnlyCommandDefinition> commands)
-    {
-        var requested = SessionOverhead() + TimeSpan.FromTicks(commands.Count * CommandBudget().Ticks);
-        return requested <= _options.Timeouts.Session ? requested : _options.Timeouts.Session;
-    }
+    // Batch planning keeps expected work within this cap. The live session CTS
+    // must nevertheless use the complete configured cap: deriving a shorter
+    // CTS from command count can terminate a healthy session after slow but
+    // individually valid login, password, and enable stages.
+    private TimeSpan CalculateSessionBudget() => _options.Timeouts.Session;
 
     private TimeSpan CommandBudget() => _options.CommandHardTimeout;
 
-    private TimeSpan SessionOverhead() =>
+    private TimeSpan SessionOverhead(bool includeEnable) =>
         _options.Timeouts.Connect +
         _options.Timeouts.LoginPrompt +
-        _options.Timeouts.Authentication +
+        // Worst-case username/password login performs two writes and two
+        // authentication reads after the initial login prompt.
+        TimeSpan.FromTicks(2 * (
+            _options.Timeouts.Write.Ticks +
+            _options.Timeouts.Authentication.Ticks)) +
+        // Privilege elevation can likewise require an enable command/challenge
+        // and an enable-password/result exchange.
+        (includeEnable
+            ? TimeSpan.FromTicks(2 * (
+                _options.Timeouts.Write.Ticks +
+                _options.Timeouts.Authentication.Ticks))
+            : TimeSpan.Zero) +
         _options.Timeouts.Logout +
         _options.SessionSafetyMargin;
 
@@ -826,7 +841,7 @@ public sealed class TelnetClient : ITelnetClient, IAdHocTelnetClient
                     throw Failure(
                         ErrorCodes.OutputLimitExceeded,
                         stage,
-                        "The switch response exceeded the configured 2 MiB safety limit.");
+                        $"The switch response exceeded the configured {_options.MaximumOutputBytes / 1024} KiB decoded-text safety limit.");
                 }
 
                 if (frame.Text.Length > 0)
@@ -938,7 +953,7 @@ public sealed class TelnetClient : ITelnetClient, IAdHocTelnetClient
         CancellationToken cancellationToken)
     {
         var startedTimestamp = _timeProvider.GetTimestamp();
-        var bytes = WireEncoding.GetBytes(value + "\r\n");
+        var bytes = EncodeTelnetLine(value);
         using var writeCancellation = CreateStageCancellation(cancellationToken, _options.Timeouts.Write);
         try
         {
@@ -954,6 +969,37 @@ public sealed class TelnetClient : ITelnetClient, IAdHocTelnetClient
                 : null;
             throw Failure(timeoutCode, stage, $"The {stage} stage timed out.", true, exception, telemetry);
         }
+    }
+
+    private static byte[] EncodeTelnetLine(string value)
+    {
+        // Callers validate all operator-controlled values before transport use.
+        // Keep this guard as defense in depth so Encoding.Latin1 can never
+        // silently replace an unsupported character with '?'.
+        if (value.Any(static character => character > '\u00ff'))
+        {
+            throw new ArgumentException(
+                "Telnet data contains a character that ISO-8859-1 cannot represent.",
+                nameof(value));
+        }
+
+        var encoded = WireEncoding.GetBytes(value);
+        var iacCount = encoded.Count(static value => value == byte.MaxValue);
+        var framed = new byte[encoded.Length + iacCount + 2];
+        var destination = 0;
+        foreach (var valueByte in encoded)
+        {
+            framed[destination++] = valueByte;
+            // RFC 854 represents a literal 0xff data byte as IAC IAC.
+            if (valueByte == byte.MaxValue)
+            {
+                framed[destination++] = byte.MaxValue;
+            }
+        }
+
+        framed[destination++] = (byte)'\r';
+        framed[destination] = (byte)'\n';
+        return framed;
     }
 
     private async Task<PagingRemovalResult> RemovePagingMarkersAsync(

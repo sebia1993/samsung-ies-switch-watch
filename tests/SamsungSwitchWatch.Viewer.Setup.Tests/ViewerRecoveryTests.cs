@@ -93,6 +93,132 @@ public sealed class ViewerRecoveryTests
     }
 
     [Fact]
+    public async Task Recover_CorruptedActiveInstall_QuarantinesItAndRestoresValidBackup()
+    {
+        using var workspace = new TestWorkspace();
+        workspace.CreatePackage(
+            workspace.InstallDirectory,
+            version: "0.11.4-poc",
+            viewerContents: "viewer-new");
+        var transaction = workspace.Paths.CreateTransactionPaths(new string('b', 32));
+        workspace.CreatePackage(
+            transaction.BackupDirectory,
+            version: "0.11.3-poc",
+            viewerContents: "viewer-old");
+        var journal = CreateJournal(
+            workspace,
+            previousInstallExisted: true,
+            installMovedToBackup: true,
+            stagingActivated: true) with
+        {
+            Stage = "files-activated"
+        };
+        WriteJournal(workspace, journal);
+        TestWorkspace.Write(
+            Path.Combine(
+                workspace.InstallDirectory,
+                ViewerSetupConstants.ViewerExecutableName),
+            "corrupted-current");
+
+        var result = await workspace.CreateOrchestrator().RecoverAsync();
+
+        Assert.True(result.Succeeded, $"{result.Code}: {result.Message}");
+        Assert.Equal(
+            "viewer-old",
+            File.ReadAllText(Path.Combine(
+                workspace.InstallDirectory,
+                ViewerSetupConstants.ViewerExecutableName)));
+        Assert.False(Directory.Exists(journal.FailedDirectory));
+        Assert.False(Directory.Exists(journal.BackupDirectory));
+        Assert.False(File.Exists(workspace.Paths.JournalPath));
+    }
+
+    [Fact]
+    public async Task Recover_FirstInstallCorruptedActiveInstall_QuarantinesAndRemovesIt()
+    {
+        using var workspace = new TestWorkspace();
+        workspace.CreatePackage(
+            workspace.InstallDirectory,
+            version: "0.11.4-poc",
+            viewerContents: "viewer-new");
+        var journal = CreateJournal(
+            workspace,
+            previousInstallExisted: false,
+            installMovedToBackup: false,
+            stagingActivated: true) with
+        {
+            Stage = "files-activated"
+        };
+        WriteJournal(workspace, journal);
+        TestWorkspace.Write(
+            Path.Combine(
+                workspace.InstallDirectory,
+                ViewerSetupConstants.ViewerExecutableName),
+            "corrupted-current");
+
+        var result = await workspace.CreateOrchestrator().RecoverAsync();
+
+        Assert.True(result.Succeeded, $"{result.Code}: {result.Message}");
+        Assert.False(Directory.Exists(workspace.InstallDirectory));
+        Assert.False(Directory.Exists(journal.FailedDirectory));
+        Assert.False(File.Exists(workspace.Paths.JournalPath));
+    }
+
+    [Fact]
+    public async Task Recover_CorruptedActiveQuarantineTransientFailure_RetriesAndRestoresBackup()
+    {
+        using var workspace = new TestWorkspace();
+        workspace.CreatePackage(
+            workspace.InstallDirectory,
+            version: "0.11.4-poc",
+            viewerContents: "viewer-new");
+        var transaction = workspace.Paths.CreateTransactionPaths(new string('b', 32));
+        workspace.CreatePackage(
+            transaction.BackupDirectory,
+            version: "0.11.3-poc",
+            viewerContents: "viewer-old");
+        var journal = CreateJournal(
+            workspace,
+            previousInstallExisted: true,
+            installMovedToBackup: true,
+            stagingActivated: true) with
+        {
+            Stage = "files-activated"
+        };
+        WriteJournal(workspace, journal);
+        TestWorkspace.Write(
+            Path.Combine(
+                workspace.InstallDirectory,
+                ViewerSetupConstants.ViewerExecutableName),
+            "corrupted-current");
+        var fileSystem = new FaultInjectingViewerSetupFileSystem(workspace.FileSystem)
+        {
+            MoveFailuresRemaining = 1,
+            MoveFailurePredicate = (source, destination) =>
+                string.Equals(
+                    source,
+                    workspace.InstallDirectory,
+                    StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(
+                    destination,
+                    journal.FailedDirectory,
+                    StringComparison.OrdinalIgnoreCase)
+        };
+
+        var result = await workspace.CreateOrchestrator(
+            fileSystem: fileSystem).RecoverAsync();
+
+        Assert.True(result.Succeeded, $"{result.Code}: {result.Message}");
+        Assert.Equal(2, fileSystem.MatchingMoveAttempts);
+        Assert.Equal(
+            "viewer-old",
+            File.ReadAllText(Path.Combine(
+                workspace.InstallDirectory,
+                ViewerSetupConstants.ViewerExecutableName)));
+        Assert.False(File.Exists(workspace.Paths.JournalPath));
+    }
+
+    [Fact]
     public async Task Recover_FirstInstallActivationIntentBeforeMove_CleansStaging()
     {
         using var workspace = new TestWorkspace();
@@ -228,6 +354,84 @@ public sealed class ViewerRecoveryTests
     }
 
     [Fact]
+    public async Task Recover_AmbiguousFailedPathFile_FailsClosedAndPreservesEvidence()
+    {
+        using var workspace = new TestWorkspace();
+        workspace.CreatePackage(
+            workspace.InstallDirectory,
+            viewerContents: "viewer-new");
+        var transaction = workspace.Paths.CreateTransactionPaths(new string('b', 32));
+        workspace.CreatePackage(
+            transaction.BackupDirectory,
+            version: "0.11.3-poc",
+            viewerContents: "viewer-old");
+        var journal = CreateJournal(
+            workspace,
+            previousInstallExisted: true,
+            installMovedToBackup: true,
+            stagingActivated: true) with
+        {
+            Stage = "files-activated"
+        };
+        WriteJournal(workspace, journal);
+        TestWorkspace.Write(journal.FailedDirectory, "ambiguous-file");
+
+        var result = await workspace.CreateOrchestrator().RecoverAsync();
+
+        Assert.False(result.Succeeded);
+        Assert.Equal(ViewerSetupErrorCodes.RollbackFailed, result.Code);
+        Assert.True(File.Exists(workspace.Paths.JournalPath));
+        Assert.True(Directory.Exists(journal.BackupDirectory));
+        Assert.Equal("ambiguous-file", File.ReadAllText(journal.FailedDirectory));
+        Assert.Equal(
+            "viewer-new",
+            File.ReadAllText(Path.Combine(
+                workspace.InstallDirectory,
+                ViewerSetupConstants.ViewerExecutableName)));
+    }
+
+    [Fact]
+    public async Task Recover_AmbiguousFailedDirectory_FailsClosedWithoutDeletingEvidence()
+    {
+        using var workspace = new TestWorkspace();
+        workspace.CreatePackage(
+            workspace.InstallDirectory,
+            viewerContents: "viewer-new");
+        var transaction = workspace.Paths.CreateTransactionPaths(new string('b', 32));
+        workspace.CreatePackage(
+            transaction.BackupDirectory,
+            version: "0.11.3-poc",
+            viewerContents: "viewer-old");
+        var journal = CreateJournal(
+            workspace,
+            previousInstallExisted: true,
+            installMovedToBackup: true,
+            stagingActivated: true) with
+        {
+            Stage = "files-activated"
+        };
+        WriteJournal(workspace, journal);
+        TestWorkspace.Write(
+            Path.Combine(journal.FailedDirectory, "preserve.txt"),
+            "recovery-evidence");
+
+        var result = await workspace.CreateOrchestrator().RecoverAsync();
+
+        Assert.False(result.Succeeded);
+        Assert.Equal(ViewerSetupErrorCodes.RollbackFailed, result.Code);
+        Assert.True(File.Exists(workspace.Paths.JournalPath));
+        Assert.True(Directory.Exists(journal.BackupDirectory));
+        Assert.Equal(
+            "recovery-evidence",
+            File.ReadAllText(Path.Combine(journal.FailedDirectory, "preserve.txt")));
+        Assert.Equal(
+            "viewer-new",
+            File.ReadAllText(Path.Combine(
+                workspace.InstallDirectory,
+                ViewerSetupConstants.ViewerExecutableName)));
+    }
+
+    [Fact]
     public async Task Recover_CommittedCorruptedInstall_DoesNotDeleteBackup()
     {
         using var workspace = new TestWorkspace();
@@ -291,6 +495,110 @@ public sealed class ViewerRecoveryTests
         Assert.False(result.Succeeded);
         Assert.Equal(ViewerSetupErrorCodes.RecoveryRequired, result.Code);
         Assert.Equal("keep", File.ReadAllText(Path.Combine(arbitrary, "keep.txt")));
+    }
+
+    [Fact]
+    public async Task Recover_TransactionDeleteTransientFailure_RetriesAndSucceeds()
+    {
+        using var workspace = new TestWorkspace();
+        var (journal, fileSystem) = PrepareRollbackCleanupFault(
+            workspace,
+            failures: 1);
+
+        var result = await workspace.CreateOrchestrator(
+            fileSystem: fileSystem).RecoverAsync();
+
+        Assert.True(result.Succeeded, $"{result.Code}: {result.Message}");
+        Assert.Equal(2, fileSystem.MatchingDeleteAttempts);
+        Assert.False(Directory.Exists(journal.FailedDirectory));
+        Assert.False(File.Exists(workspace.Paths.JournalPath));
+    }
+
+    [Fact]
+    public async Task Recover_TransactionDeletePersistentFailure_IsBoundedAndPreservesJournal()
+    {
+        using var workspace = new TestWorkspace();
+        var (journal, fileSystem) = PrepareRollbackCleanupFault(
+            workspace,
+            failures: 5);
+
+        var result = await workspace.CreateOrchestrator(
+            fileSystem: fileSystem).RecoverAsync();
+
+        Assert.False(result.Succeeded);
+        Assert.Equal(ViewerSetupErrorCodes.RollbackFailed, result.Code);
+        Assert.Equal(5, fileSystem.MatchingDeleteAttempts);
+        Assert.True(Directory.Exists(journal.FailedDirectory));
+        Assert.True(File.Exists(workspace.Paths.JournalPath));
+    }
+
+    [Fact]
+    public async Task Recover_TransactionDeleteCompletesBeforeTransientException_AcceptsAbsence()
+    {
+        using var workspace = new TestWorkspace();
+        var (journal, fileSystem) = PrepareRollbackCleanupFault(
+            workspace,
+            failures: 1);
+        fileSystem.CompleteDeleteBeforeFailure = true;
+
+        var result = await workspace.CreateOrchestrator(
+            fileSystem: fileSystem).RecoverAsync();
+
+        Assert.True(result.Succeeded, $"{result.Code}: {result.Message}");
+        Assert.Equal(1, fileSystem.MatchingDeleteAttempts);
+        Assert.False(Directory.Exists(journal.FailedDirectory));
+        Assert.False(File.Exists(workspace.Paths.JournalPath));
+    }
+
+    [Fact]
+    public async Task Recover_CancelledDuringTransactionDeleteRetry_StopsAndPreservesJournal()
+    {
+        using var workspace = new TestWorkspace();
+        using var cancellation = new CancellationTokenSource();
+        var (journal, fileSystem) = PrepareRollbackCleanupFault(
+            workspace,
+            failures: 5);
+        fileSystem.BeforeDeleteFailure = cancellation.Cancel;
+
+        var result = await workspace.CreateOrchestrator(
+            fileSystem: fileSystem).RecoverAsync(cancellation.Token);
+
+        Assert.False(result.Succeeded);
+        Assert.Equal(ViewerSetupErrorCodes.Cancelled, result.Code);
+        Assert.Equal(1, fileSystem.MatchingDeleteAttempts);
+        Assert.True(Directory.Exists(journal.FailedDirectory));
+        Assert.True(File.Exists(workspace.Paths.JournalPath));
+    }
+
+    private static (
+        ViewerDeploymentJournal Journal,
+        FaultInjectingViewerSetupFileSystem FileSystem)
+        PrepareRollbackCleanupFault(TestWorkspace workspace, int failures)
+    {
+        workspace.CreateInstalledProduct(viewerContents: "viewer-old");
+        var journal = CreateJournal(
+            workspace,
+            previousInstallExisted: true,
+            installMovedToBackup: true,
+            stagingActivated: true) with
+        {
+            Stage = "rollback-restored"
+        };
+        Directory.CreateDirectory(journal.FailedDirectory);
+        TestWorkspace.Write(
+            Path.Combine(journal.FailedDirectory, "viewer-new.tmp"),
+            "new");
+        WriteJournal(workspace, journal);
+        var fileSystem = new FaultInjectingViewerSetupFileSystem(
+            workspace.FileSystem)
+        {
+            DeleteFailuresRemaining = failures,
+            DeleteFailurePredicate = path => string.Equals(
+                path,
+                journal.FailedDirectory,
+                StringComparison.OrdinalIgnoreCase)
+        };
+        return (journal, fileSystem);
     }
 
     private static ViewerDeploymentJournal CreateJournal(

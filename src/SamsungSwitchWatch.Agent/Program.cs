@@ -73,16 +73,7 @@ public static class AgentApplication
             builder.Services.AddSingleton<TargetNetworkPolicy>();
             builder.Services.AddSingleton<TelnetExecutionAdmission>();
             builder.Services.AddSingleton<IAdHocTelnetClient>(_ => new TelnetClient(
-                options: new TelnetClientOptions(
-                    TelnetTimeouts.Default with
-                    {
-                        Session = TimeSpan.FromSeconds(options.Telnet.MaxSessionSeconds)
-                    })
-                {
-                    SessionCloseRetryCount = options.Telnet.ImmediateSessionCloseRetryCount,
-                    SessionCloseRetryDelay =
-                        TimeSpan.FromSeconds(options.Telnet.ImmediateSessionCloseRetryDelaySeconds)
-                }));
+                options: AgentTelnetClientOptionsFactory.Create(options)));
             builder.Services.AddSingleton<IStatelessTelnetExecutor>(services =>
                 options.MockMode
                     ? new MockStatelessTelnetExecutor()

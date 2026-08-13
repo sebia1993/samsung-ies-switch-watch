@@ -449,6 +449,17 @@ public sealed class AgentDeploymentOrchestrator(
                 package.ManifestPath,
                 Path.Combine(stagingDirectory, SetupConstants.ManifestFileName),
                 overwrite: false);
+            var stagedManifestHash = fileSystem.ComputeSha256(
+                Path.Combine(stagingDirectory, SetupConstants.ManifestFileName));
+            if (!string.Equals(
+                    stagedManifestHash,
+                    package.ManifestSha256,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                throw new SetupException(
+                    SetupErrorCodes.PackageHashMismatch,
+                    "검증 후 변경된 Agent 빌드 정보를 설치하지 않았습니다.");
+            }
 
             var stagedHash = fileSystem.ComputeSha256(
                 Path.Combine(stagingDirectory, SetupConstants.AgentExecutableName));
@@ -2996,7 +3007,7 @@ public sealed class AgentDeploymentOrchestrator(
         if (string.Equals(
                 file.Name,
                 SetupConstants.AgentExecutableName,
-                StringComparison.Ordinal))
+                StringComparison.OrdinalIgnoreCase))
         {
             return true;
         }

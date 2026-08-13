@@ -120,8 +120,15 @@ public sealed class ExistingTargetNetworkLoaderTests
         public bool FileExists(string path) => true;
         public string ReadAllText(string path) =>
             throw new IOException("simulated sensitive read failure");
+        public string ReadAllTextBounded(string path, int maximumBytes) =>
+            throw new NotSupportedException();
 
         public bool DirectoryExists(string path) => throw new NotSupportedException();
+        public IReadOnlyList<string> EnumerateTopLevelFiles(string path) =>
+            throw new NotSupportedException();
+        public IReadOnlyList<string> EnumerateTopLevelDirectories(string path) =>
+            throw new NotSupportedException();
+        public long GetFileLength(string path) => throw new NotSupportedException();
         public void WriteAllTextAtomic(string path, string contents) =>
             throw new NotSupportedException();
         public string ComputeSha256(string path) => throw new NotSupportedException();

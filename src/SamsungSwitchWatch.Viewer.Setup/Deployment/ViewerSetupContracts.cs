@@ -268,6 +268,7 @@ public interface IViewerSetupFileSystem
     IReadOnlyList<string> EnumerateTopLevelFiles(string path);
     IReadOnlyList<string> EnumerateTopLevelDirectories(string path);
     string ReadAllText(string path);
+    string ReadAllTextBounded(string path, int maximumBytes);
     byte[] ReadAllBytes(string path);
     long GetFileLength(string path);
     string ComputeSha256(string path);

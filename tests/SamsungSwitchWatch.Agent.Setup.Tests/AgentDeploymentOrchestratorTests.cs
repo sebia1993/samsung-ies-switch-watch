@@ -7,6 +7,37 @@ namespace SamsungSwitchWatch.Agent.Setup.Tests;
 public sealed class AgentDeploymentOrchestratorTests
 {
     [Fact]
+    public async Task DeployAsync_ManifestChangedAfterValidation_FailsAndRollsBack()
+    {
+        using var folder = new TemporaryFolder();
+        var fixture = CreateFreshFixture(folder);
+        var manifestPath = Path.Combine(
+            fixture.Paths.PackageDirectory,
+            SetupConstants.ManifestFileName);
+        var changed = false;
+        fixture.FileSystem.BeforeCopyFile = (source, _) =>
+        {
+            if (!changed && PhysicalSetupFileSystem.SamePath(source, manifestPath))
+            {
+                changed = true;
+                File.AppendAllText(source, " ");
+            }
+        };
+
+        var result = await fixture.CreateOrchestrator(ready: true).DeployAsync(
+            SetupConstants.CreateAutomaticRequest(),
+            CancellationToken.None);
+
+        Assert.True(changed);
+        Assert.False(result.Succeeded);
+        Assert.Equal(SetupErrorCodes.PackageHashMismatch, result.Code);
+        Assert.False(Directory.Exists(fixture.Paths.InstallDirectory));
+        Assert.False(File.Exists(new DeploymentJournalStore(
+            fixture.FileSystem,
+            fixture.Paths).JournalPath));
+    }
+
+    [Fact]
     public async Task DeployAsync_FreshDataCreationRacePreservesForeignDirectoryWithoutAclOrDeletion()
     {
         using var folder = new TemporaryFolder();

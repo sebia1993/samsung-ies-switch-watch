@@ -1,6 +1,6 @@
 <Project>
   <PropertyGroup>
-    <Version>0.11.9-poc</Version>
+    <Version>0.11.10-poc</Version>
     <LangVersion>latest</LangVersion>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>

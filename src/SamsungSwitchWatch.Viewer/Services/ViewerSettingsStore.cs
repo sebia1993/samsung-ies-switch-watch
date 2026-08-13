@@ -353,6 +353,7 @@ public sealed class ViewerSettingsStore
             exception is JsonException
             or NotSupportedException
             or DecoderFallbackException
+            or ViewerStoreSizeLimitException
             or ViewerSettingsFormatException)
         {
             QuarantineCorruptSettings();
@@ -415,8 +416,6 @@ internal interface IViewerSettingsPersistence
 
 internal sealed class PhysicalViewerSettingsPersistence : IViewerSettingsPersistence
 {
-    private static readonly UTF8Encoding StrictUtf8 = new(false, true);
-
     public static PhysicalViewerSettingsPersistence Instance { get; } = new();
 
     private PhysicalViewerSettingsPersistence()
@@ -424,49 +423,18 @@ internal sealed class PhysicalViewerSettingsPersistence : IViewerSettingsPersist
     }
 
     public string? ReadIfExists(string path)
-    {
-        try
-        {
-            return File.ReadAllText(path, StrictUtf8);
-        }
-        catch (FileNotFoundException)
-        {
-            return null;
-        }
-        catch (DirectoryNotFoundException)
-        {
-            return null;
-        }
-    }
+        => BoundedUtf8File.ReadIfExists(
+            path,
+            ViewerStoreFileLimits.SettingsBytes,
+            "VIEWER_SETTINGS_TOO_LARGE");
 
     public void WriteAtomically(string path, string content)
-    {
-        var directory = Path.GetDirectoryName(Path.GetFullPath(path))
-                        ?? throw new InvalidOperationException("VIEWER_SETTINGS_PATH_INVALID");
-        Directory.CreateDirectory(directory);
-        var temporaryPath = path + $".{Guid.NewGuid():N}.tmp";
-        try
-        {
-            File.WriteAllText(temporaryPath, content, new UTF8Encoding(false));
-            File.Move(temporaryPath, path, true);
-        }
-        finally
-        {
-            try
-            {
-                File.Delete(temporaryPath);
-            }
-            catch (IOException)
-            {
-                // Best-effort cleanup only. The destination write result is
-                // already determined and the previous file remains intact.
-            }
-            catch (UnauthorizedAccessException)
-            {
-                // See IOException comment above.
-            }
-        }
-    }
+        => AtomicUtf8File.Write(
+            path,
+            content,
+            ViewerStoreFileLimits.SettingsBytes,
+            "VIEWER_SETTINGS_PATH_INVALID",
+            "VIEWER_SETTINGS_TOO_LARGE");
 
     public void Quarantine(string path, string destination) =>
         File.Move(path, destination, false);

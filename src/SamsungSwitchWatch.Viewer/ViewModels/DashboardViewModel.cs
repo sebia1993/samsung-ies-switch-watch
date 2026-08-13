@@ -82,6 +82,7 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
     private enum AgentChannel { Http, Realtime }
 
     private const int EventPageSize = 500;
+    internal const int MaximumBufferedEventChanges = EventPageSize * 4;
     private static readonly TimeSpan SnapshotInterval = TimeSpan.FromSeconds(60);
     private static readonly DeviceProfileRegistry MonitoringProfiles = new(
     [
@@ -117,6 +118,11 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
         new(StringComparer.Ordinal);
     private readonly SortedDictionary<long, AgentEventChangeDto> _changeBuffer = [];
     private readonly HashSet<long> _liveAlertSequences = [];
+    private bool _changeBufferOverflowed;
+    private long _liveEventSignalVersion;
+    private long _liveEventPumpObservedSignalVersion;
+    private int _liveEventPumpScheduled;
+    private int _liveEventPumpStartCount;
     private IAgentClient _client;
     private ViewerSettings _settings;
     private DeviceViewModel? _selectedDevice;
@@ -286,6 +292,17 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
         }
     }
     public long AppliedChangeCursor => Interlocked.Read(ref _changeCursor);
+    internal int BufferedEventChangeCount
+    {
+        get
+        {
+            lock (_changeSync) return _changeBuffer.Count;
+        }
+    }
+    internal bool IsLiveEventPumpScheduled => Volatile.Read(ref _liveEventPumpScheduled) != 0;
+    internal long LiveEventPumpObservedSignalVersion =>
+        Interlocked.Read(ref _liveEventPumpObservedSignalVersion);
+    internal int LiveEventPumpStartCount => Volatile.Read(ref _liveEventPumpStartCount);
     internal int ReadOnlyQueryHistoryCount => _readOnlyQueryHistory.Count;
     public bool HasManagedDeviceStore => _deviceStore is not null;
     private bool IsManagedDeviceStoreOperational =>
@@ -1217,7 +1234,10 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
     {
         var catchupCandidates = raiseCatchupSummary ? new List<AlertCandidate>() : null;
         var feedResetBefore = Interlocked.Read(ref _feedResetCount);
-        await DrainBufferedChangesAsync(catchupCandidates, cancellationToken).ConfigureAwait(false);
+        if (!await DrainBufferedChangesAsync(
+                client,
+                catchupCandidates,
+                cancellationToken).ConfigureAwait(false)) return;
         long target = -1;
         var pageCount = 0;
         var completed = false;
@@ -1232,13 +1252,31 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
             }
             if (page.ResetRequired)
             {
-                await RebaselineEventFeedAsync(client, page.ResetCursor, cancellationToken).ConfigureAwait(false);
+                if (!await RebaselineEventFeedAsync(
+                        client,
+                        page.ResetCursor,
+                        cancellationToken).ConfigureAwait(false)) return;
                 target = -1;
                 continue;
             }
             if (target < 0) target = Math.Max(before, page.HighWatermark);
             BufferChanges(page.Changes, live: false);
-            await DrainBufferedChangesAsync(catchupCandidates, cancellationToken).ConfigureAwait(false);
+            if (ConsumeEventChangeBufferOverflow())
+            {
+                // A persistent sequence gap can otherwise retain every newer
+                // change forever. Rebuild from authoritative recent state
+                // rather than guessing across the missing sequence.
+                _ = await RebaselineEventFeedAsync(
+                        client,
+                        Math.Max(before, page.HighWatermark),
+                        cancellationToken)
+                    .ConfigureAwait(false);
+                return;
+            }
+            if (!await DrainBufferedChangesAsync(
+                    client,
+                    catchupCandidates,
+                    cancellationToken).ConfigureAwait(false)) return;
             var after = AppliedChangeCursor;
 
             if (after >= target && !page.HasMore)
@@ -1261,7 +1299,10 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
             }
         }
 
-        await DrainBufferedChangesAsync(catchupCandidates, cancellationToken).ConfigureAwait(false);
+        if (!await DrainBufferedChangesAsync(
+                client,
+                catchupCandidates,
+                cancellationToken).ConfigureAwait(false)) return;
         if (completed && catchupCandidates is { Count: > 0 }
             && Interlocked.Read(ref _feedResetCount) == feedResetBefore)
         {
@@ -1312,6 +1353,12 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
                         _client = replacement;
                         _monitoringClientEpoch++;
                         _automaticCollectionFreshness.Clear();
+                        lock (_changeSync)
+                        {
+                            _changeBuffer.Clear();
+                            _liveAlertSequences.Clear();
+                            _changeBufferOverflowed = false;
+                        }
                     }
                     _statelessV4 = true;
                     _currentAgentId = identity.AgentId;
@@ -1401,14 +1448,15 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
                         _client = replacement;
                         _monitoringClientEpoch++;
                         _automaticCollectionFreshness.Clear();
+                        lock (_changeSync)
+                        {
+                            _changeBuffer.Clear();
+                            _liveAlertSequences.Clear();
+                            _changeBufferOverflowed = false;
+                        }
                     }
                     _currentAgentId = snapshot.AgentId;
                     Interlocked.Exchange(ref _changeCursor, replacementCursor);
-                    lock (_changeSync)
-                    {
-                        _changeBuffer.Clear();
-                        _liveAlertSequences.Clear();
-                    }
                     SubscribeClient(replacement);
                     _allowLiveAlerts = false;
                     await RunOnUiAsync(() =>
@@ -1520,6 +1568,7 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
             {
                 _changeBuffer.Clear();
                 _liveAlertSequences.Clear();
+                _changeBufferOverflowed = false;
             }
         }
         _currentAgentId = snapshot.AgentId;
@@ -2241,61 +2290,107 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
             foreach (var change in changes)
             {
                 if (change.ChangeSequence <= AppliedChangeCursor) continue;
+                if (_changeBufferOverflowed) break;
+
+                if (!_changeBuffer.ContainsKey(change.ChangeSequence)
+                    && _changeBuffer.Count >= MaximumBufferedEventChanges)
+                {
+                    _changeBuffer.Clear();
+                    _liveAlertSequences.Clear();
+                    _changeBufferOverflowed = true;
+                    break;
+                }
+
                 _changeBuffer[change.ChangeSequence] = change;
                 if (live && _allowLiveAlerts) _liveAlertSequences.Add(change.ChangeSequence);
             }
         }
     }
 
-    private async Task DrainBufferedChangesAsync(
+    private bool ConsumeEventChangeBufferOverflow()
+    {
+        lock (_changeSync)
+        {
+            if (!_changeBufferOverflowed) return false;
+            _changeBufferOverflowed = false;
+            return true;
+        }
+    }
+
+    private async Task<bool> DrainBufferedChangesAsync(
+        IAgentClient expectedClient,
         List<AlertCandidate>? catchupCandidates,
         CancellationToken cancellationToken)
     {
         while (!cancellationToken.IsCancellationRequested)
         {
+            if (!ReferenceEquals(expectedClient, _client)) return false;
             AgentEventChangeDto? change;
             bool liveAlert;
             lock (_changeSync)
             {
+                if (!ReferenceEquals(expectedClient, _client)) return false;
                 var next = AppliedChangeCursor + 1;
-                if (!_changeBuffer.Remove(next, out change)) return;
+                if (!_changeBuffer.Remove(next, out change)) return true;
                 liveAlert = _liveAlertSequences.Remove(next);
             }
 
-            await RunOnUiAsync(() => ApplyEventChangeCore(change, liveAlert)).ConfigureAwait(false);
+            var applied = false;
+            await RunOnUiAsync(() =>
+            {
+                lock (_deviceLifecycleSync)
+                {
+                    if (!ReferenceEquals(expectedClient, _client)) return;
+                    ApplyEventChangeCore(change, liveAlert);
+                    Interlocked.Exchange(ref _changeCursor, change.ChangeSequence);
+                    lock (_settingsSync)
+                    {
+                        _settings.SetEventCursor(_currentAgentId, change.ChangeSequence);
+                    }
+                    applied = true;
+                }
+            }).ConfigureAwait(false);
+            if (!applied) return false;
             if (!liveAlert && catchupCandidates is not null && IsNotifiableChange(change))
             {
                 catchupCandidates.Add(new AlertCandidate(change.ChangeSequence, change.ChangeKind, change.Event));
             }
-            Interlocked.Exchange(ref _changeCursor, change.ChangeSequence);
-            lock (_settingsSync) _settings.SetEventCursor(_currentAgentId, change.ChangeSequence);
             ScheduleSettingsSave();
         }
+        return false;
     }
 
-    private async Task RebaselineEventFeedAsync(
+    private async Task<bool> RebaselineEventFeedAsync(
         IAgentClient client,
         long resetCursor,
         CancellationToken cancellationToken)
     {
         var recent = await client.GetRecentEventsAsync(EventPageSize, cancellationToken).ConfigureAwait(false);
-        lock (_changeSync)
-        {
-            _changeBuffer.Clear();
-            _liveAlertSequences.Clear();
-        }
         var safeCursor = Math.Max(0, resetCursor);
-        Interlocked.Exchange(ref _changeCursor, safeCursor);
-        lock (_settingsSync) _settings.SetEventCursor(_currentAgentId, safeCursor);
-        Interlocked.Increment(ref _feedResetCount);
-        ScheduleSettingsSave();
+        var applied = false;
         await RunOnUiAsync(() =>
         {
-            RecentEvents.Clear();
-            _eventsById.Clear();
-            ApplyRecentEventsCore(recent);
-            OperationMessage = "보존 기간이 지난 이벤트 구간을 현재 상태로 다시 맞췄습니다. · EVENT_FEED_RESET";
+            lock (_deviceLifecycleSync)
+            {
+                if (!ReferenceEquals(client, _client)) return;
+                lock (_changeSync)
+                {
+                    _changeBuffer.Clear();
+                    _liveAlertSequences.Clear();
+                    _changeBufferOverflowed = false;
+                }
+                Interlocked.Exchange(ref _changeCursor, safeCursor);
+                lock (_settingsSync) _settings.SetEventCursor(_currentAgentId, safeCursor);
+                Interlocked.Increment(ref _feedResetCount);
+                RecentEvents.Clear();
+                _eventsById.Clear();
+                ApplyRecentEventsCore(recent);
+                applied = true;
+                OperationMessage = "보존 기간이 지난 이벤트 구간을 현재 상태로 다시 맞췄습니다. · EVENT_FEED_RESET";
+            }
         }).ConfigureAwait(false);
+        if (applied) ScheduleSettingsSave();
+        return applied;
     }
 
     private void ApplyEventChangeCore(AgentEventChangeDto change, bool raiseAlert)
@@ -2460,32 +2555,94 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
     private void OnClientEventChanged(object? sender, AgentEventChangeDto item)
     {
         if (sender is not IAgentClient client) return;
-        _ = ProcessClientEventAsync(client, item);
+        lock (_deviceLifecycleSync)
+        {
+            if (!ReferenceEquals(client, _client) || _disposed) return;
+            // Buffer on the callback thread so an event burst cannot allocate
+            // one waiting async state machine per event. Client replacement
+            // takes this same lock before clearing the old feed buffer.
+            BufferChanges([item], live: true);
+            Interlocked.Increment(ref _liveEventSignalVersion);
+        }
+        ScheduleLiveEventPump();
     }
 
-    private async Task ProcessClientEventAsync(IAgentClient client, AgentEventChangeDto item)
+    private void ScheduleLiveEventPump()
     {
+        if (_disposed || _lifetime.IsCancellationRequested) return;
+        if (Interlocked.CompareExchange(ref _liveEventPumpScheduled, 1, 0) != 0) return;
+        Interlocked.Increment(ref _liveEventPumpStartCount);
+        _ = ProcessClientEventsPumpAsync();
+    }
+
+    private async Task ProcessClientEventsPumpAsync()
+    {
+        long observedSignalVersion = 0;
+        IAgentClient? activeClient = null;
         try
         {
-            await _syncGate.WaitAsync(_lifetime.Token).ConfigureAwait(false);
-            try
+            while (!_lifetime.IsCancellationRequested)
             {
-                if (!ReferenceEquals(client, _client)) return;
-                BufferChanges([item], live: true);
-                await SynchronizeChangesCoreAsync(client, false, _lifetime.Token).ConfigureAwait(false);
-            }
-            finally
-            {
-                _syncGate.Release();
+                observedSignalVersion = Interlocked.Read(ref _liveEventSignalVersion);
+                Interlocked.Exchange(
+                    ref _liveEventPumpObservedSignalVersion,
+                    observedSignalVersion);
+                var client = _client;
+                activeClient = client;
+                await _syncGate.WaitAsync(_lifetime.Token).ConfigureAwait(false);
+                try
+                {
+                    if (ReferenceEquals(client, _client))
+                    {
+                        await SynchronizeChangesCoreAsync(
+                                client,
+                                false,
+                                _lifetime.Token)
+                            .ConfigureAwait(false);
+                    }
+                }
+                finally
+                {
+                    _syncGate.Release();
+                }
+
+                if (observedSignalVersion == Interlocked.Read(ref _liveEventSignalVersion))
+                {
+                    return;
+                }
             }
         }
         catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { }
         catch (Exception exception)
         {
-            await SetUnavailableStateAsync(
-                exception,
-                AgentChannel.Http,
-                client).ConfigureAwait(false);
+            try
+            {
+                await SetUnavailableStateAsync(
+                        exception,
+                        AgentChannel.Http,
+                        activeClient)
+                    .ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { }
+            catch
+            {
+                // A dispatcher that is already shutting down can reject the
+                // presentation update. Keep the fire-and-forget task observed.
+                TryWriteDiagnostic("live-event-pump", "VIEWER_UNEXPECTED_ERROR");
+            }
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _liveEventPumpScheduled, 0);
+            // Close the lost-wakeup window between the last version check and
+            // clearing the scheduled flag. If an event arrived there, either
+            // its callback or this check schedules exactly one new pump.
+            if (!_disposed
+                && !_lifetime.IsCancellationRequested
+                && observedSignalVersion != Interlocked.Read(ref _liveEventSignalVersion))
+            {
+                ScheduleLiveEventPump();
+            }
         }
     }
 

@@ -5,7 +5,7 @@ namespace SamsungSwitchWatch.Viewer.Setup.Deployment;
 public sealed class ViewerPackageValidator(IViewerSetupFileSystem fileSystem)
     : IViewerPackageValidator
 {
-    private const int MaximumManifestCharacters = 2 * 1024 * 1024;
+    private const int MaximumManifestBytes = 2 * 1024 * 1024;
 
     public ViewerPackage Validate(string packageDirectory) =>
         ValidateCore(packageDirectory, requireCurrentSetupEntrypoint: true);
@@ -54,13 +54,15 @@ public sealed class ViewerPackageValidator(IViewerSetupFileSystem fileSystem)
         string manifestSha256;
         try
         {
-            if (fileSystem.GetFileLength(manifestPath) > MaximumManifestCharacters)
+            if (fileSystem.GetFileLength(manifestPath) > MaximumManifestBytes)
             {
                 throw new JsonException();
             }
 
             var beforeReadHash = fileSystem.ComputeSha256(manifestPath);
-            var json = fileSystem.ReadAllText(manifestPath);
+            var json = fileSystem.ReadAllTextBounded(
+                manifestPath,
+                MaximumManifestBytes);
             manifestSha256 = fileSystem.ComputeSha256(manifestPath);
             if (!string.Equals(
                     beforeReadHash,
@@ -70,7 +72,7 @@ public sealed class ViewerPackageValidator(IViewerSetupFileSystem fileSystem)
                 throw new IOException("The package manifest changed while it was read.");
             }
 
-            if (json.Length > MaximumManifestCharacters)
+            if (json.Length > MaximumManifestBytes)
             {
                 throw new JsonException();
             }
@@ -78,7 +80,8 @@ public sealed class ViewerPackageValidator(IViewerSetupFileSystem fileSystem)
             manifest = JsonSerializer.Deserialize<BuildManifest>(json, JsonOptions);
         }
         catch (Exception exception) when (
-            exception is JsonException or IOException)
+            exception is JsonException or IOException or
+                System.Text.DecoderFallbackException)
         {
             throw new ViewerSetupException(
                 ViewerSetupErrorCodes.ManifestInvalid,
@@ -107,7 +110,10 @@ public sealed class ViewerPackageValidator(IViewerSetupFileSystem fileSystem)
         }
 
         var verified = new List<ViewerPackageFile>();
-        var seen = new HashSet<string>(StringComparer.Ordinal);
+        // Windows package paths are case-insensitive. Two manifest names that
+        // differ only by case still address one physical file and must not be
+        // accepted as independent entries.
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var entry in manifest.Files)
         {
             if (entry is null ||
@@ -159,8 +165,8 @@ public sealed class ViewerPackageValidator(IViewerSetupFileSystem fileSystem)
             .Select(Path.GetFileName)
             .Where(name => !string.IsNullOrWhiteSpace(name))
             .Cast<string>()
-            .ToHashSet(StringComparer.Ordinal);
-        var expectedNames = seen.ToHashSet(StringComparer.Ordinal);
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var expectedNames = seen.ToHashSet(StringComparer.OrdinalIgnoreCase);
         expectedNames.Add(ViewerSetupConstants.ManifestFileName);
         if (!actualNames.SetEquals(expectedNames) ||
             fileSystem.EnumerateTopLevelDirectories(packageRoot).Count != 0)
@@ -173,7 +179,7 @@ public sealed class ViewerPackageValidator(IViewerSetupFileSystem fileSystem)
         var executable = verified.Single(file => string.Equals(
             file.Name,
             manifest.Executable.Name,
-            StringComparison.Ordinal));
+            StringComparison.OrdinalIgnoreCase));
         if (!string.Equals(
                 executable.Sha256,
                 manifest.Executable.Sha256,

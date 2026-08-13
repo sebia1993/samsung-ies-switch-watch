@@ -50,6 +50,7 @@ public sealed class ReadOnlyQueryPolicyTests
     [InlineData("show port status | include Up", ReadOnlyQueryRejection.Separator)]
     [InlineData("show port status\nreload", ReadOnlyQueryRejection.ControlCharacter)]
     [InlineData("show port status\u2028reload", ReadOnlyQueryRejection.ControlCharacter)]
+    [InlineData("show port \u0100", ReadOnlyQueryRejection.UnsupportedCharacter)]
     public void Validate_BlocksUnsafeCommands(string command, ReadOnlyQueryRejection expected)
     {
         var result = ReadOnlyQueryPolicy.Validate(command);

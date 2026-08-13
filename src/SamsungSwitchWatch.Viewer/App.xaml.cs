@@ -273,13 +273,43 @@ public partial class App : Application
     {
         if (_viewModel is null) return;
         var settings = _viewModel.CurrentSettings;
-        window.Width = settings.MainWidth;
-        window.Height = settings.MainHeight;
+        var workArea = SystemParameters.WorkArea;
+        var fitted = ViewerWindowBoundsPolicy.FitMainWindow(
+            settings.MainWidth,
+            settings.MainHeight,
+            workArea.Width,
+            workArea.Height);
+        // A scaled 1366 x 768 desktop can expose fewer than 1280 x 720 WPF
+        // units. Lower the runtime minimum before assigning the fitted size;
+        // the dashboard's scroll viewport keeps every action reachable.
+        window.MinWidth = Math.Min(window.MinWidth, fitted.Width);
+        window.MinHeight = Math.Min(window.MinHeight, fitted.Height);
+        window.Width = fitted.Width;
+        window.Height = fitted.Height;
         if (IsVisibleCoordinate(settings.MainLeft, settings.MainTop, 120, 80))
         {
+            var position = ViewerWindowBoundsPolicy.IsPositionInWorkArea(
+                settings.MainLeft,
+                settings.MainTop,
+                workArea.Left,
+                workArea.Top,
+                workArea.Width,
+                workArea.Height)
+                ? ViewerWindowBoundsPolicy.ClampMainWindowPosition(
+                    settings.MainLeft,
+                    settings.MainTop,
+                    fitted,
+                    workArea.Left,
+                    workArea.Top,
+                    workArea.Width,
+                    workArea.Height)
+                // A valid coordinate outside the primary work area can belong
+                // to another monitor. Preserve it until monitor-specific WPF
+                // work-area/DPI conversion is available.
+                : new ViewerWindowPosition(settings.MainLeft, settings.MainTop);
             window.WindowStartupLocation = WindowStartupLocation.Manual;
-            window.Left = settings.MainLeft;
-            window.Top = settings.MainTop;
+            window.Left = position.Left;
+            window.Top = position.Top;
         }
     }
 

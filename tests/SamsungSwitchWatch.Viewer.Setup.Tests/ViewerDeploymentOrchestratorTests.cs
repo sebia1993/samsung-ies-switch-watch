@@ -230,4 +230,87 @@ public sealed class ViewerDeploymentOrchestratorTests
             packageDirectory,
             ViewerSetupConstants.ViewerExecutableName)));
     }
+
+    [Fact]
+    public async Task Deploy_ActivationMoveTransientFailure_RetriesAndSucceeds()
+    {
+        using var workspace = new TestWorkspace();
+        workspace.CreatePackage();
+        var fileSystem = CreateActivationMoveFault(workspace, failures: 1);
+
+        var result = await workspace.CreateOrchestrator(
+            fileSystem: fileSystem).DeployAsync();
+
+        Assert.True(result.Succeeded, $"{result.Code}: {result.Message}");
+        Assert.Equal(2, fileSystem.MatchingMoveAttempts);
+        Assert.True(File.Exists(workspace.Paths.ViewerExecutablePath));
+    }
+
+    [Fact]
+    public async Task Deploy_ActivationMovePersistentFailure_IsBoundedAndRollsBack()
+    {
+        using var workspace = new TestWorkspace();
+        workspace.CreatePackage();
+        var fileSystem = CreateActivationMoveFault(workspace, failures: 5);
+
+        var result = await workspace.CreateOrchestrator(
+            fileSystem: fileSystem).DeployAsync();
+
+        Assert.False(result.Succeeded);
+        Assert.Equal(ViewerSetupErrorCodes.InstallWriteFailed, result.Code);
+        Assert.Equal(5, fileSystem.MatchingMoveAttempts);
+        Assert.False(Directory.Exists(workspace.InstallDirectory));
+        Assert.False(File.Exists(workspace.Paths.JournalPath));
+    }
+
+    [Fact]
+    public async Task Deploy_ActivationMoveCompletesBeforeTransientException_AcceptsExactTopology()
+    {
+        using var workspace = new TestWorkspace();
+        workspace.CreatePackage();
+        var fileSystem = CreateActivationMoveFault(workspace, failures: 1);
+        fileSystem.CompleteMoveBeforeFailure = true;
+
+        var result = await workspace.CreateOrchestrator(
+            fileSystem: fileSystem).DeployAsync();
+
+        Assert.True(result.Succeeded, $"{result.Code}: {result.Message}");
+        Assert.Equal(1, fileSystem.MatchingMoveAttempts);
+        Assert.True(File.Exists(workspace.Paths.ViewerExecutablePath));
+    }
+
+    [Fact]
+    public async Task Deploy_CancelledDuringActivationMoveRetry_StopsRetryAndRollsBack()
+    {
+        using var workspace = new TestWorkspace();
+        workspace.CreatePackage();
+        using var cancellation = new CancellationTokenSource();
+        var fileSystem = CreateActivationMoveFault(workspace, failures: 5);
+        fileSystem.BeforeMoveFailure = cancellation.Cancel;
+
+        var result = await workspace.CreateOrchestrator(
+            fileSystem: fileSystem).DeployAsync(cancellation.Token);
+
+        Assert.False(result.Succeeded);
+        Assert.Equal(ViewerSetupErrorCodes.Cancelled, result.Code);
+        Assert.Equal(1, fileSystem.MatchingMoveAttempts);
+        Assert.False(Directory.Exists(workspace.InstallDirectory));
+        Assert.False(File.Exists(workspace.Paths.JournalPath));
+    }
+
+    private static FaultInjectingViewerSetupFileSystem CreateActivationMoveFault(
+        TestWorkspace workspace,
+        int failures) =>
+        new(workspace.FileSystem)
+        {
+            MoveFailuresRemaining = failures,
+            MoveFailurePredicate = (source, destination) =>
+                source.StartsWith(
+                    workspace.InstallDirectory + ".__staging_",
+                    StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(
+                    destination,
+                    workspace.InstallDirectory,
+                    StringComparison.OrdinalIgnoreCase)
+        };
 }

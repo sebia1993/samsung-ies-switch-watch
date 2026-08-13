@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the Korean Samsung Switch Watch v0.11.9 operator manual.
+"""Build the Korean Samsung Switch Watch v0.11.10 operator manual.
 
 The manual is intentionally generated from sanitized, deterministic WPF
 screenshots. It never needs a company switch, a real IP address, or a secret.
@@ -20,8 +20,8 @@ from docx.oxml.ns import qn
 from docx.shared import Inches, Pt, RGBColor
 
 
-VERSION = "0.11.9-poc"
-DOCUMENT_DATE = "2026-08-12"
+VERSION = "0.11.10-poc"
+DOCUMENT_DATE = "2026-08-13"
 FONT = "맑은 고딕"
 MONO = "Consolas"
 
@@ -726,7 +726,9 @@ def build_manual(output_path: Path, images_dir: Path):
         "없으면 중단하고, 출력이 계속되어도 전체 90초를 넘기지 않습니다. 같은 실패 명령은 현재 "
         "주기에서 즉시 재시도하지 않습니다. COMMAND_TIMEOUT 또는 QUERY_TIMEOUT이면 다음 점검 "
         "주기에 다음 읽기 전용 후보를 한 번 시도합니다. 인증·enable·TCP·세션 종료는 반복 로그인을 막기 위해 "
-        "해당 장비 주기를 중단합니다. 이번 POC의 자동 감시 검증·지원 범위는 등록 장비 10대 이하입니다.",
+        "해당 장비 주기를 중단합니다. 로그인과 enable도 각각 별도의 제한된 시간·바이트 예산을 사용합니다. "
+        "Samsung 장비의 Latin-1 문자와 Telnet IAC 협상 바이트를 처리하되 끝없는 응답은 상한에서 중단합니다. "
+        "이번 POC의 자동 감시 검증·지원 범위는 등록 장비 10대 이하입니다.",
         "info",
     )
     add_code_block(
@@ -762,7 +764,13 @@ Viewer PC                 Agent PC                    Samsung Switch
         "Telnet 자체는 암호화되지 않습니다. Agent와 스위치 사이 경로는 반드시 제한된 관리망으로 구성하세요.",
         "danger",
     )
-    add_heading(doc, "Agent와 Viewer 설치·연결", 1, heading_num_id)
+    add_heading(
+        doc,
+        "Agent와 Viewer 설치·연결",
+        1,
+        heading_num_id,
+        page_break_before=False,
+    )
     add_heading(doc, "Agent 설치", 2, heading_num_id)
     add_callout(
         doc,
@@ -897,7 +905,9 @@ Viewer 허용 범위      : 10/8, 172.16/12, 192.168/16
         "종료를 확인하고 프로그램 폴더의 일시적 잠금만 최대 5회 제한적으로 재시도합니다. "
         "staging·backup·failed·journal 정리가 잠시 실패하면 정확히 검증된 대상만 최대 3회 "
         "시도하고 실패한 시도 사이 250ms 대기한 뒤 삭제 결과를 확인합니다. "
-        "journal은 원자적으로 교체하며 교체가 완료된 뒤 임시 파일 정리만 실패해도 저장 완료를 "
+        "manifest는 엄격한 UTF-8과 2 MiB 상한으로 읽고 읽기 중 변경, 선언 크기·SHA-256, Windows "
+        "대소문자 중복, 실제 최상위 파일 집합과 하위 폴더 부재를 확인합니다. journal은 원자적으로 "
+        "교체하며 교체가 완료된 뒤 임시 파일 정리나 destination 재확인만 EDR에 막혀도 저장 완료를 "
         "실패로 되돌리지 않습니다. 새 ProgramData 제품 루트는 원자적 생성에 성공한 경우에만 "
         "ACL과 파일을 쓰므로 검사 직후 다른 프로세스가 만든 폴더는 수정하지 않습니다. "
         "변경 자체의 복구까지 실패하면 최초 설치 실패 코드를 별도로 유지하고 SETUP_ROLLBACK_FAILED와 "
@@ -1056,6 +1066,8 @@ Viewer 허용 범위      : 10/8, 172.16/12, 192.168/16
         "Viewer 프로그램은 %LOCALAPPDATA%\\Programs\\SamsungSwitchWatch\\Viewer에 설치합니다. "
         "장비 목록, DPAPI 자격 증명, 감시 이력과 화면 설정은 별도 데이터 경로인 "
         "%LOCALAPPDATA%\\SamsungSwitchWatch에 보존됩니다. Viewer를 업데이트해도 자료는 유지되지만 "
+        "각 JSON 파일은 크기 상한과 형식 검사를 적용하며 원자 교체 뒤 백신·EDR의 재확인 잠금만으로 "
+        "완료된 저장을 실패로 오판하지 않습니다. "
         "문제 재현과 지원을 단순하게 하려면 Agent와 같은 Release 사용을 권장합니다. API v4가 "
         "호환되면 세부 버전이 달라도 연결은 유지되고 경고만 표시됩니다.",
         "info",
@@ -1083,7 +1095,9 @@ Viewer 허용 범위      : 10/8, 172.16/12, 192.168/16
         "Setup이 미완료 journal을 찾으면 설치/업데이트를 잠급니다. '이전 상태 복구'를 눌러 "
         "복구 완료를 확인한 다음 설치/업데이트를 별도로 다시 누르세요. 복구 성공이 설치를 "
         "자동으로 시작하지는 않습니다. 장비·연결·DPAPI·감시 데이터는 보존되고 Setup 전용 "
-        "journal과 증거 파일만 정리됩니다.",
+        "journal과 증거 파일만 정리됩니다. 활성화·복구 파일 이동과 삭제는 취소 가능한 제한 "
+        "재시도로 일시적인 EDR 잠금을 처리합니다. commit 전 새 Viewer가 손상된 경우에는 해당 "
+        "세대를 failed 위치로 격리한 뒤 검증된 이전 설치를 복구하고 다시 확인합니다.",
         "warning",
     )
     add_image(
@@ -1283,6 +1297,7 @@ Viewer 허용 범위      : 10/8, 172.16/12, 192.168/16
             "로그는 저장된 식별 해시와 비교해 새 항목만 이벤트로 만듭니다.",
             "주기 감시 저장소에는 기준 해시, 이벤트와 상태만 남고 Telnet 원문은 남지 않습니다.",
             "같은 장애가 계속되면 반복 팝업 대신 지속 상태를 유지하고, 정상화되면 복구 이벤트를 만듭니다.",
+            "이벤트 feed는 제한된 용량에서 같은 변경을 합치며, 교체된 이전 Agent 연결이 늦게 돌려준 결과는 현재 상태에 반영하지 않습니다.",
         ],
         bullet_num_id,
     )
@@ -1361,7 +1376,8 @@ Viewer 허용 범위      : 10/8, 172.16/12, 192.168/16
     add_body(
         doc,
         "평소에는 미니 창을 항상 위에 두고 문제 수와 마지막 점검 시각만 확인할 수 있습니다. "
-        "장애가 새로 발생하면 별도의 팝업이 나타나며 클릭하면 해당 이벤트로 이동합니다.",
+        "장애가 새로 발생하면 별도의 팝업이 나타나며 클릭하면 해당 이벤트로 이동합니다. 작은 "
+        "작업 영역에서는 대시보드를 스크롤하고 저장된 창 위치·크기를 현재 화면 안으로 보정합니다.",
     )
     add_image(
         doc,
@@ -1419,6 +1435,7 @@ Viewer 허용 범위      : 10/8, 172.16/12, 192.168/16
         [
             "Viewer 설정을 다른 PC나 Windows 사용자에게 복사해도 계정은 복호화되지 않으며, 진단 파일에는 "
             "IP·ID·비밀번호·호스트명·수동 명령 원문을 넣지 않습니다.",
+            "Agent 신원 입력과 Viewer 로컬 JSON은 크기 상한을 넘거나 손상되면 안전하게 거부하며 이전 상태를 정상으로 가장하지 않습니다.",
             "Viewer는 Agent 인증서 지문이나 페어링 토큰을 저장하지 않습니다. HTTPS는 전송 내용을 "
             "암호화하지만 Agent PC 신원을 별도로 인증하는 구조는 아닙니다.",
             "제품 방화벽 규칙과 Agent 업무 API는 RFC1918 사설 Viewer 주소를 허용합니다. "
@@ -1511,10 +1528,38 @@ Viewer 허용 범위      : 10/8, 172.16/12, 192.168/16
         for index, row in enumerate(troubleshooting_rows)
         if row[0] == "VIEWER_MONITOR_STATE_CORRUPT"
     )
+    rollback_cleanup_rows_start = next(
+        index
+        for index, row in enumerate(troubleshooting_rows)
+        if row[0].startswith("ROLLBACK_FAILED_DIRECTORY_CLEANUP_FAILED")
+    )
+    viewer_store_rows_start = next(
+        index
+        for index, row in enumerate(troubleshooting_rows)
+        if row[0] == "OUTPUT_LIMIT_EXCEEDED"
+    )
     add_table(
         doc,
         ["표시 코드/증상", "확인 순서"],
-        troubleshooting_rows[:monitor_rows_start],
+        troubleshooting_rows[:rollback_cleanup_rows_start],
+        [4300, 5060],
+        header_size=8.5,
+        body_size=8.25,
+        body_line=1.0,
+    )
+    add_table(
+        doc,
+        ["표시 코드/증상", "확인 순서"],
+        troubleshooting_rows[rollback_cleanup_rows_start:viewer_store_rows_start],
+        [4300, 5060],
+        header_size=8.5,
+        body_size=8.25,
+        body_line=1.0,
+    )
+    add_table(
+        doc,
+        ["표시 코드/증상", "확인 순서"],
+        troubleshooting_rows[viewer_store_rows_start:monitor_rows_start],
         [4300, 5060],
         header_size=8.5,
         body_size=8.25,

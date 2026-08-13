@@ -28,6 +28,42 @@ public sealed class TelnetClientTests
     }
 
     [Fact]
+    public void TelnetCredentials_RejectCharactersOutsideLatin1()
+    {
+        Assert.Throws<ArgumentException>(() => new TelnetCredentials("operator\u0100", "secret"));
+        Assert.Throws<ArgumentException>(() => new TelnetCredentials("operator", "secret\u0100"));
+        Assert.Throws<ArgumentException>(() => new TelnetCredentials("operator", "secret", "enable\u0100"));
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_EscapesLiteralIacBytesInCredentialsAndCommand()
+    {
+        const string username = "operator\u00ff";
+        const string password = "secret\u00ff";
+        const string command = "show port \u00ff";
+        var transport = new ScriptedTransport(
+            Bytes("Login:"),
+            Bytes("Password:"),
+            Bytes("ACCESS-SW-01#"),
+            Bytes("synthetic output\r\nACCESS-SW-01#"));
+        var client = CreateClient(transport);
+
+        var result = await client.ExecuteAsync(
+            new TelnetEndpoint("192.0.2.10"),
+            new TelnetCredentials(username, password),
+            Ies4224GpProfile.Create().Telnet,
+            [command]);
+
+        Assert.Single(result.Outputs);
+        Assert.Equal(TelnetLine(username), transport.Writes[0]);
+        Assert.Equal(TelnetLine(password), transport.Writes[1]);
+        Assert.Equal(TelnetLine(command), transport.Writes[2]);
+        Assert.All(
+            transport.Writes.Take(3),
+            write => Assert.True(ContainsEscapedIac(write)));
+    }
+
+    [Fact]
     public async Task ExecuteRegisteredAsync_HandlesIacPagingAndNormalizesOutput()
     {
         var loginWithIac = new byte[] { 255, 251, 1 }
@@ -579,6 +615,30 @@ public sealed class TelnetClientTests
     }
 
     [Fact]
+    public async Task ExecuteRegisteredAsync_LimitsDecodedTextBeforePromptParsing()
+    {
+        var transport = new ScriptedTransport(
+            Bytes("Login:"),
+            Bytes("Password:"),
+            Bytes("ACCESS-SW-01#"),
+            Bytes("show system\r\n" + new string('x', 1100)));
+        var client = CreateClient(
+            transport,
+            maximumOutputBytes: 1024,
+            maximumWireBytes: 4096);
+
+        var exception = await Assert.ThrowsAsync<SwitchWatchException>(() => client.ExecuteRegisteredAsync(
+            new TelnetEndpoint("192.0.2.10"),
+            new TelnetCredentials("monitor", "synthetic-password"),
+            Ies4224GpProfile.Create(),
+            [CommandIds.System]));
+
+        Assert.Equal(ErrorCodes.OutputLimitExceeded, exception.Error.Code);
+        Assert.Equal("command", exception.Error.Stage);
+        Assert.True(transport.WasClosed);
+    }
+
+    [Fact]
     public async Task ExecuteRegisteredAsync_RejectsIpv6BeforeConnecting()
     {
         var transport = new ScriptedTransport();
@@ -1003,6 +1063,108 @@ public sealed class TelnetClientTests
     }
 
     [Fact]
+    public async Task ExecuteAsync_BudgetsSlowLoginAndEnableBeforeBatchingCommands()
+    {
+        var commands = new[] { "show item 1", "show item 2" };
+        var first = new ScriptedTransport(
+            Bytes("Login:"),
+            Bytes("Password:"),
+            Bytes("ACCESS-SW-01>"),
+            Bytes("Password:"),
+            Bytes("ACCESS-SW-01#"),
+            Bytes("first output\r\nACCESS-SW-01#"),
+            Bytes("unused second output\r\nACCESS-SW-01#"));
+        var second = new ScriptedTransport(
+            Bytes("Login:"),
+            Bytes("Password:"),
+            Bytes("ACCESS-SW-01>"),
+            Bytes("Password:"),
+            Bytes("ACCESS-SW-01#"),
+            Bytes("second output\r\nACCESS-SW-01#"));
+        var factory = new SequenceTransportFactory(first, second);
+        var timeouts = new TelnetTimeouts(
+            TimeSpan.FromMilliseconds(10),
+            TimeSpan.FromMilliseconds(70),
+            TimeSpan.FromMilliseconds(70),
+            TimeSpan.FromMilliseconds(10))
+        {
+            Write = TimeSpan.FromMilliseconds(50),
+            Session = TimeSpan.FromMilliseconds(400)
+        };
+        var client = new TelnetClient(
+            factory,
+            new TelnetClientOptions(timeouts, ReadBufferBytes: 512)
+            {
+                CommandHardTimeout = TimeSpan.FromMilliseconds(100),
+                SessionSafetyMargin = TimeSpan.FromMilliseconds(10),
+                SessionCloseRetryCount = 0
+            });
+
+        var result = await client.ExecuteAsync(
+            new TelnetEndpoint("192.0.2.10"),
+            new TelnetCredentials("monitor", "synthetic-password", "enable-password"),
+            Ies4224GpProfile.Create().Telnet,
+            commands);
+
+        Assert.Equal(commands, result.Outputs.Select(output => output.Command));
+        Assert.Equal(2, result.SessionCount);
+        Assert.Equal(2, factory.CreateCalls);
+        Assert.DoesNotContain(
+            first.Writes,
+            write => Encoding.Latin1.GetString(write).Contains(commands[1], StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_AllowsSlowValidAuthenticationAndEnableWithinConfiguredSessionCap()
+    {
+        var transport = new ScriptedTransport(
+            Bytes("Login:"),
+            Bytes("Password:"),
+            Bytes("ACCESS-SW-01>"),
+            Bytes("Password:"),
+            Bytes("ACCESS-SW-01#"),
+            Bytes("synthetic output\r\nACCESS-SW-01#"))
+        {
+            ReadDelays =
+            [
+                TimeSpan.FromMilliseconds(500),
+                TimeSpan.FromMilliseconds(500),
+                TimeSpan.FromMilliseconds(500),
+                TimeSpan.FromMilliseconds(500),
+                TimeSpan.FromMilliseconds(500),
+                TimeSpan.FromMilliseconds(700)
+            ]
+        };
+        var timeouts = new TelnetTimeouts(
+            TimeSpan.FromMilliseconds(10),
+            TimeSpan.FromSeconds(1),
+            TimeSpan.FromSeconds(1),
+            TimeSpan.FromMilliseconds(10))
+        {
+            Write = TimeSpan.FromMilliseconds(10),
+            Session = TimeSpan.FromSeconds(4)
+        };
+        var client = new TelnetClient(
+            new FixedTransportFactory(transport),
+            new TelnetClientOptions(timeouts, ReadBufferBytes: 512)
+            {
+                CommandHardTimeout = TimeSpan.FromSeconds(1),
+                SessionSafetyMargin = TimeSpan.FromMilliseconds(10),
+                SessionCloseRetryCount = 0
+            });
+
+        var result = await client.ExecuteAsync(
+            new TelnetEndpoint("192.0.2.10"),
+            new TelnetCredentials("monitor", "synthetic-password", "enable-password"),
+            Ies4224GpProfile.Create().Telnet,
+            ["show system"]);
+
+        Assert.Single(result.Outputs);
+        Assert.Equal(TelnetPrivilege.Privileged, result.Privilege);
+        Assert.True(transport.WasClosed);
+    }
+
+    [Fact]
     public async Task ExecuteAsync_ReportsLaterBatchesWhenAPlannedSessionFails()
     {
         var commands = Enumerable.Range(1, 8)
@@ -1036,6 +1198,7 @@ public sealed class TelnetClientTests
         int maximumNegotiationBytes = 16 * 1024,
         TimeSpan? write = null,
         int maximumWireBytes = 2 * 1024 * 1024,
+        int maximumOutputBytes = 2 * 1024 * 1024,
         TimeSpan? commandHardTimeout = null,
         int maximumPagingAdvances = 32)
     {
@@ -1050,7 +1213,7 @@ public sealed class TelnetClientTests
         };
         return new TelnetClient(
             new FixedTransportFactory(transport),
-            new TelnetClientOptions(timeouts, 2 * 1024 * 1024, 512, maximumNegotiationBytes, maximumWireBytes)
+            new TelnetClientOptions(timeouts, maximumOutputBytes, 512, maximumNegotiationBytes, maximumWireBytes)
             {
                 CommandHardTimeout = commandHardTimeout ?? ReadOnlyQueryPolicy.CommandHardTimeout,
                 MaximumPagingAdvances = maximumPagingAdvances,
@@ -1111,6 +1274,19 @@ public sealed class TelnetClientTests
     ];
 
     private static byte[] Bytes(string value) => Encoding.ASCII.GetBytes(value);
+
+    private static byte[] TelnetLine(string value) =>
+        Encoding.Latin1.GetBytes(value)
+            .SelectMany(static valueByte => valueByte == byte.MaxValue
+                ? new[] { byte.MaxValue, byte.MaxValue }
+                : [valueByte])
+            .Concat(new byte[] { (byte)'\r', (byte)'\n' })
+            .ToArray();
+
+    private static bool ContainsEscapedIac(byte[] value) =>
+        value.Zip(value.Skip(1), static (current, next) =>
+                current == byte.MaxValue && next == byte.MaxValue)
+            .Any(static pair => pair);
 
     private sealed class FixedTransportFactory(IByteTransport transport) : IByteTransportFactory
     {

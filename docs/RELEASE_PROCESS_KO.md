@@ -2,8 +2,8 @@
 
 ## 릴리스 계약
 
-- 현재 버전: `0.11.9-poc`
-- 태그: annotated tag `v0.11.9-poc`
+- 현재 버전: `0.11.10-poc`
+- 태그: annotated tag `v0.11.10-poc`
 - 대상: Windows x64, self-contained, single-file managed publish, untrimmed
 - GitHub Release 사용자 정의 Asset: Agent ZIP과 Viewer ZIP 정확히 두 개
 - 공개 패키지: PowerShell·CMD·개발 설정·DB·인증정보 제외
@@ -12,15 +12,15 @@
 공개 Asset:
 
 ```text
-SamsungSwitchWatch-Agent-0.11.9-poc-win-x64.zip
-SamsungSwitchWatch-Viewer-0.11.9-poc-win-x64.zip
+SamsungSwitchWatch-Agent-0.11.10-poc-win-x64.zip
+SamsungSwitchWatch-Viewer-0.11.10-poc-win-x64.zip
 ```
 
 내부 검증 파일:
 
 ```text
-SamsungSwitchWatch-Agent-0.11.9-poc-win-x64.zip
-SamsungSwitchWatch-Viewer-0.11.9-poc-win-x64.zip
+SamsungSwitchWatch-Agent-0.11.10-poc-win-x64.zip
+SamsungSwitchWatch-Viewer-0.11.10-poc-win-x64.zip
 BUILD-MANIFEST.json
 SBOM.spdx.json
 SBOM.cdx.json
@@ -119,6 +119,15 @@ dotnet test SamsungSwitchWatch.sln -c Release --no-build
   정리하며 정리 실패를 비식별 코드로 구분함
 - Viewer TCP 단계 실패는 방화벽·GPO·라우팅 확인을, TCP 성공 뒤 HTTPS 단계 실패는 Agent PC의
   로컬 TLS/readiness 확인을 안내함
+- Telnet 로그인·enable·명령 수집의 시간·바이트 예산, Latin-1과 IAC fixture가 회귀 검증됨
+- Agent 신원 파일과 Viewer 로컬 JSON 상한, 원자 교체 뒤 EDR 재확인 false-failure 방지가 검증됨
+- Viewer 이벤트 feed가 제한·병합되고 교체된 client의 늦은 결과가 현재 상태를 덮지 않음
+- 작은 작업 영역에서 스크롤과 창 경계 보정이 적용됨
+- Agent·Viewer manifest가 엄격한 bounded UTF-8, 읽기 중 변경, 선언 size/hash, Windows
+  대소문자 중복과 정확한 최상위 파일 집합을 검증함
+- Viewer Setup Move/Delete가 제한·취소 인식 재시도를 사용하고, 손상된 non-committed active를
+  격리한 뒤 검증된 backup을 복구·재검증함
+- Agent API v4, Viewer 저장 형식과 보안 계약이 변경되지 않음
 
 ## 사용자 매뉴얼 갱신
 
@@ -161,7 +170,7 @@ python .\tools\build-user-manual.py `
 python .\tools\render-user-manual-pdf.py `
   --input .\docs\SamsungSwitchWatch_User_Manual_KO.docx `
   --output .\docs\SamsungSwitchWatch_User_Manual_KO.pdf `
-  --render-dir .\tmp\manual-render-0.11.9
+  --render-dir .\tmp\manual-render-0.11.10
 ```
 
 DOCX는 저장소 편집 원본이고 공개 패키지에는 넣지 않습니다. PDF는 두 ZIP에 포함합니다.
@@ -170,13 +179,13 @@ QA 페이지 PNG는 시각 검사 후 임시 폴더에만 두며 커밋하지 �
 ## 로컬 패키지 생성
 
 ```powershell
-.\scripts\build-release.ps1 -Version 0.11.9-poc
+.\scripts\build-release.ps1 -Version 0.11.10-poc
 ```
 
 진단용 dirty 빌드는 게시하지 않습니다.
 
 ```powershell
-.\scripts\build-release.ps1 -Version 0.11.9-poc -AllowDirty
+.\scripts\build-release.ps1 -Version 0.11.10-poc -AllowDirty
 ```
 
 빌드 스크립트는 다음 순서로 실행됩니다.
@@ -207,7 +216,7 @@ vcruntime140_cor3.dll
 wpfgfx_cor3.dll
 INSTALL_KO.md
 SamsungSwitchWatch_User_Manual_KO.pdf
-RELEASE_NOTES_0.11.9_POC_KO.md
+RELEASE_NOTES_0.11.10_POC_KO.md
 BUILD-MANIFEST.json
 SBOM.spdx.json
 SBOM.cdx.json
@@ -234,7 +243,7 @@ vcruntime140_cor3.dll
 wpfgfx_cor3.dll
 INSTALL_KO.md
 SamsungSwitchWatch_User_Manual_KO.pdf
-RELEASE_NOTES_0.11.9_POC_KO.md
+RELEASE_NOTES_0.11.10_POC_KO.md
 BUILD-MANIFEST.json
 SBOM.spdx.json
 SBOM.cdx.json
@@ -253,7 +262,7 @@ Viewer Setup은 UAC 없이 `%LOCALAPPDATA%\Programs\SamsungSwitchWatch\Viewer`�
 $commit = (git rev-parse HEAD).Trim()
 .\scripts\test-package-contract.ps1 `
   -ReleaseDirectory .\artifacts\release `
-  -Version 0.11.9-poc `
+  -Version 0.11.10-poc `
   -ExpectedSourceCommit $commit
 .\scripts\test-release-workflow-contract.ps1
 ```
@@ -263,7 +272,7 @@ $commit = (git rev-parse HEAD).Trim()
 ```powershell
 .\scripts\test-release-executable-smoke.ps1 `
   -ReleaseDirectory .\artifacts\release `
-  -Version 0.11.9-poc
+  -Version 0.11.10-poc
 ```
 
 검사는 다음 조건을 fail-closed로 확인합니다.
@@ -286,8 +295,8 @@ $commit = (git rev-parse HEAD).Trim()
 ## 태그와 게시
 
 ```powershell
-git tag -a v0.11.9-poc -m "Samsung Switch Watch v0.11.9-poc"
-git push origin v0.11.9-poc
+git tag -a v0.11.10-poc -m "Samsung Switch Watch v0.11.10-poc"
+git push origin v0.11.10-poc
 ```
 
 Release workflow는 태그가 `origin/main`에 포함되고 annotated tag의 객체와 peeled commit이
@@ -303,10 +312,10 @@ Release workflow는 태그가 `origin/main`에 포함되고 annotated tag의 객
 ## 게시 후 확인
 
 ```powershell
-$tag = 'v0.11.9-poc'
+$tag = 'v0.11.10-poc'
 $expected = @(
-  'SamsungSwitchWatch-Agent-0.11.9-poc-win-x64.zip',
-  'SamsungSwitchWatch-Viewer-0.11.9-poc-win-x64.zip'
+  'SamsungSwitchWatch-Agent-0.11.10-poc-win-x64.zip',
+  'SamsungSwitchWatch-Viewer-0.11.10-poc-win-x64.zip'
 ) | Sort-Object
 $release = gh release view $tag --json isDraft,isPrerelease,assets,url | ConvertFrom-Json
 $actual = @($release.assets | ForEach-Object { $_.name } | Sort-Object)

@@ -89,6 +89,8 @@ public static class EphemeralAgentIdentityFactory
 
 public static class AgentIdentityStore
 {
+    internal const int MaximumMetadataBytes = 16 * 1024;
+    internal const int MaximumProtectedCertificateBytes = 1024 * 1024;
     internal const string MetadataFileName = "agent-identity.json";
     internal const string CertificateFileName = "https-certificate.pfx.dpapi";
     internal const string MetadataPendingFileName = "agent-identity.json.pending";
@@ -240,8 +242,10 @@ public static class AgentIdentityStore
                 throw new InvalidDataException("Agent identity files are incomplete.");
             }
 
-            var metadata = JsonSerializer.Deserialize<IdentityMetadata>(
-                File.ReadAllBytes(metadataPath));
+            var metadataBytes = ReadAllBytesBounded(
+                metadataPath,
+                MaximumMetadataBytes);
+            var metadata = JsonSerializer.Deserialize<IdentityMetadata>(metadataBytes);
             if (metadata is null ||
                 !Guid.TryParseExact(metadata.InstanceId, "N", out _) ||
                 !string.Equals(metadata.CertificateFile, CertificateFileName, StringComparison.Ordinal))
@@ -249,7 +253,9 @@ public static class AgentIdentityStore
                 throw new InvalidDataException("Agent identity metadata is invalid.");
             }
 
-            var protectedBytes = File.ReadAllBytes(certificatePath);
+            var protectedBytes = ReadAllBytesBounded(
+                certificatePath,
+                MaximumProtectedCertificateBytes);
             byte[]? exported = null;
             try
             {
@@ -295,6 +301,52 @@ public static class AgentIdentityStore
             throw new AgentConfigurationException(
                 AgentErrorCodes.TlsIdentityInvalid,
                 "Agent HTTPS identity could not be loaded.");
+        }
+    }
+
+    private static byte[] ReadAllBytesBounded(string path, int maximumBytes)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumBytes);
+
+        using var stream = new FileStream(
+            path,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.Read,
+            bufferSize: 64 * 1024,
+            FileOptions.SequentialScan);
+        if (stream.Length > maximumBytes)
+        {
+            throw new InvalidDataException("Agent identity file exceeds the allowed size.");
+        }
+
+        // Read at most max + 1 so a pre-existing writer that grows the file
+        // after the length check cannot force an unbounded startup allocation.
+        var buffer = GC.AllocateUninitializedArray<byte>(maximumBytes + 1);
+        try
+        {
+            var totalRead = 0;
+            while (totalRead < buffer.Length)
+            {
+                var read = stream.Read(buffer, totalRead, buffer.Length - totalRead);
+                if (read == 0)
+                {
+                    break;
+                }
+
+                totalRead += read;
+            }
+
+            if (totalRead > maximumBytes || stream.ReadByte() != -1)
+            {
+                throw new InvalidDataException("Agent identity file exceeds the allowed size.");
+            }
+
+            return buffer.AsSpan(0, totalRead).ToArray();
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(buffer);
         }
     }
 

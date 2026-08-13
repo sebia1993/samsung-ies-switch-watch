@@ -14,13 +14,26 @@ public sealed class PhysicalSetupFileSystem : ISetupFileSystem
     private const int ErrorFileExists = 80;
     private const int ErrorAlreadyExists = 183;
     private static readonly UTF8Encoding Utf8WithoutBom = new(false);
+    private static readonly UTF8Encoding StrictUtf8WithoutBom = new(false, true);
 
     public bool FileExists(string path) => File.Exists(path);
 
     public bool DirectoryExists(string path) => Directory.Exists(path);
 
+    public IReadOnlyList<string> EnumerateTopLevelFiles(string path) =>
+        Directory.GetFiles(Path.GetFullPath(path), "*", SearchOption.TopDirectoryOnly);
+
+    public IReadOnlyList<string> EnumerateTopLevelDirectories(string path) =>
+        Directory.GetDirectories(Path.GetFullPath(path), "*", SearchOption.TopDirectoryOnly);
+
+    public long GetFileLength(string path) =>
+        new FileInfo(Path.GetFullPath(path)).Length;
+
     public string ReadAllText(string path) =>
         File.ReadAllText(Path.GetFullPath(path), Encoding.UTF8);
+
+    public string ReadAllTextBounded(string path, int maximumBytes) =>
+        ReadUtf8TextBounded(path, maximumBytes, StrictUtf8WithoutBom);
 
     public void WriteAllTextAtomic(string path, string contents)
     {
@@ -70,14 +83,7 @@ public sealed class PhysicalSetupFileSystem : ISetupFileSystem
                 File.Move(temporaryPath, fullPath);
             }
 
-            using var committedStream = new FileStream(
-                fullPath,
-                FileMode.Open,
-                FileAccess.ReadWrite,
-                FileShare.Read,
-                bufferSize: 1,
-                FileOptions.WriteThrough);
-            committedStream.Flush(flushToDisk: true);
+            FlushCommittedFileBestEffort(fullPath, FlushCommittedFile);
         }
         finally
         {
@@ -106,6 +112,91 @@ public sealed class PhysicalSetupFileSystem : ISetupFileSystem
             FileAccess.Read,
             FileShare.Read);
         return Convert.ToHexString(SHA256.HashData(stream)).ToLowerInvariant();
+    }
+
+    internal static void FlushCommittedFileBestEffort(
+        string path,
+        Action<string> flush)
+    {
+        ArgumentNullException.ThrowIfNull(flush);
+        try
+        {
+            flush(path);
+        }
+        catch (Exception exception) when (
+            IsIgnorablePostCommitFlushFailure(path, exception))
+        {
+            // File.Replace/File.Move already committed the new journal. A
+            // scanner can temporarily block only the durability re-open; do
+            // not report a false write failure after the visible state changed.
+        }
+    }
+
+    private static bool IsIgnorablePostCommitFlushFailure(
+        string path,
+        Exception exception) =>
+        exception is not FileNotFoundException
+        && exception is not DirectoryNotFoundException
+        && exception is IOException or UnauthorizedAccessException or SecurityException
+        && File.Exists(path);
+
+    private static void FlushCommittedFile(string path)
+    {
+        using var committedStream = new FileStream(
+            path,
+            FileMode.Open,
+            FileAccess.ReadWrite,
+            FileShare.Read,
+            bufferSize: 1,
+            FileOptions.WriteThrough);
+        committedStream.Flush(flushToDisk: true);
+    }
+
+    internal static string ReadUtf8TextBounded(
+        string path,
+        int maximumBytes,
+        Encoding encoding)
+    {
+        ArgumentNullException.ThrowIfNull(encoding);
+        if (maximumBytes <= 0 || maximumBytes == int.MaxValue)
+        {
+            throw new ArgumentOutOfRangeException(nameof(maximumBytes));
+        }
+
+        var buffer = GC.AllocateUninitializedArray<byte>(maximumBytes + 1);
+        var totalRead = 0;
+        using (var stream = new FileStream(
+                   Path.GetFullPath(path),
+                   FileMode.Open,
+                   FileAccess.Read,
+                   FileShare.Read,
+                   bufferSize: 64 * 1024,
+                   FileOptions.SequentialScan))
+        {
+            while (totalRead < buffer.Length)
+            {
+                var read = stream.Read(buffer, totalRead, buffer.Length - totalRead);
+                if (read == 0)
+                {
+                    break;
+                }
+
+                totalRead += read;
+            }
+        }
+
+        if (totalRead > maximumBytes)
+        {
+            throw new IOException("The text file exceeds the allowed size.");
+        }
+
+        var offset = totalRead >= 3
+                     && buffer[0] == 0xef
+                     && buffer[1] == 0xbb
+                     && buffer[2] == 0xbf
+            ? 3
+            : 0;
+        return encoding.GetString(buffer, offset, totalRead - offset);
     }
 
     public void CreateDirectory(string path) =>
