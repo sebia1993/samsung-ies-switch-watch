@@ -1,0 +1,58 @@
+name: Portfolio contract migration
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  migrate-contract:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout portfolio branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: agent/portfolio-polish
+          fetch-depth: 0
+
+      - name: Migrate release contract from AGENTS to DEVELOPMENT
+        shell: pwsh
+        run: |
+          $path = '.\scripts\test-release-workflow-contract.ps1'
+          $text = [IO.File]::ReadAllText($path)
+          $replacements = @(
+            @('$agentsPath = Join-Path $repoRoot ''AGENTS.md''', '$developmentPath = Join-Path $repoRoot ''DEVELOPMENT.md'''),
+            @('    $agentsPath,', '    $developmentPath,'),
+            @('$agents = Get-Content -LiteralPath $agentsPath -Raw -Encoding UTF8', '$development = Get-Content -LiteralPath $developmentPath -Raw -Encoding UTF8'),
+            @('Assert-OnlyActiveVersion $agents $workflowVersion ''Repository instructions''', 'Assert-OnlyActiveVersion $development $workflowVersion ''Development guide'''),
+            @('Assert-Pattern $agents ([regex]::Escape(".\scripts\build-release.ps1 -Version $workflowVersion")) `', 'Assert-Pattern $development ([regex]::Escape(".\scripts\build-release.ps1 -Version $workflowVersion")) `')
+          )
+          foreach ($replacement in $replacements) {
+            if (-not $text.Contains($replacement[0])) {
+              throw "Expected contract text not found: $($replacement[0])"
+            }
+            $text = $text.Replace($replacement[0], $replacement[1])
+          }
+          if ($text.Contains('AGENTS.md') -or $text.Contains('$agentsPath') -or $text.Contains('$agents ')) {
+            throw 'Legacy AGENTS contract reference remains.'
+          }
+          [IO.File]::WriteAllText($path, $text, [Text.UTF8Encoding]::new($false))
+
+      - name: Commit migrated contract
+        shell: pwsh
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- scripts/test-release-workflow-contract.ps1
+          if (git diff --cached --quiet) {
+            Write-Host 'Contract is already migrated.'
+            exit 0
+          }
+          git commit -m "test: migrate release contract to DEVELOPMENT.md"
+          if ($LASTEXITCODE -ne 0) { throw 'git commit failed' }
+          git push origin HEAD:agent/portfolio-polish
+          if ($LASTEXITCODE -ne 0) { throw 'git push failed' }
