@@ -56,5 +56,7 @@ jobs:
             Write-Host 'Documentation screenshots are unchanged.'
             exit 0
           }
-          git commit -m "docs: 실제 Samsung Switch Watch 화면 추가"
+          git commit -m "docs: add verified Samsung Switch Watch screens"
+          if ($LASTEXITCODE -ne 0) { throw 'git commit failed' }
           git push origin HEAD:agent/portfolio-polish
+          if ($LASTEXITCODE -ne 0) { throw 'git push failed' }
