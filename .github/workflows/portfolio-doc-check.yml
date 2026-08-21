@@ -5,21 +5,23 @@ on:
     branches: [main]
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: portfolio-doc-check-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  render-wpf-screens:
+  render-and-commit:
+    if: github.actor != 'github-actions[bot]'
     runs-on: windows-latest
     timeout-minutes: 20
     steps:
-      - name: Checkout
+      - name: Checkout portfolio branch
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          persist-credentials: false
+          ref: agent/portfolio-polish
+          fetch-depth: 0
 
       - name: Install exact .NET SDK
         uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
@@ -30,28 +32,29 @@ jobs:
         shell: powershell
         run: dotnet restore .\tools\SamsungSwitchWatch.ManualCapture\SamsungSwitchWatch.ManualCapture.csproj --locked-mode
 
-      - name: Render actual WPF screens with demo data
+      - name: Render verified WPF documentation screens
         shell: powershell
         run: |
           dotnet run --project .\tools\SamsungSwitchWatch.ManualCapture\SamsungSwitchWatch.ManualCapture.csproj -c Release --no-restore -- .\artifacts\portfolio-screens
           if (-not (Test-Path .\artifacts\portfolio-screens\01-dashboard.png)) { throw 'dashboard screenshot missing' }
           if (-not (Test-Path .\artifacts\portfolio-screens\04-command-output.png)) { throw 'command output screenshot missing' }
-          $dashboard = Get-Item .\artifacts\portfolio-screens\01-dashboard.png
-          $command = Get-Item .\artifacts\portfolio-screens\04-command-output.png
+          New-Item -ItemType Directory -Force -Path .\docs\images | Out-Null
+          Copy-Item .\artifacts\portfolio-screens\01-dashboard.png .\docs\images\dashboard.png -Force
+          Copy-Item .\artifacts\portfolio-screens\04-command-output.png .\docs\images\command-output.png -Force
+          $dashboard = Get-Item .\docs\images\dashboard.png
+          $command = Get-Item .\docs\images\command-output.png
           if ($dashboard.Length -lt 10000) { throw 'dashboard screenshot is unexpectedly small' }
           if ($command.Length -lt 10000) { throw 'command screenshot is unexpectedly small' }
 
-      - name: Stage selected documentation screens
+      - name: Commit verified screens
         shell: powershell
         run: |
-          New-Item -ItemType Directory -Force -Path .\artifacts\portfolio-selected | Out-Null
-          Copy-Item .\artifacts\portfolio-screens\01-dashboard.png .\artifacts\portfolio-selected\dashboard.png
-          Copy-Item .\artifacts\portfolio-screens\04-command-output.png .\artifacts\portfolio-selected\command-output.png
-
-      - name: Upload documentation screens
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: samsung-switch-watch-doc-screens-${{ github.run_id }}
-          path: artifacts/portfolio-selected
-          if-no-files-found: error
-          retention-days: 14
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- docs/images/dashboard.png docs/images/command-output.png
+          if (git diff --cached --quiet) {
+            Write-Host 'Documentation screenshots are unchanged.'
+            exit 0
+          }
+          git commit -m "docs: 실제 Samsung Switch Watch 화면 추가"
+          git push origin HEAD:agent/portfolio-polish
