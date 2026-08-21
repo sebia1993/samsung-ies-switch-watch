@@ -9,7 +9,7 @@ $executableSmokePath =
     Join-Path $repoRoot 'scripts\test-release-executable-smoke.ps1'
 $releaseProcessPath = Join-Path $repoRoot 'docs\RELEASE_PROCESS_KO.md'
 $windowsCiPath = Join-Path $repoRoot '.github\workflows\windows-ci.yml'
-$agentsPath = Join-Path $repoRoot 'AGENTS.md'
+$developmentPath = Join-Path $repoRoot 'DEVELOPMENT.md'
 $readmePath = Join-Path $repoRoot 'README.md'
 $installPath = Join-Path $repoRoot 'docs\INSTALL_KO.md'
 $manualBuilderPath = Join-Path $repoRoot 'tools\build-user-manual.py'
@@ -21,7 +21,7 @@ foreach ($path in @(
     $executableSmokePath,
     $releaseProcessPath,
     $windowsCiPath,
-    $agentsPath,
+    $developmentPath,
     $readmePath,
     $installPath,
     $manualBuilderPath,
@@ -36,7 +36,7 @@ $packageContract = Get-Content -LiteralPath $packageContractPath -Raw -Encoding 
 $executableSmoke = Get-Content -LiteralPath $executableSmokePath -Raw -Encoding UTF8
 $releaseProcess = Get-Content -LiteralPath $releaseProcessPath -Raw -Encoding UTF8
 $windowsCi = Get-Content -LiteralPath $windowsCiPath -Raw -Encoding UTF8
-$agents = Get-Content -LiteralPath $agentsPath -Raw -Encoding UTF8
+$development = Get-Content -LiteralPath $developmentPath -Raw -Encoding UTF8
 $readme = Get-Content -LiteralPath $readmePath -Raw -Encoding UTF8
 $install = Get-Content -LiteralPath $installPath -Raw -Encoding UTF8
 $manualBuilder = Get-Content -LiteralPath $manualBuilderPath -Raw -Encoding UTF8
@@ -491,7 +491,7 @@ $escapedNotesName = [regex]::Escape(
 Assert-OnlyActiveVersion $workflow $workflowVersion 'Release workflow'
 Assert-OnlyActiveVersion $windowsCi $workflowVersion 'Windows CI workflow'
 Assert-OnlyActiveVersion $buildScript $workflowVersion 'Release build script'
-Assert-OnlyActiveVersion $agents $workflowVersion 'Repository instructions'
+Assert-OnlyActiveVersion $development $workflowVersion 'Development guide'
 Assert-OnlyActiveVersion $install $workflowVersion 'Installation guide' @(
     '0.11.3-poc',
     '0.11.4-poc',
@@ -514,7 +514,7 @@ Assert-PatternCount $windowsCi ([regex]::Escape("samsung-switch-watch-$workflowV
     'Windows CI upload and download artifact names must use the active version.'
 Assert-Pattern $windowsCi "\\scripts\\test-package-contract\.ps1.+-Version\s+$escapedVersion" `
     'Windows CI package verification version must match the release workflow version.'
-Assert-Pattern $agents ([regex]::Escape(".\scripts\build-release.ps1 -Version $workflowVersion")) `
+Assert-Pattern $development ([regex]::Escape(".\scripts\build-release.ps1 -Version $workflowVersion")) `
     'Repository instructions must use the active release build version.'
 Assert-PatternCount $readme ("\x60v$escapedVersion\x60") 1 `
     'README must contain exactly one current-version summary token.'
