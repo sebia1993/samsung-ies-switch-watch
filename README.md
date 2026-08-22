@@ -1,326 +1,297 @@
-# Samsung Switch Watch
+# Samsung Switch Watch — Samsung iES 원격 점검·변경 감시
 
-원격 PC의 숨겨진 Windows 서비스가 삼성 iES 스위치에 Telnet으로 접속하고, 운영자 PC의
-Viewer가 장비 등록·조회 명령·결과 확인·주기 감시를 담당하는 Windows 전용 POC입니다.
+[![Windows CI](https://github.com/sebia1993/samsung_switch_check/actions/workflows/windows-ci.yml/badge.svg?branch=main)](https://github.com/sebia1993/samsung_switch_check/actions/workflows/windows-ci.yml)
 
-현재 버전은 `v0.11.11-poc`입니다. IES4224GP, IES4028XP, IES4226XP의 실제 펌웨어별
-명령과 출력은 사내 현장 검증 전까지 확정된 것으로 간주하지 않습니다.
+**Samsung iES 스위치를 운영자 PC에서 안전하게 조회하고, 반복 점검과 상태 변화를 기록하기 위한 Windows 기반 읽기 전용 네트워크 운영 도구입니다.**
 
-## 한눈에 보는 구조
+Viewer가 장비·자격 증명·감시 기준을 소유하고, 별도 Windows Service Agent가 HTTPS 요청을 받아 스위치와 짧은 Telnet 세션을 생성합니다. Agent는 장비 정보와 명령 결과를 보관하지 않으며, 수동 명령은 한 줄의 `show` 명령만 허용합니다.
 
-```text
-Viewer PC                                  Agent PC                          Switch
-SamsungSwitchWatch.Viewer.exe              SamsungSwitchWatchAgent 서비스
-장비 IP·ID·PW·enable PW 입력 ─ HTTPS/18443 → 창 없는 실행 중계 ─ Telnet/23 → show 명령
-결과·변경점·감시 이력 표시                 장비 정보와 결과를 저장하지 않음
+현재 공개 버전은 **`v0.11.11-poc`**입니다. 자동 테스트와 Windows 패키지 검증은 수행하지만, Samsung iES 모델별 실제 펌웨어 동작은 현장 검증 결과와 분리해 기록합니다.
+
+> 문서·테스트·화면 예시는 문서용 IP와 합성 데이터만 사용합니다. 실제 운영망 주소, 계정, MAC, 장비 출력은 공개 저장소에 포함하지 않습니다.
+
+## 한눈에 보기
+
+| 항목 | 내용 |
+|---|---|
+| 목적 | Samsung iES 스위치 원격 조회·주기 점검·변화 감시 |
+| 운영 구조 | Viewer → HTTPS Agent → Telnet Switch |
+| Agent | 창 없는 Windows Service, stateless 실행 중계 |
+| Viewer | 장비 목록, DPAPI 자격 증명, 감시 기준·이력 소유 |
+| 스위치 연결 | Telnet TCP/23 |
+| Viewer→Agent | HTTPS TCP/18443 |
+| 수동 명령 | 한 줄 `show` 명령만 허용 |
+| 감시 요청 | 검증된 조회 명령 최대 8개 |
+| 모델 식별 | 로그인 후 `show version`, 정확히 한 모델만 식별 |
+| 지원 대상으로 등록된 모델 | IES4224GP, IES4028XP, IES4226XP |
+| 재시도 | 연결 단절 시 미완료 명령만 최대 1회 재연결 |
+| 자격 증명 | Viewer의 Windows DPAPI CurrentUser 보호 |
+| 원문 출력 | 수동 결과는 Viewer 메모리에서만 사용, 저장·내보내기 금지 |
+| 배포 | Agent/Viewer 각각 Windows x64 self-contained ZIP |
+| 현재 단계 | POC — Windows 자동검증 완료, 모델별 현장 검증은 별도 |
+
+## 해결하려 한 운영 문제
+
+스위치 여러 대를 반복 점검할 때 운영자는 장비별로 접속해 동일한 `show` 명령을 실행하고, 이전 결과와 현재 결과를 비교해야 합니다. 특히 Telnet 기반 장비가 남아 있는 환경에서는 운영 PC마다 접속 경로와 자격 증명을 직접 다루게 되는 것도 부담입니다.
+
+이 프로젝트는 다음 문제를 분리해서 다룹니다.
+
+- 장비마다 반복 로그인하고 동일한 조회 명령을 수동 실행하는 작업
+- 여러 장비의 상태를 일정 주기로 확인하고 변화를 놓치지 않는 문제
+- 운영자 PC가 스위치 Telnet 세션을 직접 대량으로 관리하는 구조
+- 장비 모델을 사용자가 잘못 선택해 잘못된 명령 세트를 적용하는 위험
+- 네트워크 단절을 무조건 재시도해 같은 작업을 중복 실행하는 위험
+- 자격 증명·장비 원문·운영 이력이 Agent에 남는 문제
+- 설치/업데이트 실패가 정상 동작 중인 Agent까지 손상시키는 위험
+
+핵심 방향은 **“Viewer가 운영 상태를 소유하고, Agent는 제한된 조회 실행만 중계한다”**입니다.
+
+## 아키텍처
+
+```mermaid
+flowchart LR
+    O["운영자"] --> V["Viewer\nWPF / Windows"]
+    V -->|"HTTPS 18443"| A["Agent\nWindows Service"]
+    A -->|"Telnet 23"| S["Samsung iES Switch"]
+
+    V --> D["장비 목록 / DPAPI 자격 증명"]
+    V --> H["Baseline / 감시 이력 / Event"]
+
+    A -. "장비·자격 증명·결과 비저장" .-> X["Stateless"]
 ```
 
-- Agent는 최초 한 번만 관리자 권한으로 설치하고 이후 창이나 트레이 아이콘 없이 서비스로
-  실행합니다.
-- Viewer는 ZIP의 `SamsungSwitchWatch.Viewer.Setup.exe`로 현재 Windows 사용자에게 설치합니다.
-  UAC와 관리자 권한은 필요하지 않으며 Windows 로그인 자동 시작은 등록하지 않습니다.
-- Viewer가 장비·자격 증명·감시 일정과 이력을 소유합니다. 자격 증명은 현재 Windows
-  사용자 DPAPI로 보호합니다.
-- Viewer가 종료되면 주기 감시도 중단됩니다. Agent는 독립적으로 장비를 조회하지 않습니다.
-- 수동 입력은 줄바꿈이나 구분자가 없는 한 줄 `show` 명령만 허용합니다. 설정 변경 명령은
-  Viewer와 Agent 양쪽에서 차단합니다.
-- 수동 명령과 원문 출력은 Viewer 메모리에서만 사용하고 저장하거나 내보내지 않습니다.
+### 역할 분리
+
+**Viewer**
+
+- Agent 주소와 장비 목록 관리
+- Windows DPAPI로 장비 자격 증명 보호
+- 로그인 확인과 장비 모델 표시
+- 수동 조회 결과 표시
+- 주기 감시, baseline, gap, event 이력 관리
+- 경고·상태 변화의 현재성 판단
+
+**Agent**
+
+- Windows Service로만 실행
+- Viewer의 제한된 HTTPS 요청 처리
+- 요청마다 새 Telnet 세션 생성 후 종료
+- 로그인 / enable / 명령 수집을 서로 다른 제한 시간·바이트 예산으로 처리
+- 장비 인벤토리·자격 증명·명령 결과·감시 이력 비저장
+
+**Switch**
+
+- 등록된 사설 IPv4 대상만 허용
+- TCP/23 Telnet
+- 조회 전용 `show` 명령만 수행
+
+상세 구성요소와 데이터 경계는 [ARCHITECTURE.md](docs/ARCHITECTURE.md)를 참고하십시오.
+
+## 핵심 설계 판단
+
+| 운영 문제 | 설계 판단 |
+|---|---|
+| 운영 PC마다 Telnet 접속을 직접 관리 | Agent Service가 Telnet 실행을 중계하고 Viewer는 HTTPS만 사용 |
+| Agent 장애 시 운영 데이터 유실 우려 | 장비 목록·자격 증명·감시 이력은 Viewer만 소유 |
+| 장비 모델 오선택 | 로그인 후 `show version`으로 모델을 자동 식별하고 정확히 1개일 때만 수용 |
+| 임의 명령 실행 위험 | 수동 입력은 줄바꿈·구분자가 없는 한 줄 `show` 명령으로 제한 |
+| 장비가 명령 중 연결 종료 | 인증을 반복하지 않고 미완료 명령만 최대 1회 재연결 |
+| 무한 Telnet 대기 | 로그인·enable·명령 수집 각각 시간/바이트 상한 적용 |
+| 명령 원문에 운영정보 포함 | 수동 명령과 raw output은 Viewer 메모리에서만 사용하고 저장·export 금지 |
+| 자격 증명 평문 저장 | Windows DPAPI CurrentUser 사용 |
+| 이전 연결 결과가 현재 상태를 덮음 | Viewer client generation을 구분하고 stale 결과를 거부 |
+| 이벤트 폭주로 UI 지연 | 제한된 queue에서 동일 변경을 coalesce |
+| 설치 실패가 기존 Agent를 손상 | staging/backup/journal 기반 transactional update와 rollback |
+| 설치는 성공했지만 연결 준비가 불완전 | 설치 성공과 readiness 경고를 분리하고 정상 설치를 불필요하게 rollback하지 않음 |
+
+자세한 운영 판정과 실패 처리 기준은 [OPERATING_LOGIC.md](docs/OPERATING_LOGIC.md)에 정리했습니다.
+
+## 읽기 전용 안전 경계
+
+이 프로젝트에서 가장 중요한 계약은 **장비 설정을 변경하지 않는 것**입니다.
+
+수동 입력은 다음 조건을 모두 만족해야 합니다.
+
+```text
+한 줄
+show 로 시작
+명령 구분자 없음
+설정 모드 명령 없음
+```
+
+모델 식별도 인증 후 읽기 전용 명령 하나만 실행합니다.
+
+```text
+show version
+```
+
+Agent는 한 요청에서 검증된 조회 명령을 최대 8개까지만 처리합니다. 인증 실패, enable 실패, 명령 timeout은 자동 반복하지 않습니다. 장비가 명령 처리 중 연결을 종료한 경우에만 새 세션을 한 번 만들고 **아직 완료되지 않은 명령만** 실행합니다.
+
+### 보안 경계에서 과장하지 않는 부분
+
+- Agent→Switch 구간은 **Telnet이므로 암호화되지 않습니다.** 신뢰된 사설 관리망에서만 사용해야 합니다.
+- Viewer→Agent는 HTTPS로 암호화하지만, 현재 Agent 인증서를 Viewer가 신뢰 핀으로 검증하는 구조는 아닙니다.
+- Agent API에는 별도 애플리케이션 인증 계층이 없습니다.
+- 따라서 Agent를 사용자 VLAN, 공용 Wi-Fi 또는 인터넷에 노출하는 용도로 설계하지 않았습니다.
+
+공개 저장소의 민감정보 처리 기준은 [SECURITY.md](.github/SECURITY.md)를 참고하십시오.
+
+## 모델 식별 흐름
+
+```text
+Viewer에서 로그인 확인
+        ↓
+Agent가 Telnet 연결
+        ↓
+인증 / 선택적 enable
+        ↓
+show version
+        ↓
+등록된 모델 token 비교
+        ↓
+정확히 1개 → canonical model 반환
+0개 → MODEL_NOT_DETECTED
+2개 이상 → MODEL_AMBIGUOUS
+```
+
+모델 판별에 사용한 원문은 Viewer 응답·설정·로그에 저장하지 않습니다.
+
+## 실행 화면
+
+아래 화면은 저장소의 `SamsungSwitchWatch.ManualCapture` 도구가 **실제 WPF Viewer를 문서용 IP와 합성 장비 상태로 렌더링한 결과**입니다.
+
+### 운영 대시보드
+
+![Samsung Switch Watch 운영 대시보드](docs/images/dashboard.png)
+
+### 조회 결과
+
+![Samsung Switch Watch 조회 결과](docs/images/command-output.png)
+
+## 운영 흐름
+
+```text
+Agent 1회 설치
+   ↓
+Viewer 설치
+   ↓
+Agent 연결 확인
+   ↓
+장비 등록
+   ↓
+show version 기반 모델 식별
+   ↓
+수동 show 조회 또는 주기 감시
+   ↓
+현재 상태 / baseline / event 확인
+```
+
+### Agent 설치
+
+Release의 Agent ZIP을 압축 해제한 뒤 `SamsungSwitchWatch.Agent.Setup.exe`를 실행합니다. Agent는 관리자 권한이 필요한 Windows Service 설치 단계만 Setup을 통해 수행합니다.
+
+Agent Service는 정상 설치 이후 창이나 트레이 아이콘 없이 실행됩니다.
+
+### Viewer 설치
+
+Viewer ZIP의 `SamsungSwitchWatch.Viewer.Setup.exe`를 사용합니다. Viewer는 현재 Windows 사용자 영역에 설치되며 장비 목록과 감시 데이터도 Viewer 측에 유지됩니다.
 
 ## 배포 파일
 
-공식 GitHub Release Assets에서 다음 두 ZIP만 받습니다.
+현재 공식 Release는 두 사용자용 ZIP을 제공합니다.
 
-- `SamsungSwitchWatch-Agent-0.11.11-poc-win-x64.zip`
-- `SamsungSwitchWatch-Viewer-0.11.11-poc-win-x64.zip`
+```text
+SamsungSwitchWatch-Agent-0.11.11-poc-win-x64.zip
+SamsungSwitchWatch-Viewer-0.11.11-poc-win-x64.zip
+```
 
-두 패키지는 Windows x64용 self-contained 빌드이므로 Python이나 .NET을 별도로 설치하지
-않습니다. API v4가 호환되면 버전 차이는 경고 후 연결되지만, 운영에는 같은 Release 조합을
-권장합니다.
+두 패키지는 Windows x64 self-contained 빌드입니다. 대상 PC에 별도 .NET Runtime을 설치하지 않아도 됩니다.
 
-### 1. Agent PC
+Release에는 사용자용 Agent/Viewer 패키지만 게시하고, 내부 CI 후보 artifact와 검증 증거는 GitHub Actions에서 분리해 관리합니다.
 
-1. Agent ZIP을 로컬 임시 폴더에 완전히 압축 해제합니다.
-2. `SamsungSwitchWatch.Agent.Setup.exe`를 실행하고 UAC를 한 번 승인합니다.
-3. 별도 IP나 CIDR을 입력하지 않고 `설치/업데이트`를 실행합니다. Setup이 필요한 사전 검사를
-   수행한 뒤 Agent 서비스와 제품 전용 방화벽 규칙을 자동으로 구성합니다.
-4. 완료 또는 연결 확인 경고를 확인합니다. 경고가 있어도 서비스 설치는 유지되므로 Viewer에서
-   먼저 연결을 시험합니다.
+## 검증 체계
 
-Setup이 이전 설치·업데이트의 미완료 작업 기록을 발견하면 해당 기록을 읽기 전용으로
-검사하고 `설치/업데이트`를 비활성화합니다. 복구 가능 상태일 때만 `이전 상태 복구`를
-누르십시오. Setup은 검증된 staging·backup·failed·journal 경로만 제한적으로 다시 정리하고
-각 대상이 실제로 사라졌는지 확인합니다. 새로 검사한 작업 기록에서도 미완료 상태가 없어야만
-복구 성공과 설치 버튼 활성화를 표시합니다. 설치가 자동으로 이어지지는 않으므로 운영자가
-상태를 확인한 뒤 별도로 설치 또는 업데이트해야 합니다. 작업 기록이 손상됐거나 안전한
-복구를 증명할 수 없으면 복구와 설치를 모두 중단하고 Windows 관리자에게 확인합니다.
+`Windows CI`는 단순 컴파일보다 넓은 범위를 검증합니다.
 
-설치와 복구가 모두 실패하면 최초 설치·업데이트 원인과 복구 단계별 원인을 나누어 표시합니다.
-이때만 보이는 `진단정보 복사`는 민감정보를 제외한 진단 요약을 클립보드에 복사합니다.
-정리 실패 화면의 상단 상태는 `SETUP_ROLLBACK_FAILED`이고, 세부 행은 실제 경로 대신
-staging·backup·failed·journal 중 어느 안전 단계에서 실패했는지
-`ROLLBACK_STAGING_CLEANUP_FAILED`, `ROLLBACK_BACKUP_CLEANUP_FAILED`,
-`ROLLBACK_FAILED_DIRECTORY_CLEANUP_FAILED`, `ROLLBACK_JOURNAL_CLEANUP_FAILED`로 구분합니다.
-`.__staging_*`, `.__backup_*`, `.__failed_*` 폴더나 작업 기록을 수동으로 삭제·이동·이름
-변경하지 마십시오.
+```text
+dotnet restore --locked-mode
+        ↓
+dotnet build
+        ↓
+dotnet test
+        ↓
+PowerShell 배포 helper 검증
+        ↓
+unsigned POC Agent/Viewer package 생성
+        ↓
+artifact 다운로드
+        ↓
+manifest / SHA-256 / package contract 재검증
+        ↓
+추출된 release executable smoke
+```
 
-`0.11.4-poc`는 Agent 설치 성공과 원격 연결 준비 확인을 분리합니다. 실행 파일·서비스 구성 같은
-설치 변경이 실패하면 기존 트랜잭션 복구를 수행하지만, 서비스가 설치된 뒤 로컬 HTTPS/API,
-버전 또는 방화벽 준비 상태를 확인하지 못한 경우에는 정상 설치를 되돌리지 않습니다. 대신
-`AGENT_LOCAL_CONNECTION_UNCONFIRMED` 또는 방화벽 경고와 다음 확인 절차를 표시하며 Agent
-서비스는 유지합니다. 이 변경으로 로컬 HTTPS 진단 실패가 반복 설치와 복구 실패로 확대되는
-문제를 막습니다.
+테스트에서는 실제 사내 장비 대신 synthetic Telnet server와 비식별 fixture를 사용합니다.
 
-`0.11.5-poc`는 이전 상태 복구 중 서비스 설명, 자동 복구 정책 또는 DACL 같은 선택적
-메타데이터를 복원하지 못한 경우 이를 경고로 분리합니다. 서비스 실행 파일 경로, 시작 유형,
-계정, 표시 이름, 서비스 SID와 이전 실행 상태 같은 핵심 구성을 복원하지 못하면 기존처럼
-복구를 실패 처리하고 작업 기록과 이전 파일을 보존합니다. 핵심 상태 확인은 선택적
-메타데이터 조회와 분리했으며, Windows 서비스 삭제 대기 상태는 최대 20초 동안 제한적으로
-기다린 뒤 안전하게 다음 복구 단계를 판단합니다.
+검증 수준은 다음처럼 구분합니다.
 
-`0.11.6-poc`는 업데이트 중 기존 Agent 폴더를 backup으로 옮기는 단계와 검증된 staging을
-설치 위치로 활성화하는 단계를 각각 최대 5회만 시도하고, 실패한 시도 사이에만 250ms
-대기합니다. 계속 실패하면 `SETUP_BACKUP_MOVE_FAILED` 또는
-`SETUP_FILE_ACTIVATION_FAILED`로 구분하고 기존 rollback을 수행합니다. backup 폴더의
-관리자 전용 ACL 강화만 실패하면 `SETUP_BACKUP_ACCESS_WARNING`을 남기고 설치는 계속합니다.
-Viewer 데이터, Agent API v4, rollback 계약과 화면 흐름은 변경하지 않습니다.
+| 검증 | 상태 |
+|---|---|
+| Core / Viewer / Agent 자동 테스트 | ✅ CI |
+| 합성 Telnet 로그인·IAC·Latin-1·timeout 경계 | ✅ CI |
+| 읽기 전용 command validation | ✅ CI |
+| Windows self-contained package | ✅ CI |
+| 다운로드 후 manifest / SHA-256 | ✅ CI |
+| 추출 EXE smoke | ✅ CI |
+| 실제 Windows SCM/EDR/GPO 조합 | ⚠️ 현장 검증 별도 |
+| IES4224GP / IES4028XP / IES4226XP 실제 펌웨어 명령 | ⚠️ 현장 검증 별도 |
 
-`0.11.7-poc`는 Agent 설치의 Windows 서비스 단계를 하나의 `SETUP_SERVICE_FAILED`로 묶지 않고
-`SETUP_SERVICE_CAPTURE_FAILED`, `SETUP_SERVICE_CONTRACT_FAILED`,
-`SETUP_SERVICE_STOP_FAILED`, `SETUP_SERVICE_CONFIG_FAILED`,
-`SETUP_SERVICE_START_FAILED`로 구분합니다. 서비스 실행 파일 경로, 자동 시작 유형, 가상 서비스
-계정과 실제 시작처럼 Agent 구동에 필요한 작업은 계속 fail-closed로 처리하며, 실패한 핵심 단계를
-익명 진단과 SWD1 지원 코드에서 구분합니다. 반면 서비스 설명,
-자동 복구 정책과 제한 DACL 적용만 실패하면 각각 `SETUP_SERVICE_DESCRIPTION_WARNING`,
-`SETUP_SERVICE_RECOVERY_POLICY_WARNING`, `SETUP_SERVICE_DACL_WARNING`을 남기고 설치를
-계속합니다. 경고가 있더라도 새 서비스의 핵심 구성과 Running 상태를 확인하지 못하면 성공으로
-처리하지 않습니다. Viewer 데이터, Agent API v4와 화면 흐름은 변경하지 않습니다.
+세부 검증 기준과 증거의 의미는 [VALIDATION_REPORT.md](docs/VALIDATION_REPORT.md)에서 확인할 수 있습니다.
 
-`0.11.8-poc`는 서비스가 시작 또는 중지 전환 중일 때 Windows SCM을 다시 호출해 충돌시키지
-않고, 단조 시계 기반 제한 시간 안에서 전환을 기다린 뒤 필요한 시작만 수행합니다. 설치 작업
-기록은 원자적으로 교체하고 임시 파일 정리 실패가 이미 완료된 기록 저장을 실패로 바꾸지
-않습니다. 새 `%ProgramData%\SamsungSwitchWatch` 루트는 단일 원자 연산으로 소유권을 확보한
-경우에만 ACL과 파일을 쓰므로, 검사와 생성 사이에 다른 프로세스가 만든 폴더를 수정하지
-않습니다.
+## 로컬 개발·검증
 
-`0.11.9-poc`는 장비 모델 선택을 사용자 입력에서 제거합니다. `로그인 확인`이 인증과 선택적
-enable 전환을 마친 뒤 읽기 전용 `show version`을 한 번 실행하고, 등록된 세 모델 중 정확히
-하나가 확인될 때만 정규화된 모델명을 Viewer에 표시합니다. 지원 모델을 찾지 못하거나 여러
-모델 토큰이 섞인 출력은 각각 `MODEL_NOT_DETECTED`, `MODEL_AMBIGUOUS`로 중단하며 임의 모델을
-추정하지 않습니다. 판별에 사용한 원문은 Viewer 응답·설정·로그에 남기지 않습니다.
-
-`0.11.11-poc`는 기존 운영 흐름을 유지하면서 Viewer 설치 실패 복구와 짧은 현장 전달 정보를
-강화합니다.
-
-- Viewer Setup은 새 transaction을 journal format 3으로 기록하고 기존 format 2 작업도 기존
-  의미대로 복구합니다. format 3 복구가 남아 있으면 `0.11.11-poc` 또는 더 최신 Setup으로
-  복구를 완료한 뒤에만 이전 버전으로 내려가십시오.
-- 기존 Viewer 프로그램 폴더가 검증되지 않으면 즉시 삭제하지 않고 transaction backup으로
-  격리합니다. commit 전 실패·취소 시 원래 설치 경로로 되돌리고, 성공한 경우에만 최근 제품
-  격리본 1개로 확정합니다. 모호한 경로·marker·reparse 상태는 변경하지 않고 중단합니다.
-- 격리 대상은 Viewer 프로그램 폴더뿐입니다. `%LOCALAPPDATA%\SamsungSwitchWatch`의 Agent 주소,
-  화면 설정, 장비 목록, DPAPI 자격 증명과 감시 이력은 이전과 같이 보존합니다.
-- 취소·중복 실행을 제외한 조치 가능한 Viewer Setup 실패와 복구 불가 검사에는 별도
-  `SWS1-XXXX-XXXX-XXXX-XXXX` 지원 코드가 표시됩니다. 기존 Agent
-  Setup·Viewer 연결용 SWD1은 변경하지 않으며, SWS1에는 제품 버전과 작업·실패·복구 상태 같은
-  제한된 분류만 들어갑니다. 경로·사용자·해시·transaction ID·자격 증명·장비 정보는 포함하지
-  않습니다.
-
-`0.11.10-poc`에서 추가된 장시간 실행과 패키지 검증 경계도 그대로 유지합니다.
-
-- Telnet 로그인·enable·명령 수집은 각각 제한된 시간과 바이트 예산을 사용합니다. Samsung
-  장비의 Latin-1 출력과 Telnet IAC 협상을 처리하되 끝없는 출력이나 세션에는 무한 대기하지
-  않습니다.
-- Agent 임시 신원 자료와 Viewer 로컬 JSON은 파일 크기 상한을 적용합니다. Viewer 저장은
-  원자 교체 뒤 백신·EDR이 재확인만 잠시 막더라도 이미 완료된 저장을 실패로 오판하지 않습니다.
-- Viewer 이벤트 전달은 제한된 큐에서 같은 변경을 합치고, 오래된 연결의 결과가 새 연결 상태를
-  덮어쓰지 못하게 합니다. 작은 작업 영역에서는 대시보드가 스크롤되고 창 위치·크기를 사용 가능한
-  화면 안으로 복원합니다.
-- Agent와 Viewer Setup은 manifest를 엄격한 UTF-8과 2 MiB 상한으로 읽고, 읽기 전후 변경,
-  선언 크기·SHA-256, Windows 대소문자 비구분 중복, 실제 최상위 파일 집합과 하위 폴더 부재를
-  확인합니다.
-- Viewer Setup의 활성화·복구 Move/Delete는 취소 가능한 제한 재시도로 일시적인 EDR 잠금을
-  흡수합니다. commit 전 새 설치가 손상됐더라도 먼저 격리하고 검증된 이전 설치를 복구한 뒤
-  복구 결과를 다시 확인합니다.
-
-Agent API v4, Viewer 저장 형식과 기존 보안 경계는 변경하지 않습니다. 자동 테스트는 Mock과
-로컬 패키지 근거이며 실제 Windows SCM·백신/EDR·사내 라우팅과 삼성 스위치 펌웨어 검증은
-현장 POC 완료 조건으로 남습니다.
-
-기존 API v4 요청과 Viewer 장비 저장 형식은 유지합니다. 최신 Agent의 test 응답에 선택적인
-`detectedModel`만 추가했으며, 이 값이 없는 구형 Agent와 연결하면
-`MODEL_DETECTION_UNAVAILABLE`로 같은 최신 Agent·Viewer 조합 사용을 안내합니다.
-
-Viewer는 Agent 연결 교체·종료 때 발생한 정상적인 취소를 앱 오류로 올리지 않습니다. 수동
-`포트 상태/시스템 로그 수동 점검`과 직접 입력한 읽기 전용 명령 조회는 동시에 하나만 실행합니다. 장비 관리 창을 닫으면 진행 중인
-연결을 취소하고 입력된 로그인·enable 비밀번호를 즉시 지웁니다. 자동 수집 후보가
-`COMMAND_TIMEOUT` 또는 `QUERY_TIMEOUT`으로 실패하면 같은 점검에서 즉시 재접속하지 않고 다음
-점검 주기에 다음 후보를 한 번 시도합니다. Agent API v4와 Viewer 저장 형식은 변경하지 않습니다.
-
-Agent는 시작할 때마다 새 임시 RSA 자체 서명 인증서를 만들며 영구 Agent 신원 파일은 저장하지
-않습니다. Windows Schannel 호환성을 위해 개인 키는 프로세스 수명 동안 임시 사용자 키
-컨테이너에 로드하고, Agent 종료 시 인증서와 임시 키 컨테이너를 정리합니다.
-Viewer는 해당 인증서를 자동 수락하므로 인증서 지문, 페어링 토큰 또는 신원 변경 확인 절차가
-없습니다. HTTPS는 전송 내용을 암호화하지만 상대 Agent의 신원을 인증하지는 않습니다. 따라서
-Agent와 Viewer는 신뢰할 수 있는 사내 사설망에서만 사용해야 합니다.
-
-Viewer와 Agent의 제품 버전이 달라도 API v4가 호환되면 경고를 표시하고 연결합니다. 기능
-호환성을 예측하기 어려우므로 실제 운영에는 같은 Release 조합을 권장합니다.
-
-Viewer는 Agent 연결 교체·종료 중 진행 중인 요청을 안전하게 취소·정리하고, 자동 수집 전과
-다른 작업 때문에 수집이 미뤄진 장비를 정상으로 단정하지 않습니다. 연결이 끊기면 현재 상태와
-마지막으로 확인한 상태를 구분해 표시합니다. 릴리스 검증은 패키지 계약뿐 아니라 압축을 푼
-Viewer·Mock Agent·Agent Setup 실행 파일의 제한된 smoke 검사도 포함합니다.
-
-검사·설치·복구가 성공 또는 실패로 끝나면 `익명 진단 저장`으로
-`SSW_FIELD_DIAGNOSTIC/2` UTF-8 BOM TXT를 수동 저장할 수 있습니다. 사진 한 장으로 전달할 수
-있도록 최대 12줄, 줄당 88자로 제한하면서 제품·Windows 버전, 안전한 단계·결과·오류·조치
-코드와 핵심 상태를 보존합니다. IP/CIDR, PC·사용자명, 계정, 인증서 정보, 절대 경로,
-방화벽·예외 원문, 명령과 장비 출력은 제외됩니다. 기존 `/1` 파일도 재현 도구에서 계속
-분석할 수 있습니다.
-
-실패 화면에는 `SWD1-XXXX-XXXX-XXXX-XXXX` 형식의 짧은 `지원 코드`도 표시됩니다. 전화나
-메신저로 장애 분류를 전달할 때는 이 코드만 선택해 복사할 수 있습니다. 지원 코드는 오프라인에서
-생성되고 오류 입력 검사용 CRC를 포함하지만 비밀값, 인증 수단, 페어링 토큰 또는 인증서 지문은
-아닙니다. 성공 화면과 실행 중에는 표시되지 않으며 새 작업을 시작하면 이전 코드는 지워집니다.
-
-설치 후 `SamsungSwitchWatchAgent` 서비스가 자동 시작됩니다. 일반 사용자의 바탕 화면,
-작업 표시줄과 트레이에는 Agent 창이 나타나지 않습니다. 로컬 관리자는 Windows 관리
-정책상 서비스를 중지할 수 있으므로 관리자 계정 자체를 통제해야 합니다.
-
-### 2. Viewer PC
-
-1. Viewer ZIP을 로컬 임시 폴더에 완전히 압축 해제합니다.
-2. `SamsungSwitchWatch.Viewer.Setup.exe`를 실행하고 `설치/업데이트`를 누릅니다. UAC는 나타나지
-   않습니다. Setup은 패키지를 검증한 뒤
-   `%LOCALAPPDATA%\Programs\SamsungSwitchWatch\Viewer`에 설치하고 바탕 화면과 시작 메뉴의
-   제품 바로 가기를 현재 버전으로 갱신합니다. 0.11.4 이후 실행 중인 Viewer는 저장·정리 후
-   자동 종료하며, `0.11.3-poc`처럼 종료 요청을 지원하지 않는 버전만 수동 종료를 안내합니다.
-   자동 시작은 등록하지 않습니다.
-3. Setup은 설치된 Viewer를 자동 실행하고 정상 실행 유지를 확인한 뒤 완료합니다. 설치가 완료되면
-   압축을 푼 임시 폴더는 삭제해도 되며, 이후에는 제품 바로 가기로 다시 실행합니다.
-4. Agent PC의 IPv4 또는 사내 DNS 이름을 입력하고 연결 진단을 완료합니다. Agent와 Viewer를
-   같은 PC에서 먼저 시험할 때는 `localhost` 또는 `127.0.0.1`을 입력합니다.
-5. 장비 관리에서 장비명, IPv4, ID, 로그인 PW와 선택적 enable PW를 등록합니다. 모델은 장비
-   응답에서 자동 판별하며 판별 전에는 확인 대기로 표시됩니다. 새 장비는 `로그인 확인`으로
-   모델 판별을 완료한 뒤 저장합니다.
-6. `로그인 확인` 후 수집 진단에서 `show port status`, `show sylog tail num 100` 또는 장비에서
-   지원하는 읽기 전용 명령의 실제 동작을 확인합니다.
-
-Viewer 업데이트는 설치 파일만 현재 버전으로 교체합니다.
-`%LOCALAPPDATA%\SamsungSwitchWatch`의 Agent 주소, 화면 설정, 장비 목록, DPAPI 자격 증명과 감시
-이력은 보존합니다. 설치 전 패키지 검증, staging, 기존 버전 백업, 설치 smoke 검사와 실행 확인을
-거치며 완료 전에 실패하면 관리되는 이전 버전을 복구합니다. 임의의 다운로드·압축 해제 폴더는
-자동으로 삭제하지 않습니다.
-
-`로그인 확인`은 TCP/23, 계정, enable과 최종 프롬프트를 확인한 뒤 읽기 전용 `show version`을
-한 번 실행해 IES4224GP, IES4028XP, IES4226XP 중 정확히 하나를 판별합니다. 판별 원문은
-Viewer나 로그에 저장하지 않습니다. 최신 Agent가 판별 결과를 제공하지 않으면 임의 모델을
-선택하지 않고 Agent와 Viewer를 같은 최신 버전으로 맞추도록 안내합니다. 자동 수집은 포트 상태와
-시스템 로그를 순차적인 개별 세션으로 실행하므로 한 항목이 시간 초과되어도 다른 결과를 계속
-수집합니다. 명령은 30초 동안 새 응답이 없을 때 중단하며, 출력이 계속되더라도 전체 90초를
-넘기지 않습니다. 이번 POC의 자동 감시 검증·지원 범위는 등록 장비 10대 이하입니다.
-
-인증서 SHA-256 지문이나 페어링 토큰을 입력하는 절차는 없습니다. Viewer는 Agent의 임시 TLS
-인증서를 자동 수락하며 인증서 신원을 저장하거나 비교하지 않습니다.
-
-동일 PC에서 `localhost`로 연결하면 Agent 서비스, TCP/18443, HTTPS와 Agent API만 확인합니다.
-스위치에는 접속하지 않고 자격 증명이나 명령도 보내지 않습니다. 성공해도 원격 Viewer PC에서
-Agent PC로 가는 방화벽·라우팅 경로는 검증되지 않으므로 실제 Viewer PC에서도 연결을 확인해야
-합니다.
-
-연결 검사가 끝나면 성공 또는 실패와 관계없이 `익명 진단 저장`을 사용할 수 있습니다. 이
-최대 12줄 TXT는 주소·DNS·TCP·HTTPS·API 단계 상태와 제한된 소요 시간, 확인된 Agent/API
-버전만 남기며 입력 주소·DNS 이름과 장비 정보는 저장하지
-않습니다.
-연결 실패 때는 같은 형식의 짧은 `지원 코드`가 연결 단계 아래에만 나타납니다. 별도 복사 버튼은
-없으며 읽기 전용 코드를 선택해 `Ctrl+C`로 복사합니다. 성공하면 코드가 나타나지 않습니다.
-
-상세 절차와 연결 실패 단계는 [설치 및 운영 안내](docs/INSTALL_KO.md)를 확인하십시오.
-
-## 연결 문제 확인 순서
-
-Viewer의 연결 진단은 다음 순서로 표시됩니다.
-
-1. Agent 주소·DNS
-2. TCP/18443
-3. HTTPS
-4. Agent API와 준비 상태
-5. Agent·Viewer API 호환성과 버전 경고
-
-`AGENT_CONNECTION_REFUSED`가 표시되면 Agent PC에서 Agent Setup을 다시 열어 서비스 설치
-상태를 확인하고, Viewer에 실제 Agent PC 주소를 입력했는지 확인합니다. 스위치 IP나 Viewer PC
-주소를 Agent 주소 입력란에 넣지 않습니다. 설치가 완료됐는데도 TCP 단계가 실패하면 Windows
-방화벽·GPO·라우팅을 확인합니다.
-
-Setup은 제품 소유 방화벽 규칙에 Domain/Private 프로필의 TCP/18443 인바운드와 RFC1918
-사설 IPv4 원격 대역만 허용하도록 시도합니다. 규칙 적용·재조회 또는 회사 GPO 확인이 실패해도
-설치를 되돌리지 않고 `FIREWALL_REMOTE_ACCESS_UNCONFIRMED` 경고를 표시합니다. 이 경우 Viewer
-연결 테스트가 성공하면 그대로 사용할 수 있고, TCP 단계가 실패할 때만 Windows 관리자에게
-방화벽·GPO·라우팅 확인을 요청합니다.
-
-정확한 제품 규칙까지 확인되면 `설치 완료 · 원격 연결 준비됨`, 방화벽 확인만 남으면
-`설치 완료 · 원격 Viewer 연결 확인 필요`로 표시합니다. Viewer의 TCP/18443 단계가 실패하면
-방화벽·GPO·라우팅을 확인하고, TCP는 성공했지만 HTTPS 단계가 실패하면 Agent PC의 로컬
-HTTPS/TLS 준비 상태를 확인합니다.
-
-## 보안 경계
-
-- Viewer→Agent는 HTTPS/TCP 18443을 사용합니다.
-- Agent Setup은 Domain/Private 프로필에서 RFC1918 사설 IPv4 원격 대역의 TCP/18443만 허용하는
-  제품 방화벽 규칙을 자동 구성하려고 시도합니다.
-- Agent API도 loopback과 RFC1918 IPv4 요청만 허용합니다. 인증 기능이 아니므로 사용자 VLAN,
-  공용 Wi-Fi 또는 인터넷에 노출하면 안 됩니다.
-- Agent→스위치는 RFC1918 사설 IPv4와 Telnet/TCP 23만 허용합니다.
-- Agent API에는 별도 로그인, 페어링 토큰 또는 인증서 신원 검증이 없습니다.
-- Agent의 자체 서명 RSA 인증서는 매 서비스 시작 시 새로 생성됩니다. Windows Schannel용
-  임시 사용자 키 컨테이너는 프로세스 수명에만 사용하고 종료 시 제거합니다.
-- Telnet 구간은 암호화되지 않습니다. Agent와 스위치는 격리된 관리망에서만 사용합니다.
-- 실제 IP, 계정, 비밀번호, 장비 출력과 회사 데이터는 저장소·테스트·이슈에 올리지 않습니다.
-
-## 개발과 검증
+.NET SDK 버전은 저장소 `global.json` 기준을 사용합니다.
 
 ```powershell
 dotnet restore SamsungSwitchWatch.sln --locked-mode
 dotnet build SamsungSwitchWatch.sln -c Release --no-restore
 dotnet test SamsungSwitchWatch.sln -c Release --no-build
 .\scripts\validate.ps1 -Configuration Release
+```
+
+패키지 생성:
+
+```powershell
 .\scripts\build-release.ps1 -Version 0.11.11-poc
 ```
 
-실제 장비 대신 합성 Telnet 서버와 비식별 Fixture를 사용합니다. Mock 통과를 실제 펌웨어
-검증으로 표현하지 않습니다.
-
-자동 검증은 실제 삼성 스위치의 펌웨어별 명령·출력, 사내 EDR/백신 정책, 원격 PC 사이의
-방화벽·라우팅과 관리자 권한이 필요한 전체 Agent 설치 과정을 증명하지 않습니다. 이 항목들은
-공식 두 ZIP을 사용해 승인된 사내 시험 PC에서 단계적으로 확인해야 합니다.
-
-PowerShell/CMD 설치·제거·진단 스크립트는 개발과 레거시 복구를 위해 저장소에만 유지하며
-공개 ZIP에는 포함하지 않습니다. GitHub Release의 사용자 정의 Assets는 Agent ZIP과 Viewer
-ZIP 정확히 두 개입니다.
+개발 규칙은 [DEVELOPMENT.md](DEVELOPMENT.md)에 정리했습니다.
 
 ## 문서
 
-- [설치 및 운영 안내](docs/INSTALL_KO.md)
-- [구조 설명](docs/ARCHITECTURE.md)
-- [v0.10.12 프로젝트 진단 및 개선 계획](docs/PROJECT_DIAGNOSIS_0.10.12_KO.md)
-- [보안 모델](docs/SECURITY.md)
-- [현장 POC 점검표](docs/FIELD_POC_CHECKLIST_KO.md)
-- [릴리스 절차](docs/RELEASE_PROCESS_KO.md)
-- [0.11.11-poc 릴리스 노트](docs/RELEASE_NOTES_0.11.11_POC_KO.md)
-- [0.11.10-poc 릴리스 노트](docs/RELEASE_NOTES_0.11.10_POC_KO.md)
-- [0.11.9-poc 릴리스 노트](docs/RELEASE_NOTES_0.11.9_POC_KO.md)
-- [0.11.8-poc 릴리스 노트](docs/RELEASE_NOTES_0.11.8_POC_KO.md)
-- [0.11.7-poc 릴리스 노트](docs/RELEASE_NOTES_0.11.7_POC_KO.md)
-- [0.11.6-poc 릴리스 노트](docs/RELEASE_NOTES_0.11.6_POC_KO.md)
-- [0.11.5-poc 릴리스 노트](docs/RELEASE_NOTES_0.11.5_POC_KO.md)
-- [0.11.4-poc 릴리스 노트](docs/RELEASE_NOTES_0.11.4_POC_KO.md)
-- [0.11.3-poc 릴리스 노트](docs/RELEASE_NOTES_0.11.3_POC_KO.md)
-- [0.11.2-poc 릴리스 노트](docs/RELEASE_NOTES_0.11.2_POC_KO.md)
-- [0.11.1-poc 릴리스 노트](docs/RELEASE_NOTES_0.11.1_POC_KO.md)
-- [0.11.0-poc 릴리스 노트](docs/RELEASE_NOTES_0.11.0_POC_KO.md)
-- [0.10.16-poc 릴리스 노트](docs/RELEASE_NOTES_0.10.16_POC_KO.md)
-- [0.10.15-poc 릴리스 노트](docs/RELEASE_NOTES_0.10.15_POC_KO.md)
-- [0.10.14-poc 릴리스 노트](docs/RELEASE_NOTES_0.10.14_POC_KO.md)
-- [0.10.13-poc 릴리스 노트](docs/RELEASE_NOTES_0.10.13_POC_KO.md)
-- [0.10.12-poc 릴리스 노트](docs/RELEASE_NOTES_0.10.12_POC_KO.md)
-- [Figma 화면 설계 및 개발 전달](https://www.figma.com/design/JueYiLj18xFE7enHvGlU2s)
+- [현재 릴리즈 노트](docs/RELEASE_NOTES_0.11.11_POC_KO.md)
+- [프로그램 구조](docs/ARCHITECTURE.md)
+- [운영 판단·실패 처리 기준](docs/OPERATING_LOGIC.md)
+- [검증 보고서](docs/VALIDATION_REPORT.md)
+- [프로젝트 현재 상태](docs/PROJECT_STATUS.md)
+- [설치 가이드](docs/INSTALL_KO.md)
+- [현장 POC 체크리스트](docs/FIELD_POC_CHECKLIST_KO.md)
+
+과거 버전별 상세 변경은 `docs/RELEASE_NOTES_*` 문서와 GitHub Releases에서 확인합니다. README에는 현재 운영 구조와 최신 사용 흐름만 유지합니다.
+
+## 범위 밖
+
+현재 POC가 목표로 하지 않는 항목입니다.
+
+- 스위치 설정 변경 자동화
+- 인터넷 공개형 Agent API
+- Agent에 장비 자격 증명·인벤토리 저장
+- raw 명령 결과 장기 보관
+- Telnet 자체를 암호화된 프로토콜로 변환
+- 모든 Samsung iES 모델·펌웨어에 대한 포괄적 호환성 보장
+
+## 현재 단계
+
+현재 POC는 **읽기 전용 원격 점검·주기 감시·Windows 배포/복구 체계를 검증하는 단계**입니다.
+
+실제 장비 적용 여부는 반드시 허가된 환경에서 모델·펌웨어·관리망·EDR/GPO 조건을 확인한 뒤 판단해야 합니다.
