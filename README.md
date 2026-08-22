@@ -291,6 +291,6 @@ dotnet test SamsungSwitchWatch.sln -c Release --no-build
 
 ## 현재 단계
 
-`v0.11.11-poc`는 **읽기 전용 원격 점검·주기 감시·Windows 배포/복구 체계를 검증하는 POC**입니다.
+현재 POC는 **읽기 전용 원격 점검·주기 감시·Windows 배포/복구 체계를 검증하는 단계**입니다.
 
 실제 장비 적용 여부는 반드시 허가된 환경에서 모델·펌웨어·관리망·EDR/GPO 조건을 확인한 뒤 판단해야 합니다.
