@@ -269,6 +269,7 @@ dotnet test SamsungSwitchWatch.sln -c Release --no-build
 
 ## 문서
 
+- [현재 릴리즈 노트](docs/RELEASE_NOTES_0.11.11_POC_KO.md)
 - [프로그램 구조](docs/ARCHITECTURE.md)
 - [운영 판단·실패 처리 기준](docs/OPERATING_LOGIC.md)
 - [검증 보고서](docs/VALIDATION_REPORT.md)
