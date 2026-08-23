@@ -15,7 +15,7 @@
         <StackPanel>
             <TextBlock Text="Agent 연결" FontSize="24" FontWeight="Bold" Foreground="#0F172A"/>
             <TextBlock Margin="0,6,0,14"
-                       Text="Agent PC 주소만 입력하면 연결 확인과 저장을 한 번에 처리합니다."
+                       Text="Agent PC 주소와 Setup에서 직접 확인한 페어링 코드로 연결합니다."
                        FontSize="13" Foreground="#64748B"/>
         </StackPanel>
 
@@ -34,23 +34,34 @@
                         <TextBlock Margin="0,8,0,0" FontSize="12" Foreground="#64748B"
                                    Text="HTTPS/TCP 18443은 자동으로 사용합니다."/>
 
+                        <TextBlock Margin="0,14,0,0" Text="페어링 코드"
+                                   FontSize="13" FontWeight="SemiBold" Foreground="#0F172A"/>
+                        <PasswordBox x:Name="PairingCodePasswordBox" Margin="0,7,0,0" Height="38"
+                                     Padding="10,7" MaxLength="100"
+                                     PasswordChanged="PairingCode_Changed"
+                                     AutomationProperties.Name="SSW1 페어링 코드"
+                                     AutomationProperties.HelpText="Agent Setup 화면에서 복사한 SSW1 코드"/>
+                        <TextBlock Margin="0,7,0,0" FontSize="12" Foreground="#64748B"
+                                   TextWrapping="Wrap"
+                                   Text="기존 v0.12 연결은 비워둘 수 있습니다. v0.11 업그레이드, Agent 재설치 또는 인증 정보 교체 후에는 새 코드로 다시 페어링해야 합니다."/>
+
                         <Border Margin="0,12,0,0" Padding="14" Background="#EFF6FF" BorderBrush="#93C5FD"
                                 BorderThickness="1" CornerRadius="10">
                             <StackPanel>
-                                <TextBlock Text="추가 인증정보가 필요하지 않습니다"
+                                <TextBlock Text="인증서 고정 + 사용자별 토큰 보호"
                                            FontSize="13" FontWeight="Bold" Foreground="#1E40AF"/>
                                 <TextBlock Margin="0,4,0,0" TextWrapping="Wrap" FontSize="12" Foreground="#1E40AF"
-                                           Text="인증서 지문과 페어링 토큰 입력 없이 HTTPS 연결을 자동 확인합니다."/>
+                                           Text="코드의 인증서 SPKI를 고정하고 토큰은 Windows DPAPI(CurrentUser)로 암호화합니다. 일치하지 않으면 연결하지 않습니다."/>
                             </StackPanel>
                         </Border>
 
                         <Border Margin="0,10,0,0" Padding="14" Background="#F0FDF4" BorderBrush="#86EFAC"
                                 BorderThickness="1" CornerRadius="10">
                             <StackPanel>
-                                <TextBlock x:Name="TransportWarningText" Text="API가 호환되면 연결합니다"
+                                <TextBlock x:Name="TransportWarningText" Text="API v5만 연결합니다"
                                            FontSize="13" FontWeight="Bold" Foreground="#166534"/>
                                 <TextBlock Margin="0,4,0,0" TextWrapping="Wrap" FontSize="12" Foreground="#166534"
-                                           Text="Agent API v4가 호환되면 제품 버전 차이는 경고만 표시하고 계속 연결합니다."/>
+                                           Text="이전 API v4는 실행하지 않으며 Agent와 Viewer를 함께 업데이트한 뒤 다시 페어링해야 합니다."/>
                             </StackPanel>
                         </Border>
 

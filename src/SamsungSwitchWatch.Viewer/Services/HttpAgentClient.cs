@@ -19,7 +19,7 @@ public sealed class HttpAgentClient : IAgentClient
     internal const int MaximumIdentityResponseBytes = 32 * 1024;
     internal const int MaximumErrorResponseBytes = 64 * 1024;
     // Eight 64-KiB UTF-8 outputs still fit when every byte requires a six-byte
-    // JSON escape, with room left for the v4 envelope and command metadata.
+    // JSON escape, with room left for the v5 envelope and command metadata.
     internal const int MaximumTelnetResponseBytes = 4 * 1024 * 1024;
     private const int MaximumBoundedResponseBytes = 16 * 1024 * 1024;
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
@@ -34,6 +34,7 @@ public sealed class HttpAgentClient : IAgentClient
     private readonly HttpClient _httpClient;
     private readonly HttpClient _queryHttpClient;
     private readonly CertificatePinValidator _certificateValidator;
+    private readonly string _bearerToken;
     private readonly SemaphoreSlim _startGate = new(1, 1);
     private readonly CancellationTokenSource _lifetimeCancellation = new();
     private readonly object _operationSync = new();
@@ -45,7 +46,7 @@ public sealed class HttpAgentClient : IAgentClient
     private TaskCompletionSource<bool>? _operationsDrained;
     private Task? _disposeTask;
 
-    public HttpAgentClient(ViewerSettings settings) : this(settings, null, null, null)
+    public HttpAgentClient(ViewerSettings settings) : this(settings, null, null, null, null)
     {
     }
 
@@ -53,7 +54,8 @@ public sealed class HttpAgentClient : IAgentClient
         ViewerSettings settings,
         HttpMessageHandler? controlHandler,
         HttpMessageHandler? queryHandler,
-        CertificatePinValidator? certificateValidator)
+        CertificatePinValidator? certificateValidator,
+        string? bearerToken)
     {
         var clean = ViewerSettingsSanitizer.Sanitize(settings);
         if (!ViewerSettingsSanitizer.IsValidForLiveConnection(clean, out var reason))
@@ -63,8 +65,10 @@ public sealed class HttpAgentClient : IAgentClient
 
         settings.AgentUri = clean.AgentUri;
         settings.AgentTrustPins = clean.AgentTrustPins;
+        settings.ProtectedAgentBearerTokens = clean.ProtectedAgentBearerTokens;
         _settings = settings;
         _certificateValidator = certificateValidator ?? new CertificatePinValidator(_settings);
+        _bearerToken = bearerToken ?? LoadBearerToken(_settings, new CurrentUserSecretProtector());
         _httpClient = new HttpClient(controlHandler ?? CreatePinnedHttpHandler(_certificateValidator))
         {
             BaseAddress = new Uri(clean.AgentUri),
@@ -118,7 +122,8 @@ public sealed class HttpAgentClient : IAgentClient
 
     public event EventHandler<AgentConnectionState>? ConnectionStateChanged;
 
-    public bool SupportsStatelessV4 => true;
+    public bool SupportsStatelessV4 => false;
+    public bool SupportsStatelessV5 => true;
 
     public Task StartAsync(CancellationToken cancellationToken) =>
         RunOperationAsync(
@@ -155,7 +160,7 @@ public sealed class HttpAgentClient : IAgentClient
             using var response = await SendAsync(
                 _httpClient,
                 HttpMethod.Get,
-                AgentApiRoutes.IdentityV4,
+                AgentApiRoutes.IdentityV5,
                 null,
                 requestCancellation.Token,
                 publishConnected: false).ConfigureAwait(false);
@@ -164,7 +169,13 @@ public sealed class HttpAgentClient : IAgentClient
                     MaximumIdentityResponseBytes,
                     requestCancellation.Token)
                 .ConfigureAwait(false);
-            var identity = AgentContractMapper.MapIdentityV4(json);
+            var identity = AgentContractMapper.MapIdentityV5(json);
+            if (!_certificateValidator.CompleteTrust(identity.CertificatePublicKeySha256))
+            {
+                throw new AgentClientException(
+                    "AGENT_IDENTITY_CHANGED",
+                    AgentConnectionState.Stale);
+            }
             Volatile.Write(ref _identity, identity);
             Volatile.Write(ref _identityValidationReady, 1);
             PublishConnectionState(AgentConnectionState.Connected);
@@ -223,7 +234,7 @@ public sealed class HttpAgentClient : IAgentClient
                 ValidateTarget(target.Host, target.Port, target.Model);
                 await EnsureStartedAsync(token).ConfigureAwait(false);
                 return await SendTelnetAsync(
-                        AgentApiRoutes.TelnetTestV4,
+                        AgentApiRoutes.TelnetTestV5,
                         target,
                         target.RequestId,
                         [],
@@ -243,7 +254,7 @@ public sealed class HttpAgentClient : IAgentClient
                 var normalizedRequest = request with { Commands = normalizedCommands };
                 await EnsureStartedAsync(token).ConfigureAwait(false);
                 return await SendTelnetAsync(
-                        AgentApiRoutes.TelnetExecuteV4,
+                        AgentApiRoutes.TelnetExecuteV5,
                         normalizedRequest,
                         request.RequestId,
                         normalizedCommands,
@@ -262,16 +273,16 @@ public sealed class HttpAgentClient : IAgentClient
                     AgentConnectionState.Connected,
                     [],
                     0,
-                    $"Agent {identity.AgentId} · API v4",
+                    $"Agent {identity.AgentId} · API v5",
                     "Viewer 주도형 Telnet 중계 준비",
                     identity.AgentId,
-                    ApiVersion: 4,
+                    ApiVersion: 5,
                     AgentChannelStatus: "connected",
                     ApiChannelStatus: "available",
                     RealtimeChannelStatus: "viewer-local",
                     OperationalStatuses:
                     [
-                        new("HTTPS_AUTOMATIC", "Agent HTTPS", "인증서 입력 없이 암호화 연결을 자동 확인합니다.", DeviceHealth.Normal),
+                        new("PAIRING_PINNED", "Agent 인증", "페어링 token과 고정된 인증서 공개키로 연결을 확인합니다.", DeviceHealth.Normal),
                         new("STATELESS_AGENT", "장비 정보 보관", "장비와 계정은 Viewer에만 저장됩니다.", DeviceHealth.Normal)
                     ],
                     ReadOnlyQueriesEnabled: true,
@@ -355,7 +366,7 @@ public sealed class HttpAgentClient : IAgentClient
                 var maximumOutputBytes = Math.Min(
                     _identity?.MaxOutputBytes ?? ReadOnlyQueryPolicy.MaximumOutputBytes,
                     ReadOnlyQueryPolicy.MaximumOutputBytes);
-                return AgentContractMapper.MapTelnetExecutionResultV4(
+                return AgentContractMapper.MapTelnetExecutionResultV5(
                     resultJson,
                     expectedRequestId,
                     expectedCommands,
@@ -418,6 +429,7 @@ public sealed class HttpAgentClient : IAgentClient
         try
         {
             using var request = new HttpRequestMessage(method, route);
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _bearerToken);
             if (jsonBody is not null)
             {
                 request.Content = new ByteArrayContent(jsonBody);
@@ -589,6 +601,66 @@ public sealed class HttpAgentClient : IAgentClient
         return handler;
     }
 
+    private static string LoadBearerToken(
+        ViewerSettings settings,
+        IViewerSecretProtector protector)
+    {
+        if (!settings.TryGetProtectedAgentBearerToken(out var protectedToken))
+        {
+            throw new AgentClientException(
+                "VIEWER_PAIRING_REQUIRED",
+                AgentConnectionState.NeedsConnection);
+        }
+
+        string token;
+        try
+        {
+            token = protector.Unprotect(protectedToken);
+        }
+        catch (Exception exception) when (
+            exception is InvalidDataException or PlatformNotSupportedException or System.ComponentModel.Win32Exception)
+        {
+            throw new AgentClientException(
+                "VIEWER_PAIRING_CORRUPT",
+                AgentConnectionState.NeedsConnection,
+                exception);
+        }
+
+        Span<byte> decoded = stackalloc byte[32];
+        if (!TryDecodeBearerToken(token, decoded))
+        {
+            CryptographicOperations.ZeroMemory(decoded);
+            throw new AgentClientException(
+                "VIEWER_PAIRING_CORRUPT",
+                AgentConnectionState.NeedsConnection);
+        }
+        CryptographicOperations.ZeroMemory(decoded);
+        return token;
+    }
+
+    private static bool TryDecodeBearerToken(string value, Span<byte> destination)
+    {
+        if (value.Length != 43)
+        {
+            return false;
+        }
+
+        Span<char> padded = stackalloc char[44];
+        for (var index = 0; index < value.Length; index++)
+        {
+            padded[index] = value[index] switch
+            {
+                '-' => '+',
+                '_' => '/',
+                >= 'A' and <= 'Z' or >= 'a' and <= 'z' or >= '0' and <= '9' => value[index],
+                _ => '\0'
+            };
+            if (padded[index] == '\0') return false;
+        }
+        padded[43] = '=';
+        return Convert.TryFromBase64Chars(padded, destination, out var written) && written == 32;
+    }
+
     private OperationLease EnterOperation()
     {
         lock (_operationSync)
@@ -723,19 +795,24 @@ public sealed class HttpAgentClient : IAgentClient
 
 internal sealed class CertificatePinValidator
 {
+    private const string ServerAuthenticationOid = "1.3.6.1.5.5.7.3.1";
+    private readonly byte[] _expectedPin;
     private readonly Action? _certificateAccepted;
     private int _certificateAcceptedReported;
 
     public CertificatePinValidator(ViewerSettings settings, Action? certificateAccepted = null)
     {
         ArgumentNullException.ThrowIfNull(settings);
+        if (!settings.TryGetAgentTrustPin(out var pin) || !TryDecodeHexPin(pin, out _expectedPin))
+        {
+            throw new AgentClientException(
+                "VIEWER_PAIRING_REQUIRED",
+                AgentConnectionState.NeedsConnection);
+        }
         _certificateAccepted = certificateAccepted;
     }
 
-    // Kept for binary/test compatibility with earlier releases. v0.11 accepts
-    // the Agent's ephemeral self-signed certificate for encrypted transport and
-    // no longer treats a changed public key as a connection failure.
-    public bool IdentityChanged => false;
+    public bool IdentityChanged { get; private set; }
 
     public bool Validate(
         HttpRequestMessage request,
@@ -743,16 +820,43 @@ internal sealed class CertificatePinValidator
         X509Chain? chain,
         SslPolicyErrors errors)
     {
-        if (certificate is null) return false;
+        if (certificate is null
+            || DateTime.UtcNow < certificate.NotBefore.ToUniversalTime()
+            || DateTime.UtcNow > certificate.NotAfter.ToUniversalTime()
+            || !HasServerAuthenticationEku(certificate))
+        {
+            return false;
+        }
+
+        var actualPin = GetSpkiSha256Bytes(certificate);
+        var matches = CryptographicOperations.FixedTimeEquals(actualPin, _expectedPin);
+        CryptographicOperations.ZeroMemory(actualPin);
+        if (!matches)
+        {
+            IdentityChanged = true;
+            return false;
+        }
+
         ReportCertificateAccepted();
         return true;
     }
 
     public bool CompleteTrust(string identityPin)
     {
-        // The API field remains in the v4 contract for wire compatibility, but
-        // it is not a trust/pairing requirement in the simplified connection.
-        return true;
+        if (!TryDecodeHexPin(identityPin, out var identityBytes))
+        {
+            return false;
+        }
+        try
+        {
+            var matches = CryptographicOperations.FixedTimeEquals(identityBytes, _expectedPin);
+            IdentityChanged |= !matches;
+            return matches;
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(identityBytes);
+        }
     }
 
     private void ReportCertificateAccepted()
@@ -772,6 +876,9 @@ internal sealed class CertificatePinValidator
     }
 
     public static string GetSpkiSha256(X509Certificate2 certificate)
+        => Convert.ToHexString(GetSpkiSha256Bytes(certificate));
+
+    private static byte[] GetSpkiSha256Bytes(X509Certificate2 certificate)
     {
         byte[] spki;
         using (var ecdsa = certificate.GetECDsaPublicKey())
@@ -779,7 +886,7 @@ internal sealed class CertificatePinValidator
             if (ecdsa is not null)
             {
                 spki = ecdsa.ExportSubjectPublicKeyInfo();
-                return Convert.ToHexString(SHA256.HashData(spki));
+                return SHA256.HashData(spki);
             }
         }
         using (var rsa = certificate.GetRSAPublicKey())
@@ -787,14 +894,32 @@ internal sealed class CertificatePinValidator
             if (rsa is null) throw new CryptographicException("CERTIFICATE_PUBLIC_KEY_UNSUPPORTED");
             spki = rsa.ExportSubjectPublicKeyInfo();
         }
-        return Convert.ToHexString(SHA256.HashData(spki));
+        return SHA256.HashData(spki);
     }
 
-}
+    private static bool HasServerAuthenticationEku(X509Certificate2 certificate)
+    {
+        return certificate.Extensions
+            .OfType<X509EnhancedKeyUsageExtension>()
+            .SelectMany(extension => extension.EnhancedKeyUsages.Cast<Oid>())
+            .Any(oid => oid.Value == ServerAuthenticationOid);
+    }
 
-internal static class ApiCompatibilityPolicy
-{
-    public static bool ShouldFallback(HttpStatusCode statusCode) => statusCode == HttpStatusCode.NotFound;
+    private static bool TryDecodeHexPin(string? value, out byte[] bytes)
+    {
+        bytes = [];
+        if (value is not { Length: 64 } || !value.All(character =>
+                character is >= '0' and <= '9'
+                    or >= 'A' and <= 'F'
+                    or >= 'a' and <= 'f'))
+        {
+            return false;
+        }
+
+        bytes = Convert.FromHexString(value);
+        return true;
+    }
+
 }
 
 internal sealed class DirectWebProxy : IWebProxy

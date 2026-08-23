@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the Korean Samsung Switch Watch v0.11.11 operator manual.
+"""Build the Korean Samsung Switch Watch v0.12 operator manual.
 
 The manual is intentionally generated from sanitized, deterministic WPF
 screenshots. It never needs a company switch, a real IP address, or a secret.
@@ -20,9 +20,9 @@ from docx.oxml.ns import qn
 from docx.shared import Inches, Pt, RGBColor
 
 
-VERSION = "0.11.11-poc"
-DOCUMENT_DATE = "2026-08-13"
-FONT = "맑은 고딕"
+VERSION = "0.12.0-poc"
+DOCUMENT_DATE = "2026-08-24"
+FONT = "Noto Sans KR"
 MONO = "Consolas"
 
 BLUE = "2E74B5"
@@ -704,8 +704,9 @@ def build_manual(output_path: Path, images_dir: Path):
         [
             "원격 PC에서 Agent ZIP을 풀고 SamsungSwitchWatch.Agent.Setup.exe를 실행한 뒤 UAC를 승인합니다.",
             "Agent Setup에는 Viewer IP나 관리망 CIDR을 입력하지 않습니다. 설치 내용을 확인하고 '설치 / 업데이트'를 누릅니다.",
+            "설치가 끝나면 '페어링 코드 보기'를 누르고 SSW1 코드를 Viewer 연결 설정에 직접 입력합니다.",
             "Viewer PC에서 Viewer ZIP을 풀고 SamsungSwitchWatch.Viewer.Setup.exe로 사용자 전용 설치를 진행합니다.",
-            "Viewer의 Agent 연결에서 Agent PC 주소만 입력하고 '연결 확인 및 저장'을 누릅니다.",
+            "Viewer의 Agent 연결에서 Agent PC 주소와 페어링 코드를 입력하고 '연결 확인 및 저장'을 누릅니다.",
             "장비 관리에서 장비명, IPv4, ID, 로그인 PW, 선택 사항인 enable PW를 입력합니다. 모델은 장비 응답에서 자동 판별합니다.",
             "로그인 확인이 성공하면 저장하고, 수집 진단에서 포트·로그 명령을 확인한 뒤 필요할 때 주기 감시를 켭니다.",
             "대시보드의 장비 명령 탭에서 한 줄 show 명령을 실행하고 결과를 확인합니다. Viewer를 종료하면 주기 감시도 함께 중단됩니다.",
@@ -876,9 +877,10 @@ Viewer 허용 범위      : 10/8, 172.16/12, 192.168/16
     add_callout(
         doc,
         "고정 설치 위치",
-        "Agent 프로그램은 %ProgramFiles%\\SamsungSwitchWatch\\Agent에 둡니다. 실행할 때마다 "
-        "새 HTTPS 인증서를 만들고 Windows Schannel용 임시 사용자 키 컨테이너를 프로세스 수명 동안만 "
-        "사용합니다. Agent 종료 시 이를 정리하며 영구 인증서 지문이나 페어링 자료는 저장하지 않습니다. "
+        "Agent 프로그램은 %ProgramFiles%\\SamsungSwitchWatch\\Agent에 둡니다. 최초 실행 때 "
+        "HTTPS 인증서와 32-byte API token을 만들고 %ProgramData%의 제한된 폴더에서 "
+        "DPAPI LocalMachine으로 보호합니다. 인증서 공개키 pin과 token을 담은 SSW1 페어링 코드는 "
+        "관리자가 Setup에서 명시적으로 표시할 때만 화면에 나타납니다. "
         "Setup이 경로 신뢰 검사를 통과하지 못하면 "
         "설치를 중단합니다. 폴더를 강제로 삭제하거나 소유권을 바꿔 우회하지 말고 Windows "
         "관리자에게 실패 코드를 전달하세요.",
@@ -1047,8 +1049,8 @@ Viewer 허용 범위      : 10/8, 172.16/12, 192.168/16
         "0.11.4 이후 Viewer가 실행 중이면 Setup이 저장·정리 종료를 요청하고 실제 종료를 "
         "확인한 뒤 진행합니다. 0.11.3 포터블 Viewer는 새 요청을 이해하지 못하므로 첫 전환 때 "
         "Setup이 수동 종료를 안내할 수 있습니다. Setup은 프로세스를 강제로 종료하지 않습니다. "
-        "기존 Agent 연결과 장비 정보는 그대로 유지됩니다. API v4가 "
-        "호환되면 Agent와 Viewer의 세부 버전이 달라도 경고만 표시하고 연결됩니다.",
+        "기존 장비 정보와 감시 이력은 유지됩니다. v0.12의 API v5는 인증 필수이므로 "
+        "Agent와 Viewer를 같은 Release로 업데이트하고 새 SSW1 코드로 다시 페어링해야 합니다.",
         "warning",
     )
     add_steps(
@@ -1068,8 +1070,8 @@ Viewer 허용 범위      : 10/8, 172.16/12, 192.168/16
         "%LOCALAPPDATA%\\SamsungSwitchWatch에 보존됩니다. Viewer를 업데이트해도 자료는 유지되지만 "
         "각 JSON 파일은 크기 상한과 형식 검사를 적용하며 원자 교체 뒤 백신·EDR의 재확인 잠금만으로 "
         "완료된 저장을 실패로 오판하지 않습니다. "
-        "문제 재현과 지원을 단순하게 하려면 Agent와 같은 Release 사용을 권장합니다. API v4가 "
-        "호환되면 세부 버전이 달라도 연결은 유지되고 경고만 표시됩니다.",
+        "기존 Agent 주소와 장비 데이터는 보존되지만 SPKI pin과 API token이 없으면 연결 설정이 "
+        "필요한 상태가 됩니다. Agent와 Viewer를 같은 Release로 업데이트하고 다시 페어링하세요.",
         "info",
     )
     add_callout(
@@ -1138,28 +1140,18 @@ Viewer 허용 범위      : 10/8, 172.16/12, 192.168/16
         "않습니다. 기존 Agent Setup과 Viewer 연결 실패의 SWD1은 그대로 유지됩니다.",
         "info",
     )
-    add_heading(doc, "Viewer에서 Agent 연결", 2, heading_num_id)
-    add_image(
+    add_heading(
         doc,
-        images_dir / "02-agent-connection.png",
-        width=3.5,
-        title="Agent 연결 창",
-        alt_text="Agent PC 주소 하나와 자동 HTTPS 연결 단계, 연결 확인 및 저장 버튼을 보여 주는 연결 설정 창",
-        caption="그림 5. Agent 주소만 입력하는 연결 설정",
+        "Viewer에서 Agent 연결",
+        2,
+        heading_num_id,
+        page_break_before=True,
     )
     add_unnumbered_heading(
         doc,
         "연결 실패 화면과 확인 순서",
         level=3,
-        page_break_before=True,
-    )
-    add_image(
-        doc,
-        images_dir / "02-agent-connection-failed.png",
-        width=3.5,
-        title="Agent 연결 실패와 지원 코드",
-        alt_text="TCP 18443 연결 거부 단계와 선택 가능한 SWD1 지원 코드를 함께 표시하는 Viewer Agent 연결 실패 창",
-        caption="그림 6. Viewer Agent 연결 실패와 짧은 SWD1 지원 코드",
+        page_break_before=False,
     )
     add_bullets(
         doc,
@@ -1167,8 +1159,9 @@ Viewer 허용 범위      : 10/8, 172.16/12, 192.168/16
             "Agent를 설치한 원격 PC의 IPv4 또는 사내 DNS 이름만 입력합니다. 스위치 IP나 Viewer PC 주소를 "
             "입력하지 않습니다.",
             "Agent와 Viewer가 같은 PC라면 localhost 또는 해당 PC의 사설 IPv4를 사용할 수 있습니다.",
-            "https://, 포트, 인증서 지문과 페어링 토큰은 입력하지 않습니다. HTTPS/TCP 18443과 "
-            "Agent 인증서 확인은 프로그램이 자동 처리합니다.",
+            "주소는 https://와 TCP/18443을 사용합니다. Agent Setup의 SSW1 페어링 코드를 함께 입력합니다.",
+            "Viewer는 코드의 SPKI SHA-256 pin과 DPAPI CurrentUser token을 저장하며 인증서나 token이 "
+            "달라지면 자동 수락하지 않습니다.",
         ],
         bullet_num_id,
     )
@@ -1288,14 +1281,18 @@ Viewer 허용 범위      : 10/8, 172.16/12, 192.168/16
         ],
         [1300, 3500, 4560],
     )
-    add_bullets(
+    add_table(
         doc,
+        ["항목", "동작"],
         [
-            "Enter: 실행, Esc: 취소. 출력 상한은 64KiB이며 복사 버튼은 Windows 클립보드만 사용합니다.",
-            "완료 줄에는 처리 시간과 세션 횟수, 재연결이 있었다면 재연결 횟수도 표시됩니다.",
-            "수동 명령 원문과 출력은 Viewer 프로세스가 종료되면 사라지며 파일이나 Agent에 저장되지 않습니다.",
+            ("실행", "Enter로 실행하고 Esc로 취소합니다. 출력 상한은 64KiB이며 복사 버튼은 Windows 클립보드만 사용합니다."),
+            ("완료 표시", "처리 시간과 세션 횟수, 재연결이 있었다면 재연결 횟수도 표시합니다."),
+            ("원문 수명", "수동 명령 원문과 출력은 Viewer 프로세스 종료 시 사라지며 파일이나 Agent에 저장하지 않습니다."),
         ],
-        bullet_num_id,
+        [1800, 7560],
+        header_size=8.5,
+        body_size=8.25,
+        body_line=1.0,
     )
     add_callout(
         doc,
@@ -1449,8 +1446,13 @@ Viewer 허용 범위      : 10/8, 172.16/12, 192.168/16
             ("수동 show 입력·출력", "Viewer 프로세스 메모리", "복사 가능, 종료 시 소멸"),
             (
                 "Agent HTTPS 인증서",
-                "Agent 프로세스 메모리",
-                "서비스 시작마다 새로 생성, 종료 시 소멸",
+                "%ProgramData%\\SamsungSwitchWatch",
+                "DPAPI LocalMachine 보호, SPKI pin 유지",
+            ),
+            (
+                "Agent API token",
+                "%ProgramData%\\SamsungSwitchWatch",
+                "32-byte CSPRNG, DPAPI LocalMachine 보호",
             ),
             (
                 "Agent 실행 설정",
@@ -1467,9 +1469,9 @@ Viewer 허용 범위      : 10/8, 172.16/12, 192.168/16
             "Viewer 설정을 다른 PC나 Windows 사용자에게 복사해도 계정은 복호화되지 않으며, 진단 파일에는 "
             "IP·ID·비밀번호·호스트명·수동 명령 원문을 넣지 않습니다.",
             "Agent 신원 입력과 Viewer 로컬 JSON은 크기 상한을 넘거나 손상되면 안전하게 거부하며 이전 상태를 정상으로 가장하지 않습니다.",
-            "Viewer는 Agent 인증서 지문이나 페어링 토큰을 저장하지 않습니다. HTTPS는 전송 내용을 "
-            "암호화하지만 Agent PC 신원을 별도로 인증하는 구조는 아닙니다.",
-            "제품 방화벽 규칙과 Agent 업무 API는 RFC1918 사설 Viewer 주소를 허용합니다. "
+            "Viewer는 authority별 Agent SPKI SHA-256 pin과 DPAPI CurrentUser로 보호한 bearer token을 "
+            "저장합니다. 둘 중 하나라도 없거나 일치하지 않으면 자동 우회 없이 연결을 차단합니다.",
+            "제품 방화벽 규칙은 RFC1918 사설 Viewer 주소를 허용하고 Agent 업무 API v5는 bearer를 추가로 요구합니다. "
             "Agent는 RFC1918 사설 장비의 Telnet/23만 사용합니다.",
         ],
         bullet_num_id,
@@ -1492,8 +1494,11 @@ Viewer 허용 범위      : 10/8, 172.16/12, 192.168/16
             ("AGENT_CONNECTION_REFUSED", "실제 Agent PC 주소 → 서비스 Running → 원격 TCP/18443"),
             ("AGENT_CLIENT_NOT_ALLOWED", "Viewer 주소가 10/8, 172.16/12 또는 192.168/16인지 확인"),
             ("AGENT_UNREACHABLE", "Viewer와 Agent PC 사이 라우팅 → 방화벽 → EDR 차단"),
-            ("Agent/Viewer 버전 차이 경고", "API v4 호환이면 그대로 연결 가능. 문제 재현 시 같은 Release로 맞춤"),
-            ("AGENT_PROTOCOL_MISMATCH", "Agent API가 v4인지 확인하고 같은 Release로 업데이트"),
+            ("VIEWER_PAIRING_REQUIRED", "Agent Setup에서 SSW1 코드를 다시 표시해 Viewer에 입력"),
+            ("AGENT_PAIRING_REJECTED", "Agent 주소 확인 → 새 SSW1 코드로 재페어링"),
+            ("AGENT_IDENTITY_CHANGED", "자동 수락 금지 → Agent 교체·인증 자료 변경 여부 확인"),
+            ("AGENT_API_UPGRADE_REQUIRED", "Agent와 Viewer를 같은 Release로 업데이트하고 재페어링"),
+            ("AGENT_PROTOCOL_MISMATCH", "Agent API가 v5인지 확인하고 같은 Release로 업데이트"),
             ("SETUP_PACKAGE_NOT_FOUND", "Agent ZIP 전체 압축 해제 → Setup과 Agent EXE·BUILD-MANIFEST 존재 확인"),
             ("SETUP_PACKAGE_HASH_MISMATCH", "실행 중지 → 공식 ZIP을 새 폴더에 다시 압축 해제 → EDR 격리 기록"),
             ("SETUP_SERVICE_CAPTURE_FAILED", "설치 전 서비스 상태 snapshot 조회 → Windows 서비스 관리 권한"),
@@ -1531,7 +1536,7 @@ Viewer 허용 범위      : 10/8, 172.16/12, 192.168/16
             ("VIEWER_SETUP_PATH_INVALID / VIEWER_SETUP_PATH_NOT_WRITABLE / VIEWER_SETUP_INSTALL_WRITE_FAILED", "공식 ZIP 위치, LocalAppData 쓰기 권한과 EDR 차단 기록 확인"),
             ("VIEWER_SETUP_SMOKE_FAILED / VIEWER_SETUP_LAUNCH_FAILED", "새 Viewer 자체점검 또는 실행 유지 실패. 이전 설치 복구 결과와 EDR 차단 확인"),
             ("VIEWER_SETUP_ROLLBACK_FAILED", "반복 설치와 폴더 수동 삭제를 중지하고 남은 Setup journal·증거를 Windows 관리자에게 전달"),
-            ("Viewer format 3 복구 필요", "v0.11.11 또는 더 최신 Viewer Setup으로 이전 상태 복구 완료 → 설치/업데이트 별도 실행 → 그 뒤에만 downgrade"),
+            ("Viewer format 3 복구 필요", "v0.12.0-poc 또는 더 최신 Viewer Setup으로 이전 상태 복구 완료 → 설치/업데이트 별도 실행 → 그 뒤에만 downgrade"),
             ("SWS1 지원 코드", "Viewer Setup 실패 전용 코드만 전달 → 경로·사용자·해시·transaction ID·자격 증명·장비 정보는 포함되지 않음"),
             ("TARGET_NOT_ALLOWED", "장비 IPv4가 10/8, 172.16/12 또는 192.168/16인지 확인"),
             ("TCP_TIMEOUT", "Agent PC에서 장비 TCP/23 경로, ACL, 장비 Telnet 상태 확인"),
@@ -1651,7 +1656,7 @@ Viewer 허용 범위      : 10/8, 172.16/12, 192.168/16
         "원격 TCP/18443을 확인합니다. 실패하면 코드만 Windows 관리자에게 전달하세요.",
         "warning",
     )
-    add_heading(doc, "현장 진단", 2, heading_num_id, page_break_before=True)
+    add_heading(doc, "현장 진단", 2, heading_num_id, page_break_before=False)
     add_body(
         doc,
         "Agent PC에서는 Windows 서비스에서 Agent 상태를 확인하고 필요하면 Agent Setup을 다시 실행합니다. Viewer에서는 Agent 연결 "

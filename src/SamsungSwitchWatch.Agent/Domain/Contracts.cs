@@ -16,6 +16,9 @@ public static class AgentErrorCodes
     public const string TargetNotAllowed = "TARGET_NOT_ALLOWED";
     public const string AgentBusy = "AGENT_BUSY";
     public const string TlsIdentityInvalid = "TLS_IDENTITY_INVALID";
+    public const string AuthenticationMaterialInvalid = "AUTH_MATERIAL_INVALID";
+    public const string AuthenticationRequired = "AUTH_REQUIRED";
+    public const string ApiUpgradeRequired = "AGENT_API_UPGRADE_REQUIRED";
     public const string TcpTimeout = "TCP_TIMEOUT";
     public const string TelnetNegotiationFailed = "TELNET_NEGOTIATION_FAILED";
     public const string LoginPromptNotFound = "LOGIN_PROMPT_NOT_FOUND";

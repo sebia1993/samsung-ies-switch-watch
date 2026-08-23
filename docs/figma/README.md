@@ -5,7 +5,7 @@
 - Current Viewer dashboard: node `33:205`
 - Current device-management dialog: node `37:4`
 - Current device-command dashboard: node `37:333`
-- Current simplified Agent connection dialog: node `73:72`
+- Previous simplified Agent connection dialog: node `73:72`
 - Current no-input Agent Setup screen: node `73:362`
 - Previous HTTPS Agent connection and same-PC preflight dialog: node `52:123`
 - Previous Agent Setup same-PC address helper screen: node `54:363`
@@ -64,8 +64,8 @@ that the raw output is not saved.
 
 The following connection, network-input, and firewall-gate frames document
 earlier decisions only. They are retained for traceability and must not be used
-as current setup or connection instructions. The current implementation source
-of truth is the v0.11 section below.
+as current setup or connection instructions. The v0.12 authenticated WPF
+connection and `docs/ARCHITECTURE.md` are the current source of truth.
 
 Node `36:2` established the removal of the historical fingerprint,
 pairing-token, `SSW1:` pairing, and Bearer-token flows. Node `52:123` preserves
@@ -237,24 +237,23 @@ define the Agent Setup and Viewer variants.
 - Previous command capability and fallback screen: node `22:131`
 - Previous operations dashboard: node `11:64`
 
-Historical frames remain for decision traceability only. Certificate
-fingerprints, pairing tokens, `SSW1:` strings, Bearer-token input, Agent-side
-device credentials, and Agent-side monitoring schedules must not be
-reintroduced into the current flow.
+Historical frames remain for decision traceability only. Agent-side device
+credentials and Agent-side monitoring schedules must not be reintroduced.
+The v0.12 WPF connection deliberately restores one-time `SSW1.` pairing,
+SPKI pinning and a protected bearer token; the old automatic-acceptance frames
+must not be treated as current guidance.
 
-## v0.11 operability-first flow
+## v0.12 authenticated flow
 
-Nodes `73:72` and `73:362` are the implementation source of truth for the
-current release.
+The WPF implementation and `docs/ARCHITECTURE.md` are the source of truth for
+the current release. Nodes `73:72` and `73:362` describe the previous UI.
 
-1. Viewer asks only for the Agent PC IPv4 or internal DNS name. HTTPS/TCP
-   `18443` is fixed and no certificate fingerprint, pairing token, same-PC
-   helper, or trust-reset action is exposed.
-2. Viewer accepts the Agent's current self-signed TLS certificate automatically.
-   API v4 compatibility is the connection gate; a product-version difference is
-   shown as a warning and does not block a compatible connection.
+1. Viewer asks for the Agent HTTPS address and a one-time `SSW1.` pairing code.
+2. Viewer stores the SPKI SHA-256 pin and a DPAPI CurrentUser-protected bearer
+   token. A pin or token mismatch blocks the connection without fallback.
 3. Agent Setup has no Viewer IPv4 or management-CIDR input. It installs the
-   hidden Windows service and applies the three RFC1918 ranges automatically.
+   hidden Windows service, applies the three RFC1918 ranges automatically, and
+   lets an administrator display the pairing code explicitly.
 4. The product-owned Domain/Private firewall rule is best effort. A firewall,
    local HTTPS, API, or version readiness failure after the service is installed
    is an actionable warning, not a reason to remove the installed Agent.
@@ -263,8 +262,6 @@ current release.
    single-line `show` command per request for Telnet/TCP `23` targets in RFC1918
    space.
 
-This design intentionally prioritizes reliable operation on restricted company
-PCs. HTTPS still encrypts the transport, but automatic certificate acceptance
-does not authenticate the Agent endpoint. The UI therefore describes the
-network boundary plainly instead of presenting the connection as strongly
-authenticated.
+The v0.12 UI keeps the network boundary plain while requiring both the paired
+Agent public key and API token. Telnet/TCP 23 remains plaintext and is not
+protected by this Viewer-to-Agent authentication.

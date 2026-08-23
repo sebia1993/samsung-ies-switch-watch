@@ -90,7 +90,7 @@ public sealed class AgentHttpsCertificateIntegrationTests
                     cancellationToken: timeout.Token);
                 var root = document.RootElement;
                 Assert.Equal("ready", root.GetProperty("status").GetString());
-                Assert.Equal(4, root.GetProperty("apiVersion").GetInt32());
+                Assert.Equal(5, root.GetProperty("apiVersion").GetInt32());
                 Assert.Equal("https", root.GetProperty("protocol").GetString());
             }
             finally
@@ -126,8 +126,12 @@ public sealed class AgentHttpsCertificateIntegrationTests
     }
 
     [Fact]
-    public async Task ProductionBuild_IgnoresLegacyIdentityArtifacts()
+    public void ProductionBuild_FailsClosedForInvalidPersistentIdentityArtifacts()
     {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
         var dataDirectory = NewDataDirectory();
         try
         {
@@ -138,14 +142,11 @@ public sealed class AgentHttpsCertificateIntegrationTests
                 Path.Combine(dataDirectory, AgentIdentityStore.CertificateFileName),
                 "invalid legacy certificate");
 
-            await using var app = AgentApplication.Build(
-                ["--service"],
-                ProductionOverrides(dataDirectory));
-            var identity = app.Services.GetRequiredService<AgentIdentity>();
-            using var key = identity.Certificate.GetRSAPrivateKey();
-
-            Assert.NotNull(key);
-            Assert.Matches("^[0-9A-F]{64}$", identity.CertificatePublicKeySha256);
+            var exception = Assert.Throws<AgentConfigurationException>(() =>
+                AgentApplication.Build(
+                    ["--service"],
+                    ProductionOverrides(dataDirectory)));
+            Assert.Equal("TLS_IDENTITY_INVALID", exception.Code);
         }
         finally
         {

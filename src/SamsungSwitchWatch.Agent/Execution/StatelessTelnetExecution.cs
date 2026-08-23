@@ -147,7 +147,7 @@ public sealed class CoreStatelessTelnetExecutor(
         }
 
         return new TelnetApiResult(
-            4,
+            5,
             request.RequestId,
             true,
             session.Privilege == TelnetPrivilege.Privileged ? "privileged" : "user",
@@ -186,7 +186,7 @@ public sealed class MockStatelessTelnetExecutor(TimeProvider? timeProvider = nul
                 false,
                 now)).ToArray();
         return Task.FromResult(new TelnetApiResult(
-            4,
+            5,
             request.RequestId,
             true,
             privilege,

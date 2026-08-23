@@ -140,6 +140,7 @@ public partial class App : Application
                 or ViewerSettingsLoadStatus.Corrupt
                 or ViewerSettingsLoadStatus.StorageUnavailable
                            || (!settings.DemoMode && !ViewerSettingsSanitizer.IsValidForLiveConnection(settings, out _));
+        needsConnection = needsConnection || (!settings.DemoMode && !settings.HasAgentPairingCredential());
         if (StartupWindowPolicy.ShouldShowMainWindow(
                 settings,
                 needsConnection,

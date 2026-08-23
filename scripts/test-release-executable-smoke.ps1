@@ -54,7 +54,8 @@ $environmentNames = @(
     'Agent__ListenUrl',
     'Agent__DataDirectory',
     'Agent__MockMode',
-    'Agent__AllowedTargetCidrs__0'
+    'Agent__AllowedTargetCidrs__0',
+    'SSW_MOCK_BEARER_TOKEN'
 )
 $previousEnvironment = @{}
 foreach ($name in $environmentNames) {
@@ -63,6 +64,12 @@ foreach ($name in $environmentNames) {
 }
 
 $agentProcess = $null
+$mockBearerBytes = New-Object byte[] 32
+$mockRandom = [Security.Cryptography.RandomNumberGenerator]::Create()
+try { $mockRandom.GetBytes($mockBearerBytes) }
+finally { $mockRandom.Dispose() }
+$mockBearerToken = [Convert]::ToBase64String($mockBearerBytes).TrimEnd('=').Replace('+', '-').Replace('/', '_')
+$authHeaders = @{ Authorization = "Bearer $mockBearerToken" }
 
 function Invoke-SswBoundedExecutable {
     param(
@@ -154,6 +161,7 @@ try {
     $env:Agent__DataDirectory = $agentDataDirectory
     $env:Agent__MockMode = 'true'
     $env:Agent__AllowedTargetCidrs__0 = '10.40.0.0/16'
+    $env:SSW_MOCK_BEARER_TOKEN = $mockBearerToken
 
     Write-SswStep 'Agent ZIP MockMode executable smoke'
     $agentExecutable =
@@ -185,8 +193,9 @@ try {
         throw 'AGENT_PACKAGE_SMOKE_READY_TIMEOUT'
     }
 
-    $identity = Invoke-RestMethod -Uri "$baseUri/api/v4/identity" -TimeoutSec 3
-    if ($identity.apiVersion -ne 4 -or $identity.protocol -ne 'https') {
+    $identity = Invoke-RestMethod -Uri "$baseUri/api/v5/identity" `
+        -Headers $authHeaders -TimeoutSec 3
+    if ($identity.apiVersion -ne 5 -or $identity.protocol -ne 'https') {
         throw 'AGENT_PACKAGE_SMOKE_IDENTITY_INVALID'
     }
 
@@ -202,8 +211,9 @@ try {
     $testRequest = [ordered]@{} + $commonRequest
     $testRequest.purpose = 'test'
     $testRequest.commands = @()
-    $testResult = Invoke-RestMethod -Uri "$baseUri/api/v4/telnet/test" `
+    $testResult = Invoke-RestMethod -Uri "$baseUri/api/v5/telnet/test" `
         -Method Post -ContentType 'application/json' `
+        -Headers $authHeaders `
         -Body ($testRequest | ConvertTo-Json -Depth 5 -Compress) -TimeoutSec 3
     if (-not $testResult.success -or @($testResult.commands).Count -ne 0) {
         throw 'AGENT_PACKAGE_SMOKE_TEST_INVALID'
@@ -213,8 +223,9 @@ try {
     $executeRequest.requestId = 'release-package-smoke-query'
     $executeRequest.purpose = 'manual'
     $executeRequest.commands = @('show port status')
-    $executeResult = Invoke-RestMethod -Uri "$baseUri/api/v4/telnet/execute" `
+    $executeResult = Invoke-RestMethod -Uri "$baseUri/api/v5/telnet/execute" `
         -Method Post -ContentType 'application/json' `
+        -Headers $authHeaders `
         -Body ($executeRequest | ConvertTo-Json -Depth 5 -Compress) -TimeoutSec 3
     if (-not $executeResult.success -or
         @($executeResult.commands).Count -ne 1 -or
@@ -245,6 +256,10 @@ finally {
             $previousEnvironment[$name],
             'Process')
     }
+
+    [Array]::Clear($mockBearerBytes, 0, $mockBearerBytes.Length)
+    $mockBearerToken = $null
+    $authHeaders = $null
 
     if (Test-Path -LiteralPath $smokeRoot) {
         Assert-SswChildPath -Parent $temporaryParent -Child $smokeRoot

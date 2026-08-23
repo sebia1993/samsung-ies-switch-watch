@@ -1054,14 +1054,14 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
                 return;
             }
 
-            if (_client.SupportsStatelessV4)
+            if (_client.SupportsStatelessV5)
             {
                 _statelessV4 = true;
                 await RunOnUiAsync(() =>
                 {
                     _apiVersion = 4;
                     _hasSnapshot = true;
-                    CollectorVersion = "Agent API v4";
+                    CollectorVersion = "Agent API v5";
                     CollectorSummary = "Viewer 주도형 Telnet 중계 · Agent 연결 확인 중";
                     ReadOnlyQueryMaxCommandLength = 128;
                     ReloadManagedDevices();
@@ -1115,7 +1115,7 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
                             ? AgentConnectionState.Demo
                             : AgentConnectionState.Connected;
                         RealtimeConnectionState = HttpConnectionState;
-                        CollectorVersion = $"Agent {identity.AgentId} · API v4";
+                        CollectorVersion = $"Agent {identity.AgentId} · API v{identity.ApiVersion}";
                         CollectorSummary = "Viewer 주도형 Telnet 중계 준비";
                         ReadOnlyQueryMaxCommandLength = 128;
                         ReadOnlyQueryMaxOutputBytes = identity.MaxOutputBytes;
@@ -1332,7 +1332,7 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
             var replacementConnectionVerified = false;
             try
             {
-                if (replacement.SupportsStatelessV4)
+                if (replacement.SupportsStatelessV5)
                 {
                     await replacement.StartAsync(cancellationToken).ConfigureAwait(false);
                     var identity = await replacement.GetIdentityAsync(cancellationToken).ConfigureAwait(false);
@@ -1373,7 +1373,7 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
                         _lastSuccessfulReceiptAt = DateTimeOffset.Now;
                         HttpConnectionState = clean.DemoMode ? AgentConnectionState.Demo : AgentConnectionState.Connected;
                         RealtimeConnectionState = HttpConnectionState;
-                        CollectorVersion = $"Agent {identity.AgentId} · API v4";
+                        CollectorVersion = $"Agent {identity.AgentId} · API v{identity.ApiVersion}";
                         CollectorSummary = "Viewer 주도형 Telnet 중계 준비";
                         ReadOnlyQueryMaxOutputBytes = identity.MaxOutputBytes;
                         ReloadManagedDevices();
@@ -1830,7 +1830,7 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
                         ? AgentConnectionState.Demo
                         : AgentConnectionState.Connected;
                     RealtimeConnectionState = HttpConnectionState;
-                    CollectorVersion = $"Agent {identity.AgentId} · API v4";
+                    CollectorVersion = $"Agent {identity.AgentId} · API v{identity.ApiVersion}";
                     CollectorSummary = "Viewer 주도형 Telnet 중계 준비";
                     ReadOnlyQueryMaxOutputBytes = identity.MaxOutputBytes;
                     RebuildCollectorHealth(DateTimeOffset.UtcNow);
@@ -4024,9 +4024,9 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
         else if (_statelessV4)
         {
             OperationalStatuses.Add(new OperationalStatusDto(
-                "HTTPS_AUTOMATIC",
-                "HTTPS 보호",
-                "인증서 입력 없이 Agent와 암호화 통신합니다.",
+                "PAIRING_PINNED",
+                "HTTPS 인증",
+                "페어링 token과 고정된 인증서 공개키로 Agent를 확인합니다.",
                 DeviceHealth.Normal));
         }
 
@@ -4565,6 +4565,26 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
                 }
             }
             target.AgentTrustPins = mergedPins;
+
+            var mergedTokens = new Dictionary<string, string>(
+                latest.ProtectedAgentBearerTokens,
+                StringComparer.OrdinalIgnoreCase);
+            if (!candidateSnapshot.DemoMode)
+            {
+                var targetAuthority = candidateSnapshot.BuildAgentAuthority();
+                if (targetAuthority.Length > 0
+                    && candidateSnapshot.ProtectedAgentBearerTokens.TryGetValue(
+                        targetAuthority,
+                        out var targetToken))
+                {
+                    if (!mergedTokens.ContainsKey(targetAuthority) && mergedTokens.Count >= 32)
+                    {
+                        mergedTokens.Remove(mergedTokens.Keys.First());
+                    }
+                    mergedTokens[targetAuthority] = targetToken;
+                }
+            }
+            target.ProtectedAgentBearerTokens = mergedTokens;
         });
         return candidateHadCursor || latestHadTargetCursor;
     }

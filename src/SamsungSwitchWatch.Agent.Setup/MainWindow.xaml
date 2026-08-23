@@ -72,6 +72,7 @@
                     <RowDefinition Height="Auto" />
                     <RowDefinition Height="*" />
                     <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
                 </Grid.RowDefinitions>
                 <Grid Margin="0,0,0,8">
                     <Grid.ColumnDefinitions>
@@ -135,6 +136,40 @@
                     </ItemsControl>
                 </ScrollViewer>
                 <Border Grid.Row="3"
+                        x:Name="PairingCodeBorder"
+                        Margin="0,10,0,0"
+                        Padding="10,8"
+                        CornerRadius="6"
+                        Background="#EFF6FF"
+                        BorderBrush="#2563EB"
+                        BorderThickness="1"
+                        Visibility="Collapsed"
+                        AutomationProperties.Name="Viewer 페어링 코드">
+                    <StackPanel>
+                        <TextBlock Text="Viewer 페어링 코드 · 비밀로 취급하세요"
+                                   FontSize="11"
+                                   FontWeight="SemiBold"
+                                   Foreground="#1D4ED8" />
+                        <TextBox x:Name="PairingCodeTextBox"
+                                 Margin="0,4,0,0"
+                                 Padding="6"
+                                 FontFamily="Consolas"
+                                 FontSize="11"
+                                 IsReadOnly="True"
+                                 IsReadOnlyCaretVisible="True"
+                                 TextWrapping="Wrap"
+                                 AutomationProperties.Name="Viewer 페어링 코드 값" />
+                        <Button Margin="0,7,0,0"
+                                HorizontalAlignment="Left"
+                                Style="{StaticResource SecondaryButton}"
+                                Click="CopyPairingCodeButton_Click"
+                                Content="페어링 코드 복사" />
+                        <TextBlock Margin="0,5,0,0" FontSize="11" TextWrapping="Wrap"
+                                   Foreground="#1E40AF"
+                                   Text="Viewer PC의 연결 설정에 한 번만 붙여 넣으세요. 메신저·메일·진단 로그로 전달하지 마세요." />
+                    </StackPanel>
+                </Border>
+                <Border Grid.Row="4"
                         x:Name="SupportCodeBorder"
                         Margin="0,10,0,0"
                         Padding="10,8"
@@ -202,6 +237,11 @@
                         Click="CheckButton_Click"
                         Content="사전 점검"
                         Visibility="Collapsed" />
+                <Button x:Name="ShowPairingButton"
+                        Style="{StaticResource SecondaryButton}"
+                        Margin="0,0,8,0"
+                        Click="ShowPairingButton_Click"
+                        Content="페어링 코드 보기" />
                 <Button x:Name="RecoverButton"
                         Style="{StaticResource PrimaryButton}"
                         Margin="0,0,8,0"

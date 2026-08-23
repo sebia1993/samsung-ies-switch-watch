@@ -2115,23 +2115,24 @@ public sealed class ViewerManagedDeviceTests
     }
 
     [Fact]
-    public void CertificateTrust_IsAutomaticAndAcceptsEphemeralAgentKeyChanges()
+    public void CertificateTrust_RequiresPairingPinAndRejectsAgentKeyChanges()
     {
         using var firstKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
         using var secondKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
         using var first = CreateCertificate(firstKey, "CN=agent-a");
         using var second = CreateCertificate(secondKey, "CN=agent-a");
         var settings = new ViewerSettings { AgentUri = "https://agent-a:18443" };
+        settings.SetAgentTrustPin(CertificatePinValidator.GetSpkiSha256(first));
         var initial = new CertificatePinValidator(settings);
 
         Assert.True(initial.Validate(new HttpRequestMessage(), first, null, SslPolicyErrors.RemoteCertificateChainErrors));
         var firstPin = CertificatePinValidator.GetSpkiSha256(first);
         Assert.True(initial.CompleteTrust(firstPin));
-        Assert.Empty(settings.AgentTrustPins);
+        Assert.Single(settings.AgentTrustPins);
 
         var changed = new CertificatePinValidator(settings);
-        Assert.True(changed.Validate(new HttpRequestMessage(), second, null, SslPolicyErrors.None));
-        Assert.False(changed.IdentityChanged);
+        Assert.False(changed.Validate(new HttpRequestMessage(), second, null, SslPolicyErrors.None));
+        Assert.True(changed.IdentityChanged);
     }
 
     [Fact]
@@ -2530,6 +2531,14 @@ public sealed class ViewerManagedDeviceTests
     private static X509Certificate2 CreateCertificate(ECDsa key, string subject)
     {
         var request = new CertificateRequest(subject, key, HashAlgorithmName.SHA256);
+        request.CertificateExtensions.Add(
+            new X509BasicConstraintsExtension(false, false, 0, true));
+        request.CertificateExtensions.Add(
+            new X509KeyUsageExtension(X509KeyUsageFlags.DigitalSignature, true));
+        request.CertificateExtensions.Add(
+            new X509EnhancedKeyUsageExtension(
+                new OidCollection { new("1.3.6.1.5.5.7.3.1") },
+                true));
         return request.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(1));
     }
 

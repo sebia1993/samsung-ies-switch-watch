@@ -29,11 +29,12 @@ public sealed class DemoAgentClient : IAgentClient
 
     public event EventHandler<AgentEventChangeDto>? EventChanged;
     public event EventHandler<AgentConnectionState>? ConnectionStateChanged;
-    public bool SupportsStatelessV4 => true;
+    public bool SupportsStatelessV4 => false;
+    public bool SupportsStatelessV5 => true;
 
     public Task<AgentIdentityDto> GetIdentityAsync(CancellationToken cancellationToken) =>
         Task.FromResult(new AgentIdentityDto(
-            4,
+            5,
             "demo-agent",
             "demo-instance",
             new string('A', 64),
@@ -48,7 +49,7 @@ public sealed class DemoAgentClient : IAgentClient
         var started = DateTimeOffset.UtcNow;
         await Task.Delay(180, cancellationToken);
         return new TelnetExecutionResultDto(
-            4, target.RequestId, true, string.IsNullOrEmpty(target.EnablePassword) ? "user" : "privileged",
+            5, target.RequestId, true, string.IsNullOrEmpty(target.EnablePassword) ? "user" : "privileged",
             string.IsNullOrEmpty(target.EnablePassword) ? ">" : "#",
             started, DateTimeOffset.UtcNow, 180, [])
         {
@@ -73,7 +74,7 @@ public sealed class DemoAgentClient : IAgentClient
             outputs.Add(new TelnetCommandOutputDto(command, legacy.Output, legacy.Truncated, DateTimeOffset.UtcNow));
         }
         return new TelnetExecutionResultDto(
-            4, request.RequestId, true, string.IsNullOrEmpty(request.EnablePassword) ? "user" : "privileged",
+            5, request.RequestId, true, string.IsNullOrEmpty(request.EnablePassword) ? "user" : "privileged",
             string.IsNullOrEmpty(request.EnablePassword) ? ">" : "#",
             started, DateTimeOffset.UtcNow, Math.Max(0, (long)(DateTimeOffset.UtcNow - started).TotalMilliseconds), outputs);
     }

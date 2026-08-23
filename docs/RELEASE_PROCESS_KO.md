@@ -2,8 +2,8 @@
 
 ## 릴리스 계약
 
-- 현재 버전: `0.11.11-poc`
-- 태그: annotated tag `v0.11.11-poc`
+- 현재 버전: `0.12.0-poc`
+- 태그: annotated tag `v0.12.0-poc`
 - 대상: Windows x64, self-contained, single-file managed publish, untrimmed
 - GitHub Release 사용자 정의 Asset: Agent ZIP과 Viewer ZIP 정확히 두 개
 - 공개 패키지: PowerShell·CMD·개발 설정·DB·인증정보 제외
@@ -12,15 +12,15 @@
 공개 Asset:
 
 ```text
-SamsungSwitchWatch-Agent-0.11.11-poc-win-x64.zip
-SamsungSwitchWatch-Viewer-0.11.11-poc-win-x64.zip
+SamsungSwitchWatch-Agent-0.12.0-poc-win-x64.zip
+SamsungSwitchWatch-Viewer-0.12.0-poc-win-x64.zip
 ```
 
 내부 검증 파일:
 
 ```text
-SamsungSwitchWatch-Agent-0.11.11-poc-win-x64.zip
-SamsungSwitchWatch-Viewer-0.11.11-poc-win-x64.zip
+SamsungSwitchWatch-Agent-0.12.0-poc-win-x64.zip
+SamsungSwitchWatch-Viewer-0.12.0-poc-win-x64.zip
 BUILD-MANIFEST.json
 SBOM.spdx.json
 SBOM.cdx.json
@@ -61,7 +61,7 @@ dotnet test SamsungSwitchWatch.sln -c Release --no-build
 - Viewer Setup이 검증되지 않은 기존 프로그램 폴더를 transaction backup으로 옮기고, commit 전
   실패·취소 시 원래 설치 경로로 복원하며 commit 뒤에만 최근 제품 격리본 1개로 확정함
 - Viewer Setup이 새 journal format 3을 기록하고 기존 format 2를 원래 의미대로 복구함
-- format 3 복구가 남으면 v0.11.11 또는 더 최신 Setup으로 복구를 끝낸 뒤에만 downgrade함
+- format 3 복구가 남으면 v0.12.0 또는 더 최신 Setup으로 복구를 끝낸 뒤에만 downgrade함
 - 프로그램 격리·복구 중 `%LOCALAPPDATA%\SamsungSwitchWatch`의 장비·DPAPI·감시 데이터가 바뀌지 않음
 - 미완료 Agent 트랜잭션에서 설치가 차단되고 별도 `이전 상태 복구`만 허용됨
 - 기존 Agent→backup과 staging→설치 위치의 활성화 이동이 각각 최대 5회로 제한되고,
@@ -96,11 +96,10 @@ dotnet test SamsungSwitchWatch.sln -c Release --no-build
 - SWS1이 24자 고정 형식과 CRC 검사를 사용하며 경로·사용자·파일 해시·transaction ID·자격 증명·
   장비 정보·예외 원문을 포함하지 않음
 - 기존 SWD1 고정 벡터와 Agent Setup·Viewer 연결 해석 결과가 변경되지 않음
-- 실행 중인 API v4 Agent의 최소 readiness 응답은 사전 점검에서 호환되며, Viewer는 같은
-  API v4의 제품 버전 차이를 경고로 표시한 뒤 연결함
-- production Agent가 시작마다 새 RSA 인증서와 PFX 바이트를 만들고 Exportable·PersistKeySet
-  없이 UserKeySet으로 가져오며, 프로세스 종료 뒤 임시 사용자 키 컨테이너가 남지 않는지
-  Schannel TLS 서버 통합 테스트로 검증함
+- 공개 readiness 응답이 Agent ID·SPKI·token·장비 정보를 포함하지 않음
+- production Agent가 DPAPI LocalMachine으로 보호한 영구 RSA 인증서와 32-byte token을
+  재시작 뒤에도 유지하고, Viewer는 수동 페어링한 SPKI pin과 bearer를 모두 검증함
+- token·pin 불일치, 인증서 EKU·유효기간 오류, API v4는 자동 fallback 없이 차단됨
 - Setup 준비 상태 재시도는 매번 새 HTTP handler/client, 정확한 HTTP/1.1과 `Connection: close`를
   사용하며 실패한 TLS 연결 상태를 다음 시도에 재사용하지 않음
 - 파일과 서비스 설치를 commit한 뒤 로컬 HTTPS 준비 상태를 확인하지 못해도 rollback하지 않고
@@ -141,7 +140,7 @@ dotnet test SamsungSwitchWatch.sln -c Release --no-build
   경로로 복원되고 commit·격리 회전 각 단계에서 중단돼도 journal로 재개되는지 확인
 - 회귀 테스트 대상: 기존 format 2와 신규 format 3 Viewer journal 복구 및 구형 Setup의
   format 3 fail-closed 동작 확인
-- Agent API v4, Viewer 저장 형식과 보안 계약이 변경되지 않음
+- API v5 인증·재페어링 마이그레이션, Viewer 설정 보존과 v4 426 계약이 검증됨
 
 ## 사용자 매뉴얼 갱신
 
@@ -187,7 +186,7 @@ python .\tools\build-user-manual.py `
 python .\tools\render-user-manual-pdf.py `
   --input .\docs\SamsungSwitchWatch_User_Manual_KO.docx `
   --output .\docs\SamsungSwitchWatch_User_Manual_KO.pdf `
-  --render-dir .\tmp\manual-render-0.11.11
+  --render-dir .\tmp\manual-render-0.12.0-poc
 ```
 
 DOCX는 저장소 편집 원본이고 공개 패키지에는 넣지 않습니다. PDF는 두 ZIP에 포함합니다.
@@ -196,13 +195,13 @@ QA 페이지 PNG는 시각 검사 후 임시 폴더에만 두며 커밋하지 �
 ## 로컬 패키지 생성
 
 ```powershell
-.\scripts\build-release.ps1 -Version 0.11.11-poc
+.\scripts\build-release.ps1 -Version 0.12.0-poc
 ```
 
 진단용 dirty 빌드는 게시하지 않습니다.
 
 ```powershell
-.\scripts\build-release.ps1 -Version 0.11.11-poc -AllowDirty
+.\scripts\build-release.ps1 -Version 0.12.0-poc -AllowDirty
 ```
 
 빌드 스크립트는 다음 순서로 실행됩니다.
@@ -279,7 +278,7 @@ Viewer Setup은 UAC 없이 `%LOCALAPPDATA%\Programs\SamsungSwitchWatch\Viewer`�
 $commit = (git rev-parse HEAD).Trim()
 .\scripts\test-package-contract.ps1 `
   -ReleaseDirectory .\artifacts\release `
-  -Version 0.11.11-poc `
+  -Version 0.12.0-poc `
   -ExpectedSourceCommit $commit
 .\scripts\test-release-workflow-contract.ps1
 ```
@@ -289,7 +288,7 @@ $commit = (git rev-parse HEAD).Trim()
 ```powershell
 .\scripts\test-release-executable-smoke.ps1 `
   -ReleaseDirectory .\artifacts\release `
-  -Version 0.11.11-poc
+  -Version 0.12.0-poc
 ```
 
 검사는 다음 조건을 fail-closed로 확인합니다.
@@ -312,8 +311,8 @@ $commit = (git rev-parse HEAD).Trim()
 ## 태그와 게시
 
 ```powershell
-git tag -a v0.11.11-poc -m "Samsung Switch Watch v0.11.11-poc"
-git push origin v0.11.11-poc
+git tag -a v0.12.0-poc -m "Samsung Switch Watch v0.12.0-poc"
+git push origin v0.12.0-poc
 ```
 
 Release workflow는 태그가 `origin/main`에 포함되고 annotated tag의 객체와 peeled commit이
@@ -329,10 +328,10 @@ Release workflow는 태그가 `origin/main`에 포함되고 annotated tag의 객
 ## 게시 후 확인
 
 ```powershell
-$tag = 'v0.11.11-poc'
+$tag = 'v0.12.0-poc'
 $expected = @(
-  'SamsungSwitchWatch-Agent-0.11.11-poc-win-x64.zip',
-  'SamsungSwitchWatch-Viewer-0.11.11-poc-win-x64.zip'
+  'SamsungSwitchWatch-Agent-0.12.0-poc-win-x64.zip',
+  'SamsungSwitchWatch-Viewer-0.12.0-poc-win-x64.zip'
 ) | Sort-Object
 $release = gh release view $tag --json isDraft,isPrerelease,assets,url | ConvertFrom-Json
 $actual = @($release.assets | ForEach-Object { $_.name } | Sort-Object)

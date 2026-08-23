@@ -46,6 +46,7 @@ public partial class MainWindow : Window
             InstallButton.IsEnabled = false;
             InstallButton.ToolTip = "진단 모드에서는 설치를 실행하지 않습니다.";
             CheckButton.Visibility = Visibility.Visible;
+            ShowPairingButton.Visibility = Visibility.Collapsed;
         }
 
         Loaded += OnLoaded;
@@ -299,6 +300,50 @@ public partial class MainWindow : Window
             _ => Brushes.Firebrick
         };
         ActionGuidanceText.Text = completion.GuidanceText;
+        if (result.Succeeded)
+        {
+            ShowPairingCode();
+        }
+    }
+
+    private void ShowPairingCode()
+    {
+        var paths = DeploymentPaths.ForCurrentMachine(AppContext.BaseDirectory);
+        if (SetupPairingCodeReader.TryRead(paths.DataDirectory, out var pairingCode))
+        {
+            PairingCodeTextBox.Text = pairingCode;
+            PairingCodeBorder.Visibility = Visibility.Visible;
+        }
+        else
+        {
+            PairingCodeTextBox.Text = string.Empty;
+            PairingCodeBorder.Visibility = Visibility.Collapsed;
+            ActionGuidanceText.Text += " · 페어링 코드를 읽지 못했습니다. Agent 서비스를 확인한 뒤 Setup을 다시 실행하세요.";
+        }
+    }
+
+    private void CopyPairingCodeButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (!string.IsNullOrWhiteSpace(PairingCodeTextBox.Text))
+        {
+            Clipboard.SetText(PairingCodeTextBox.Text);
+        }
+    }
+
+    private void ShowPairingButton_Click(object sender, RoutedEventArgs e)
+    {
+        var confirmation = MessageBox.Show(
+            this,
+            "페어링 코드는 Agent 인증 토큰을 포함합니다.\n" +
+            "Viewer 연결 설정에 직접 입력할 때만 화면에 표시하세요.\n\n" +
+            "계속하시겠습니까?",
+            "페어링 코드 표시",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Warning);
+        if (confirmation == MessageBoxResult.Yes)
+        {
+            ShowPairingCode();
+        }
     }
 
     private SetupRequest CreateRequest() =>
@@ -310,6 +355,8 @@ public partial class MainWindow : Window
         Func<CancellationToken, Task<SetupOperationResult>> operation)
     {
         var stopwatch = Stopwatch.StartNew();
+        PairingCodeTextBox.Text = string.Empty;
+        PairingCodeBorder.Visibility = Visibility.Collapsed;
         HideSupportCode();
         SetBusy(true);
         _results.Clear();
@@ -412,6 +459,7 @@ public partial class MainWindow : Window
     {
         _isBusy = busy;
         CheckButton.IsEnabled = !busy;
+        ShowPairingButton.IsEnabled = !busy;
         CopyDiagnosticsButton.IsEnabled = !busy;
         SaveFieldDiagnosticButton.IsEnabled =
             !busy && _lastCompletedOperation is not null;

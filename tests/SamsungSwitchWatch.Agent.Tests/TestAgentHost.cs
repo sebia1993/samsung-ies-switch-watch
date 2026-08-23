@@ -4,6 +4,8 @@ using Microsoft.AspNetCore.Hosting.Server.Features;
 using Microsoft.Extensions.DependencyInjection;
 using SamsungSwitchWatch.Agent;
 using SamsungSwitchWatch.Agent.Execution;
+using SamsungSwitchWatch.Agent.Security;
+using System.Net.Http.Headers;
 
 namespace SamsungSwitchWatch.Agent.Tests;
 
@@ -58,6 +60,24 @@ internal sealed class TestAgentHost : IAsyncDisposable
         var server = app.Services.GetRequiredService<IServer>();
         var address = server.Features.Get<IServerAddressesFeature>()!.Addresses.Single();
         var client = new HttpClient { BaseAddress = new Uri(address) };
+        var identity = app.Services.GetRequiredService<AgentIdentity>();
+        var authentication = app.Services.GetRequiredService<AgentAuthenticationMaterial>();
+        var pairingCode = authentication.CreatePairingCode(identity);
+        var encoded = pairingCode["SSW1.".Length..].Replace('-', '+').Replace('_', '/');
+        var payload = Convert.FromBase64String(encoded + "==");
+        try
+        {
+            var bearer = Convert.ToBase64String(payload.AsSpan(32, 32))
+                .TrimEnd('=')
+                .Replace('+', '-')
+                .Replace('/', '_');
+            client.DefaultRequestHeaders.Authorization =
+                new AuthenticationHeaderValue("Bearer", bearer);
+        }
+        finally
+        {
+            System.Security.Cryptography.CryptographicOperations.ZeroMemory(payload);
+        }
         return new TestAgentHost(folder, app, client);
     }
 

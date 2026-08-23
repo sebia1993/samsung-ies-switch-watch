@@ -33,7 +33,7 @@ foreach ($project in @($packageReport.projects | Where-Object { $_.path -match '
 $packages = @($packagesByKey.Values | Sort-Object Id, Version)
 $created = [DateTimeOffset]::UtcNow.ToString('O')
 $namespaceCommit = if ([string]::IsNullOrWhiteSpace($SourceCommit)) { 'unknown' } else { $SourceCommit }
-$documentNamespace = "https://github.com/sebia1993/samsung_switch_check/sbom/$Version/$namespaceCommit"
+$documentNamespace = "https://github.com/sebia1993/samsung-ies-switch-watch/sbom/$Version/$namespaceCommit"
 $rootSpdxId = 'SPDXRef-Package-SamsungSwitchWatch'
 
 $spdxPackages = New-Object Collections.Generic.List[object]

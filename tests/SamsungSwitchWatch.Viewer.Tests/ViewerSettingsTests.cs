@@ -172,7 +172,7 @@ public sealed class ViewerSettingsTests
 
             var loaded = store.Load();
 
-            Assert.Equal(ViewerSettingsLoadStatus.Ok, store.LastLoadStatus);
+            Assert.Equal(ViewerSettingsLoadStatus.NeedsConnection, store.LastLoadStatus);
             Assert.False(loaded.DemoMode);
             Assert.Equal("https://agent.example.test:18443", loaded.AgentUri);
             Assert.False(loaded.MiniTopmost);
