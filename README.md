@@ -80,8 +80,8 @@ Viewer와 Agent가 각각 명령을 검증합니다.
 
 ### 2. 인증과 인증서 고정
 
-- 무인증 공개 경로는 최소 정보만 반환하는 `/health/live`, `/health/ready`뿐입니다.
-- 모든 원격 기능 API는 32-byte bearer token이 필요합니다.
+- `/health/live`, `/health/ready`를 포함한 모든 Agent 경로는 32-byte bearer token이 필요합니다.
+- health 응답은 인증 뒤에도 생존·버전·프로토콜에 필요한 최소 정보만 반환합니다.
 - token 비교와 SPKI pin 비교는 `CryptographicOperations.FixedTimeEquals`를 사용합니다.
 - 인증서 유효기간과 TLS Server Authentication EKU도 확인합니다.
 - pin 불일치, token 손상·누락, API 세대 불일치는 자동 수락하거나 구형 API로 fallback하지 않습니다.

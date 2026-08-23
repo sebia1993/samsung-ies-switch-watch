@@ -10,15 +10,21 @@ namespace SamsungSwitchWatch.Agent.Setup.Tests;
 
 public sealed class AgentHealthIdentityTests
 {
+    private static readonly string TestBearerToken =
+        Convert.ToBase64String(new byte[32])
+            .TrimEnd('=')
+            .Replace('+', '-')
+            .Replace('/', '_');
+
     [Theory]
     [InlineData("0.10.0-poc", "0.10.0-poc")]
     [InlineData("0.10.0-poc+abcdef", "0.10.0-poc")]
-    public void IsExpectedReadiness_AcceptsApiV4HttpsAndNormalizedProductVersion(
+    public void IsExpectedReadiness_AcceptsApiV5HttpsAndNormalizedProductVersion(
         string actualVersion,
         string expectedVersion)
     {
         var json =
-            $$"""{"status":"ready","apiVersion":4,"protocol":"https","productVersion":"{{actualVersion}}"}""";
+            $$"""{"status":"ready","apiVersion":5,"protocol":"https","productVersion":"{{actualVersion}}"}""";
 
         Assert.True(HttpsAgentHealthProbe.IsExpectedReadiness(json, expectedVersion));
         Assert.Equal(
@@ -31,25 +37,25 @@ public sealed class AgentHealthIdentityTests
         """{"status":"ready","apiVersion":3,"protocol":"https","productVersion":"0.10.0-poc"}""",
         AgentHealthProbeCode.ApiVersionMismatch)]
     [InlineData(
-        """{"status":"ready","apiVersion":4,"protocol":"http","productVersion":"0.10.0-poc"}""",
+        """{"status":"ready","apiVersion":5,"protocol":"http","productVersion":"0.10.0-poc"}""",
         AgentHealthProbeCode.ProtocolMismatch)]
     [InlineData(
-        """{"status":"ready","apiVersion":4,"protocol":"https","productVersion":"0.9.23-poc"}""",
+        """{"status":"ready","apiVersion":5,"protocol":"https","productVersion":"0.9.23-poc"}""",
         AgentHealthProbeCode.ProductVersionMismatch)]
     [InlineData(
-        """{"apiVersion":4,"protocol":"https","productVersion":"0.10.0-poc"}""",
+        """{"apiVersion":5,"protocol":"https","productVersion":"0.10.0-poc"}""",
         AgentHealthProbeCode.PayloadInvalid)]
     [InlineData(
         """{"status":"ready"}""",
         AgentHealthProbeCode.PayloadInvalid)]
     [InlineData(
-        """{"status":1,"apiVersion":4,"protocol":"https","productVersion":"0.10.0-poc"}""",
+        """{"status":1,"apiVersion":5,"protocol":"https","productVersion":"0.10.0-poc"}""",
         AgentHealthProbeCode.PayloadInvalid)]
     [InlineData(
-        """{"status":"ready","apiVersion":4,"protocol":1,"productVersion":"0.10.0-poc"}""",
+        """{"status":"ready","apiVersion":5,"protocol":1,"productVersion":"0.10.0-poc"}""",
         AgentHealthProbeCode.PayloadInvalid)]
     [InlineData(
-        """{"status":"ready","apiVersion":4,"protocol":"https","productVersion":1}""",
+        """{"status":"ready","apiVersion":5,"protocol":"https","productVersion":1}""",
         AgentHealthProbeCode.PayloadInvalid)]
     public void ClassifyReadiness_UsesStableSafeClassification(
         string json,
@@ -63,25 +69,25 @@ public sealed class AgentHealthIdentityTests
 
     [Theory]
     [InlineData(
-        """{"status":"ready","agentId":"legacy-agent","apiVersion":4,"utc":"2026-07-30T00:00:00Z"}""",
+        """{"status":"ready","agentId":"legacy-agent","apiVersion":5,"utc":"2026-07-30T00:00:00Z"}""",
         AgentHealthProbeCode.Ready)]
     [InlineData(
-        """{"status":"ready","apiVersion":4,"protocol":"https","productVersion":"0.9.0-poc"}""",
+        """{"status":"ready","apiVersion":5,"protocol":"https","productVersion":"0.9.0-poc"}""",
         AgentHealthProbeCode.Ready)]
     [InlineData(
         """{"status":"ready","apiVersion":3,"protocol":"https","productVersion":"0.9.0-poc"}""",
         AgentHealthProbeCode.ApiVersionMismatch)]
     [InlineData(
-        """{"status":"ready","apiVersion":4,"protocol":"http","productVersion":"0.9.0-poc"}""",
+        """{"status":"ready","apiVersion":5,"protocol":"http","productVersion":"0.9.0-poc"}""",
         AgentHealthProbeCode.ProtocolMismatch)]
     [InlineData(
-        """{"status":"ready","apiVersion":4,"protocol":"https","productVersion":""}""",
+        """{"status":"ready","apiVersion":5,"protocol":"https","productVersion":""}""",
         AgentHealthProbeCode.PayloadInvalid)]
     [InlineData(
-        """{"status":"ready","apiVersion":4,"protocol":1}""",
+        """{"status":"ready","apiVersion":5,"protocol":1}""",
         AgentHealthProbeCode.PayloadInvalid)]
     [InlineData(
-        """{"status":"ready","apiVersion":4,"productVersion":1}""",
+        """{"status":"ready","apiVersion":5,"productVersion":1}""",
         AgentHealthProbeCode.PayloadInvalid)]
     public void ClassifyReadiness_WithoutExpectedVersionStillValidatesAgentContract(
         string json,
@@ -142,7 +148,7 @@ public sealed class AgentHealthIdentityTests
     public async Task WaitUntilReadyAsync_UsesOnlyBoundedReadyEndpointForVersionCheck()
     {
         var handler = RecordingHandler.Json(
-            """{"status":"ready","apiVersion":4,"protocol":"https","productVersion":"0.10.0-poc+build"}""");
+            """{"status":"ready","apiVersion":5,"protocol":"https","productVersion":"0.10.0-poc+build"}""");
         var observedProcessIds = new List<int>();
         var probe = CreateProbe(
             handler,
@@ -170,13 +176,14 @@ public sealed class AgentHealthIdentityTests
             result.LastTransportPhase);
         Assert.Equal([4321], observedProcessIds);
         Assert.Equal(["/health/ready"], handler.RequestPaths);
+        Assert.Equal([$"Bearer {TestBearerToken}"], handler.Authorizations);
     }
 
     [Fact]
     public async Task WaitUntilReadyAsync_WithoutExpectedVersionReadsAndValidatesReadyPayload()
     {
         var handler = RecordingHandler.Json(
-            """{"status":"ready","agentId":"legacy-agent","apiVersion":4,"utc":"2026-07-30T00:00:00Z"}""");
+            """{"status":"ready","agentId":"legacy-agent","apiVersion":5,"utc":"2026-07-30T00:00:00Z"}""");
         var probe = CreateProbe(
             handler,
             (_, _) => HttpsAgentHealthProbe.ListenerOwnership.OwnedByExpectedProcess);
@@ -198,10 +205,10 @@ public sealed class AgentHealthIdentityTests
         """{"status":"ready","apiVersion":3,"protocol":"https","productVersion":"0.9.0-poc"}""",
         AgentHealthProbeCode.ApiVersionMismatch)]
     [InlineData(
-        """{"status":"ready","apiVersion":4,"protocol":"http","productVersion":"0.9.0-poc"}""",
+        """{"status":"ready","apiVersion":5,"protocol":"http","productVersion":"0.9.0-poc"}""",
         AgentHealthProbeCode.ProtocolMismatch)]
     [InlineData(
-        """{"status":"ready","apiVersion":4,"protocol":"https","productVersion":""}""",
+        """{"status":"ready","apiVersion":5,"protocol":"https","productVersion":""}""",
         AgentHealthProbeCode.PayloadInvalid)]
     [InlineData("{}", AgentHealthProbeCode.PayloadInvalid)]
     public async Task WaitUntilReadyAsync_WithoutExpectedVersionRejectsInvalidReadyPayload(
@@ -232,7 +239,7 @@ public sealed class AgentHealthIdentityTests
     public async Task WaitUntilReadyAsync_AcceptsCurrentServiceAfterProcessIdChanges()
     {
         var handler = RecordingHandler.Json(
-            """{"status":"ready","apiVersion":4,"protocol":"https","productVersion":"0.10.0-poc"}""");
+            """{"status":"ready","apiVersion":5,"protocol":"https","productVersion":"0.10.0-poc"}""");
         var snapshotCount = 0;
         var observedProcessIds = new List<int>();
         var probe = CreateProbe(
@@ -283,7 +290,7 @@ public sealed class AgentHealthIdentityTests
         var ownership =
             (HttpsAgentHealthProbe.ListenerOwnership)ownershipValue;
         var handler = RecordingHandler.Json(
-            """{"status":"ready","apiVersion":4,"protocol":"https","productVersion":"0.10.0-poc"}""");
+            """{"status":"ready","apiVersion":5,"protocol":"https","productVersion":"0.10.0-poc"}""");
         var probe = CreateProbe(handler, (_, _) => ownership);
 
         var result = await probe.WaitUntilReadyAsync(
@@ -309,7 +316,7 @@ public sealed class AgentHealthIdentityTests
     public async Task WaitUntilReadyAsync_ClassifiesUnavailableServiceWithoutHttpRequest()
     {
         var handler = RecordingHandler.Json(
-            """{"status":"ready","apiVersion":4,"protocol":"https","productVersion":"0.10.0-poc"}""");
+            """{"status":"ready","apiVersion":5,"protocol":"https","productVersion":"0.10.0-poc"}""");
         var probe = CreateProbe(
             handler,
             (_, _) => HttpsAgentHealthProbe.ListenerOwnership.OwnedByExpectedProcess);
@@ -333,7 +340,7 @@ public sealed class AgentHealthIdentityTests
     public async Task WaitUntilReadyAsync_ClassifiesServiceInspectionFailure()
     {
         var handler = RecordingHandler.Json(
-            """{"status":"ready","apiVersion":4,"protocol":"https","productVersion":"0.10.0-poc"}""");
+            """{"status":"ready","apiVersion":5,"protocol":"https","productVersion":"0.10.0-poc"}""");
         var probe = CreateProbe(
             handler,
             (_, _) => HttpsAgentHealthProbe.ListenerOwnership.OwnedByExpectedProcess);
@@ -660,7 +667,7 @@ public sealed class AgentHealthIdentityTests
                 return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
                 {
                     Content = new StringContent(
-                        """{"status":"ready","apiVersion":4,"protocol":"https","productVersion":"0.10.0-poc"}""",
+                        """{"status":"ready","apiVersion":5,"protocol":"https","productVersion":"0.10.0-poc"}""",
                         Encoding.UTF8,
                         "application/json")
                 });
@@ -700,7 +707,8 @@ public sealed class AgentHealthIdentityTests
             },
             (_, _) =>
                 HttpsAgentHealthProbe.ListenerOwnership.OwnedByExpectedProcess,
-            TimeSpan.FromMilliseconds(1));
+            TimeSpan.FromMilliseconds(1),
+            () => TestBearerToken);
 
         var result = await probe.WaitUntilReadyAsync(
             new Uri("https://127.0.0.1:18443/health/ready"),
@@ -722,13 +730,16 @@ public sealed class AgentHealthIdentityTests
                 HttpVersionPolicy.RequestVersionExact,
                 handler.VersionPolicy));
         Assert.All(handlers, handler => Assert.True(handler.ConnectionClose));
+        Assert.All(
+            handlers,
+            handler => Assert.Equal($"Bearer {TestBearerToken}", handler.Authorization));
     }
 
     [Fact]
     public async Task WaitUntilReadyAsync_PropagatesCallerCancellation()
     {
         var handler = RecordingHandler.Json(
-            """{"status":"ready","apiVersion":4,"protocol":"https","productVersion":"0.10.0-poc"}""");
+            """{"status":"ready","apiVersion":5,"protocol":"https","productVersion":"0.10.0-poc"}""");
         var probe = CreateProbe(
             handler,
             (_, _) => HttpsAgentHealthProbe.ListenerOwnership.NotListening);
@@ -750,7 +761,8 @@ public sealed class AgentHealthIdentityTests
         new(
             () => handler,
             listenerOwnership,
-            TimeSpan.FromMilliseconds(1));
+            TimeSpan.FromMilliseconds(1),
+            () => TestBearerToken);
 
     private static ServiceSnapshot RunningService(int processId) =>
         ServiceSnapshot.Missing with
@@ -765,6 +777,7 @@ public sealed class AgentHealthIdentityTests
         : HttpMessageHandler
     {
         public List<string> RequestPaths { get; } = [];
+        public List<string> Authorizations { get; } = [];
 
         public static RecordingHandler Json(string responseJson) =>
             new((_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
@@ -780,6 +793,7 @@ public sealed class AgentHealthIdentityTests
             CancellationToken cancellationToken)
         {
             RequestPaths.Add(request.RequestUri!.AbsolutePath);
+            Authorizations.Add(request.Headers.Authorization?.ToString() ?? string.Empty);
             return response(request, cancellationToken);
         }
 
@@ -797,6 +811,7 @@ public sealed class AgentHealthIdentityTests
         public Version? RequestVersion { get; private set; }
         public HttpVersionPolicy VersionPolicy { get; private set; }
         public bool ConnectionClose { get; private set; }
+        public string? Authorization { get; private set; }
 
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
@@ -805,6 +820,7 @@ public sealed class AgentHealthIdentityTests
             RequestVersion = request.Version;
             VersionPolicy = request.VersionPolicy;
             ConnectionClose = request.Headers.ConnectionClose == true;
+            Authorization = request.Headers.Authorization?.ToString();
             if (attempt == 1)
             {
                 return Task.FromException<HttpResponseMessage>(
@@ -816,7 +832,7 @@ public sealed class AgentHealthIdentityTests
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
             {
                 Content = new StringContent(
-                    """{"status":"ready","apiVersion":4,"protocol":"https","productVersion":"0.10.0-poc"}""",
+                    """{"status":"ready","apiVersion":5,"protocol":"https","productVersion":"0.10.0-poc"}""",
                     Encoding.UTF8,
                     "application/json")
             });

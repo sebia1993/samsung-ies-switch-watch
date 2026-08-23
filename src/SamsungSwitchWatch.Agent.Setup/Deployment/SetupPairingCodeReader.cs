@@ -32,12 +32,9 @@ internal static class SetupPairingCodeReader
                 return false;
             }
 
-            var protectedToken = ReadBounded(tokenPath, 4096);
-            byte[]? token = null;
+            if (!TryReadToken(tokenPath, out var token)) return false;
             try
             {
-                token = Unprotect(protectedToken);
-                if (token.Length != 32) return false;
                 var payload = new byte[64];
                 try
                 {
@@ -56,8 +53,7 @@ internal static class SetupPairingCodeReader
             }
             finally
             {
-                CryptographicOperations.ZeroMemory(protectedToken);
-                if (token is not null) CryptographicOperations.ZeroMemory(token);
+                CryptographicOperations.ZeroMemory(token);
             }
         }
         catch (Exception exception) when (
@@ -65,6 +61,57 @@ internal static class SetupPairingCodeReader
                 or Win32Exception or FormatException)
         {
             return false;
+        }
+    }
+
+    internal static bool TryReadBearerToken(
+        string dataDirectory,
+        out string bearerToken)
+    {
+        bearerToken = string.Empty;
+        if (!OperatingSystem.IsWindows()) return false;
+
+        try
+        {
+            var root = Path.GetFullPath(dataDirectory);
+            var tokenPath = Path.Combine(root, TokenFileName);
+            if (!TryReadToken(tokenPath, out var token)) return false;
+            try
+            {
+                bearerToken = Convert.ToBase64String(token)
+                    .TrimEnd('=')
+                    .Replace('+', '-')
+                    .Replace('/', '_');
+                return true;
+            }
+            finally
+            {
+                CryptographicOperations.ZeroMemory(token);
+            }
+        }
+        catch (Exception exception) when (
+            exception is IOException or UnauthorizedAccessException or CryptographicException
+                or Win32Exception or FormatException)
+        {
+            return false;
+        }
+    }
+
+    private static bool TryReadToken(string tokenPath, out byte[] token)
+    {
+        token = [];
+        var protectedToken = ReadBounded(tokenPath, 4096);
+        try
+        {
+            token = Unprotect(protectedToken);
+            if (token.Length == 32) return true;
+            CryptographicOperations.ZeroMemory(token);
+            token = [];
+            return false;
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(protectedToken);
         }
     }
 

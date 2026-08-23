@@ -9,7 +9,8 @@
 - Setup이 `SSW1.<base64url(SPKI || token)>` 수동 페어링 코드를 표시합니다.
 - Viewer는 SPKI pin과 DPAPI CurrentUser로 보호한 token을 authority별로 저장합니다.
 - 모든 원격 기능은 인증 필수 API v5로 이동했습니다.
-- 무인증 경로는 최소 `/health/live`, `/health/ready`만 남겼습니다.
+- `/health/live`, `/health/ready`를 포함한 모든 Agent 경로에 bearer 인증을 적용했습니다.
+- Setup의 설치 후 readiness 점검도 DPAPI LocalMachine으로 보호된 token을 안전하게 전달합니다.
 - API v4는 인증되지 않은 요청을 401로 거부하고 인증된 요청도 426 upgrade로 차단합니다.
 - token·SPKI는 고정 시간 비교하며 인증서 유효기간과 Server Authentication EKU를 확인합니다.
 - pin 불일치, token 손상, 구형 API에 자동 fallback하지 않습니다.

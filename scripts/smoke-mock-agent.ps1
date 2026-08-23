@@ -52,7 +52,8 @@ try {
     $ready = $false
     for ($attempt = 0; $attempt -lt 40; $attempt++) {
         try {
-            $health = Invoke-RestMethod -Uri "$baseUri/health/ready" -TimeoutSec 2
+            $health = Invoke-RestMethod -Uri "$baseUri/health/ready" `
+                -Headers $authHeaders -TimeoutSec 2
             $ready = $health.status -eq 'ready'
             if ($ready) { break }
         }

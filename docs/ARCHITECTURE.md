@@ -89,14 +89,14 @@ pin, token 또는 identity가 다르면 자동 갱신·TOFU·구형 API fallback
 
 | 경로 | 인증 | 목적 |
 |---|---:|---|
-| `GET /health/live` | 없음 | 최소 프로세스 생존 상태 |
-| `GET /health/ready` | 없음 | 최소 버전·프로토콜 준비 상태 |
+| `GET /health/live` | bearer | 최소 프로세스 생존 상태 |
+| `GET /health/ready` | bearer | 최소 버전·프로토콜 준비 상태 |
 | `GET /api/v5/identity` | bearer | Agent 신원과 실행 상한 |
 | `POST /api/v5/telnet/test` | bearer | 로그인·모델 확인 |
 | `POST /api/v5/telnet/execute` | bearer | 검증된 읽기 명령 실행 |
 | `/api/v4/*` | bearer 후 426 | 새 Viewer와 재페어링 요구 |
 
-health 응답에는 Agent ID, instance ID, 인증서 pin, token, IP와 장비 정보가 포함되지 않습니다.
+Setup은 DPAPI LocalMachine으로 보호된 설치 token을 읽어 health 요청에 전달합니다. Viewer는 페어링 때 DPAPI CurrentUser로 보호한 token을 identity와 모든 API 요청에 전달합니다. health 응답에는 Agent ID, instance ID, 인증서 pin, token, IP와 장비 정보가 포함되지 않습니다.
 
 ## 6. Telnet 실행 상태 머신
 

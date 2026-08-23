@@ -589,7 +589,7 @@ public sealed class ViewerConnectionTests
     }
 
     [Fact]
-    public async Task IdentityBodyPinDifference_DoesNotBlockApiV4TelnetRequest()
+    public async Task IdentityBodyPinDifference_BlocksApiV5TelnetRequest()
     {
         using var certificate = CreateCertificate();
         var fixture = CreateClientFixture(
@@ -599,11 +599,12 @@ public sealed class ViewerConnectionTests
                 IdentityJson(certificate, new string('A', 64))));
         await using var client = fixture.Client;
 
-        var result = await client.TestTelnetAsync(Target(), CancellationToken.None);
+        var failure = await Assert.ThrowsAsync<AgentClientException>(
+            () => client.TestTelnetAsync(Target(), CancellationToken.None));
 
-        Assert.True(result.Success);
+        Assert.Equal("AGENT_IDENTITY_CHANGED", failure.ErrorCode);
         Assert.Equal(1, fixture.ControlHandler.RequestCount);
-        Assert.Equal(1, fixture.QueryHandler.RequestCount);
+        Assert.Equal(0, fixture.QueryHandler.RequestCount);
     }
 
     [Fact]

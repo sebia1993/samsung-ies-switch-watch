@@ -10,12 +10,6 @@ public sealed class BearerAuthenticationMiddleware(RequestDelegate next)
         HttpContext context,
         AgentAuthenticationMaterial authentication)
     {
-        if (IsUnauthenticatedHealthRequest(context.Request))
-        {
-            await next(context);
-            return;
-        }
-
         if (!IsAuthorized(context.Request.Headers.Authorization, authentication))
         {
             context.Response.StatusCode = StatusCodes.Status401Unauthorized;
@@ -58,8 +52,4 @@ public sealed class BearerAuthenticationMiddleware(RequestDelegate next)
             CryptographicOperations.ZeroMemory(candidate);
         }
     }
-
-    private static bool IsUnauthenticatedHealthRequest(HttpRequest request) =>
-        HttpMethods.IsGet(request.Method)
-        && (request.Path.Equals("/health/live") || request.Path.Equals("/health/ready"));
 }

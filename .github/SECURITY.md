@@ -17,7 +17,7 @@ Samsung iES Switch Watch는 네트워크 장비 자격 증명과 관리망 정�
 
 - Viewer→Agent: HTTPS/TCP 18443 + 사전 페어링 SPKI pin + 32-byte bearer
 - Agent→Switch: Telnet/TCP 23 평문
-- 무인증 Agent 경로: 최소 `/health/live`, `/health/ready`
+- Agent 경로: health를 포함해 모두 32-byte bearer 인증 필수
 - 원격 기능: 인증 필수 API v5
 - 수동 명령: 한 줄 `show`만 허용
 - 장비 credential·inventory·결과 history: Agent 비저장

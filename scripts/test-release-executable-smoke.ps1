@@ -179,7 +179,7 @@ try {
         }
         try {
             $candidate = Invoke-RestMethod -Uri "$baseUri/health/ready" `
-                -TimeoutSec 1
+                -Headers $authHeaders -TimeoutSec 1
             if ($candidate.status -eq 'ready') {
                 $health = $candidate
                 break

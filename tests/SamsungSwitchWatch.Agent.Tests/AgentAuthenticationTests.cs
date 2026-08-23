@@ -94,13 +94,13 @@ public sealed class AgentAuthenticationTests
     }
 
     [Fact]
-    public async Task ApiV5_RequiresBearerWhileHealthIsMinimalAndV4RequiresUpgrade()
+    public async Task ApiV5AndHealth_RequireBearerWhileV4RequiresUpgrade()
     {
         await using var host = await TestAgentHost.StartAsync();
         using var unauthenticated = new HttpClient { BaseAddress = host.Client.BaseAddress };
 
-        using var live = await unauthenticated.GetAsync("/health/live");
-        using var ready = await unauthenticated.GetAsync("/health/ready");
+        using var deniedLive = await unauthenticated.GetAsync("/health/live");
+        using var deniedReady = await unauthenticated.GetAsync("/health/ready");
         using var deniedIdentity = await unauthenticated.GetAsync("/api/v5/identity");
         using var deniedTest = await unauthenticated.PostAsync(
             "/api/v5/telnet/test",
@@ -113,8 +113,12 @@ public sealed class AgentAuthenticationTests
         using var deniedHealthMethod = await unauthenticated.PostAsync(
             "/health/live",
             new StringContent(string.Empty));
+        using var live = await host.Client.GetAsync("/health/live");
+        using var ready = await host.Client.GetAsync("/health/ready");
         using var upgrade = await host.Client.GetAsync("/api/v4/identity");
 
+        Assert.Equal(HttpStatusCode.Unauthorized, deniedLive.StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, deniedReady.StatusCode);
         Assert.Equal(HttpStatusCode.OK, live.StatusCode);
         Assert.Equal(HttpStatusCode.OK, ready.StatusCode);
         Assert.Equal(HttpStatusCode.Unauthorized, deniedIdentity.StatusCode);
@@ -124,7 +128,11 @@ public sealed class AgentAuthenticationTests
         Assert.Equal(HttpStatusCode.Unauthorized, deniedHealthVariant.StatusCode);
         Assert.Equal(HttpStatusCode.Unauthorized, deniedHealthMethod.StatusCode);
         Assert.Equal(426, (int)upgrade.StatusCode);
+        Assert.Equal("Bearer", deniedLive.Headers.WwwAuthenticate.Single().Scheme);
+        Assert.Equal("Bearer", deniedReady.Headers.WwwAuthenticate.Single().Scheme);
         Assert.Equal("Bearer", deniedIdentity.Headers.WwwAuthenticate.Single().Scheme);
+        Assert.Equal("AUTH_REQUIRED", await ErrorCodeAsync(deniedLive));
+        Assert.Equal("AUTH_REQUIRED", await ErrorCodeAsync(deniedReady));
         Assert.Equal("AUTH_REQUIRED", await ErrorCodeAsync(deniedIdentity));
         Assert.Equal("AUTH_REQUIRED", await ErrorCodeAsync(deniedTest));
         Assert.Equal("AUTH_REQUIRED", await ErrorCodeAsync(deniedExecute));

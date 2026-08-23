@@ -180,13 +180,17 @@ public sealed class ViewerSettingsTests
             Assert.Equal(920, loaded.MainHeight);
             Assert.True(loaded.StartMinimizedToTray);
             Assert.Equal(77, loaded.EventCursors["LEGACY-PIN-IDENTITY"]);
+            Assert.Empty(loaded.AgentTrustPins);
+            Assert.Empty(loaded.ProtectedAgentBearerTokens);
 
             var migratedJson = File.ReadAllText(path);
             Assert.DoesNotContain("http://", migratedJson, StringComparison.OrdinalIgnoreCase);
             Assert.DoesNotContain("Certificate", migratedJson, StringComparison.OrdinalIgnoreCase);
             Assert.DoesNotContain("Fingerprint", migratedJson, StringComparison.OrdinalIgnoreCase);
-            Assert.DoesNotContain("Bearer", migratedJson, StringComparison.OrdinalIgnoreCase);
-            Assert.DoesNotContain("Token", migratedJson, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain(
+                "\"ProtectedBearerToken\"",
+                migratedJson,
+                StringComparison.OrdinalIgnoreCase);
             Assert.Contains("LEGACY-PIN-IDENTITY", migratedJson, StringComparison.Ordinal);
         }
         finally

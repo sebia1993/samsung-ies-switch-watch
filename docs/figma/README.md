@@ -113,8 +113,9 @@ The v8 screen preserves the v7 firewall behavior: another program's inbound
 TCP/18443 Allow rule is shown as a warning and is never changed or removed.
 The historical `설치 / 업데이트` flow created the product-owned Viewer `/32`
 rule and configures the Agent to allow only the fixed Viewer IPv4 at the
-remote-work API boundary. Local `/health/live` and `/health/ready` checks remain
-the only loopback exception, and no separate auto-fix button is added.
+remote-work API boundary. Setup continues to call `/health/live` and
+`/health/ready` over loopback, but now carries the installed bearer token like
+every other Agent route; no separate auto-fix button is added.
 
 Node `49:72` is the v9 failure-state source of truth for
 `SETUP_FIREWALL_FAILED`. Windows may return the same single Viewer host as a

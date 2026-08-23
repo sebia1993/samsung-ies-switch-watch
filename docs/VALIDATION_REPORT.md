@@ -27,7 +27,7 @@ dotnet format SamsungSwitchWatch.sln --verify-no-changes --no-restore
 - 정확한 `SSW1` 64-byte pairing payload
 - DPAPI LocalMachine token persistence와 CurrentUser Viewer 보호
 - malformed/wrong/missing bearer의 동일한 401
-- 모든 원격 API 인증과 최소 health 예외
+- health를 포함한 모든 Agent 경로 인증과 최소 health 응답
 - API v4의 426 upgrade 계약
 - 인증서 유효기간, Server Authentication EKU와 SPKI SHA-256 pin
 - identity body pin 불일치 fail-closed

@@ -68,8 +68,8 @@ Viewer는 일반 CA 신뢰 대신 사전 페어링한 정확한 공개키를 사
 
 ## API 인증·인가
 
-- 무인증: `/health/live`, `/health/ready` 정확한 두 경로
-- 인증 필수: identity, Telnet test/execute, v4 upgrade 응답을 포함한 나머지 모든 API
+- 인증 필수: health, identity, Telnet test/execute, v4 upgrade 응답을 포함한 모든 Agent 경로
+- health: 인증 후에도 생존·버전·프로토콜에 필요한 최소 정보만 반환
 - 형식: 정확히 하나의 `Authorization: Bearer <43-char base64url>`
 - decode 결과: 정확히 32 bytes
 - 비교: 고정 시간

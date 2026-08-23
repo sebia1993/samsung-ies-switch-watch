@@ -881,6 +881,7 @@ Viewer 허용 범위      : 10/8, 172.16/12, 192.168/16
         "HTTPS 인증서와 32-byte API token을 만들고 %ProgramData%의 제한된 폴더에서 "
         "DPAPI LocalMachine으로 보호합니다. 인증서 공개키 pin과 token을 담은 SSW1 페어링 코드는 "
         "관리자가 Setup에서 명시적으로 표시할 때만 화면에 나타납니다. "
+        "설치 후 HTTPS readiness 확인도 보호된 token을 읽어 인증하며, 무인증 health 예외는 없습니다. "
         "Setup이 경로 신뢰 검사를 통과하지 못하면 "
         "설치를 중단합니다. 폴더를 강제로 삭제하거나 소유권을 바꿔 우회하지 말고 Windows "
         "관리자에게 실패 코드를 전달하세요.",

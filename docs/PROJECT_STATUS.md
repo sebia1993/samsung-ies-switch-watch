@@ -15,7 +15,7 @@
 - 영구 Agent TLS identity와 SPKI SHA-256 pin
 - DPAPI LocalMachine 32-byte Agent bearer token
 - `SSW1` 수동 페어링과 Viewer DPAPI CurrentUser token
-- 인증 필수 API v5, 최소 health 예외, v4 426
+- health 포함 전 경로 인증 필수 API v5, v4 426
 - 제한 시간·출력·동시 실행·요청 빈도 상한
 - transactional Agent/Viewer Setup과 rollback
 - locked dependencies, 취약점 검사, SBOM, SHA와 immutable release
