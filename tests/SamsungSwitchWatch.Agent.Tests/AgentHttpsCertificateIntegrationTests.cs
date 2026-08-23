@@ -1,7 +1,9 @@
 using System.Net;
+using System.Net.Http.Headers;
 using System.Net.Security;
 using System.Net.Sockets;
 using System.Security.Authentication;
+using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
@@ -78,6 +80,35 @@ public sealed class AgentHttpsCertificateIntegrationTests
                 {
                     Timeout = TimeSpan.FromSeconds(5)
                 };
+
+                using var unauthenticatedResponse = await client.GetAsync(
+                    "https://127.0.0.1:18443/health/ready",
+                    timeout.Token);
+                Assert.Equal(
+                    HttpStatusCode.Unauthorized,
+                    unauthenticatedResponse.StatusCode);
+
+                var identity = app.Services.GetRequiredService<AgentIdentity>();
+                var authentication =
+                    app.Services.GetRequiredService<AgentAuthenticationMaterial>();
+                var pairingCode = authentication.CreatePairingCode(identity);
+                var payload = Convert.FromBase64String(
+                    pairingCode["SSW1.".Length..]
+                        .Replace('-', '+')
+                        .Replace('_', '/')
+                    + "==");
+                try
+                {
+                    client.DefaultRequestHeaders.Authorization =
+                        new AuthenticationHeaderValue(
+                            "Bearer",
+                            Base64Url.Encode(payload.AsSpan(32, 32)));
+                }
+                finally
+                {
+                    CryptographicOperations.ZeroMemory(payload);
+                }
+
                 using var response = await client.GetAsync(
                     "https://127.0.0.1:18443/health/ready",
                     timeout.Token);
@@ -90,7 +121,7 @@ public sealed class AgentHttpsCertificateIntegrationTests
                     cancellationToken: timeout.Token);
                 var root = document.RootElement;
                 Assert.Equal("ready", root.GetProperty("status").GetString());
-                Assert.Equal(4, root.GetProperty("apiVersion").GetInt32());
+                Assert.Equal(5, root.GetProperty("apiVersion").GetInt32());
                 Assert.Equal("https", root.GetProperty("protocol").GetString());
             }
             finally
@@ -126,8 +157,12 @@ public sealed class AgentHttpsCertificateIntegrationTests
     }
 
     [Fact]
-    public async Task ProductionBuild_IgnoresLegacyIdentityArtifacts()
+    public void ProductionBuild_FailsClosedForInvalidPersistentIdentityArtifacts()
     {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
         var dataDirectory = NewDataDirectory();
         try
         {
@@ -138,14 +173,11 @@ public sealed class AgentHttpsCertificateIntegrationTests
                 Path.Combine(dataDirectory, AgentIdentityStore.CertificateFileName),
                 "invalid legacy certificate");
 
-            await using var app = AgentApplication.Build(
-                ["--service"],
-                ProductionOverrides(dataDirectory));
-            var identity = app.Services.GetRequiredService<AgentIdentity>();
-            using var key = identity.Certificate.GetRSAPrivateKey();
-
-            Assert.NotNull(key);
-            Assert.Matches("^[0-9A-F]{64}$", identity.CertificatePublicKeySha256);
+            var exception = Assert.Throws<AgentConfigurationException>(() =>
+                AgentApplication.Build(
+                    ["--service"],
+                    ProductionOverrides(dataDirectory)));
+            Assert.Equal("TLS_IDENTITY_INVALID", exception.Code);
         }
         finally
         {

@@ -14,6 +14,9 @@ namespace SamsungSwitchWatch.Viewer.Tests;
 
 public sealed class ViewerConnectionTests
 {
+    private static readonly string TestBearerToken =
+        ViewerPairingCode.Base64Url(new byte[32]);
+
     [Fact]
     public void DirectHttpHandler_DisablesProxyRedirectsAndWindowsCredentials()
     {
@@ -35,7 +38,7 @@ public sealed class ViewerConnectionTests
     }
 
     [Fact]
-    public void LegacyCertificatePin_IsIgnoredAndEphemeralCertificateIsAccepted()
+    public void CertificatePin_RejectsChangedCertificateAndAcceptsExactCertificate()
     {
         using var expectedCertificate = CreateCertificate();
         using var changedCertificate = CreateCertificate();
@@ -47,19 +50,19 @@ public sealed class ViewerConnectionTests
         var validator = new CertificatePinValidator(settings);
         using var request = new HttpRequestMessage(HttpMethod.Get, settings.AgentUri);
 
-        Assert.True(validator.Validate(
+        Assert.False(validator.Validate(
             request,
             changedCertificate,
             null,
             SslPolicyErrors.None));
-        Assert.False(validator.IdentityChanged);
+        Assert.True(validator.IdentityChanged);
 
         Assert.True(validator.Validate(
             request,
             expectedCertificate,
             null,
             SslPolicyErrors.None));
-        Assert.False(validator.IdentityChanged);
+        Assert.True(validator.IdentityChanged);
         Assert.True(settings.TryGetAgentTrustPin(out var retainedLegacyPin));
         Assert.Equal(CertificatePinValidator.GetSpkiSha256(expectedCertificate), retainedLegacyPin);
     }
@@ -73,6 +76,7 @@ public sealed class ViewerConnectionTests
         {
             AgentUri = "https://agent.example.test:18443"
         };
+        settings.SetAgentTrustPin(CertificatePinValidator.GetSpkiSha256(certificate));
         var validator = new CertificatePinValidator(
             settings,
             () => acceptedCount++);
@@ -94,7 +98,7 @@ public sealed class ViewerConnectionTests
     }
 
     [Fact]
-    public void LegacyCertificatePin_MismatchStillReportsAutomaticTlsAcceptance()
+    public void CertificatePin_MismatchDoesNotReportTlsAcceptance()
     {
         using var expectedCertificate = CreateCertificate();
         using var changedCertificate = CreateCertificate();
@@ -109,14 +113,14 @@ public sealed class ViewerConnectionTests
             () => acceptedCount++);
         using var request = new HttpRequestMessage(HttpMethod.Get, settings.AgentUri);
 
-        Assert.True(validator.Validate(
+        Assert.False(validator.Validate(
             request,
             changedCertificate,
             null,
             SslPolicyErrors.None));
 
-        Assert.Equal(1, acceptedCount);
-        Assert.False(validator.IdentityChanged);
+        Assert.Equal(0, acceptedCount);
+        Assert.True(validator.IdentityChanged);
     }
 
     [Fact]
@@ -182,6 +186,10 @@ public sealed class ViewerConnectionTests
         Assert.Equal(
             [HttpAgentClient.UserAgentValue],
             fixture.QueryHandler.UserAgents);
+        Assert.All(fixture.ControlHandler.Authorizations, value =>
+            Assert.Equal($"Bearer {TestBearerToken}", value));
+        Assert.All(fixture.QueryHandler.Authorizations, value =>
+            Assert.Equal($"Bearer {TestBearerToken}", value));
     }
 
     [Fact]
@@ -196,7 +204,80 @@ public sealed class ViewerConnectionTests
 
         Assert.Equal(2, fixture.ControlHandler.RequestCount);
         Assert.All(fixture.ControlHandler.Requests, request =>
-            Assert.Equal(AgentApiRoutes.IdentityV4, request.PathAndQuery));
+            Assert.Equal(AgentApiRoutes.IdentityV5, request.PathAndQuery));
+    }
+
+    [Fact]
+    public void CertificatePin_RequiresConfiguredPinAndServerAuthenticationEku()
+    {
+        var settings = new ViewerSettings
+        {
+            AgentUri = "https://agent.example.test:18443"
+        };
+        Assert.Equal(
+            "VIEWER_PAIRING_REQUIRED",
+            Assert.Throws<AgentClientException>(() => new CertificatePinValidator(settings)).ErrorCode);
+
+        using var key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        var request = new CertificateRequest(
+            "CN=WrongEku",
+            key,
+            HashAlgorithmName.SHA256);
+        request.CertificateExtensions.Add(new X509EnhancedKeyUsageExtension(
+            new OidCollection { new("1.3.6.1.5.5.7.3.2") },
+            true));
+        using var certificate = request.CreateSelfSigned(
+            DateTimeOffset.UtcNow.AddMinutes(-1),
+            DateTimeOffset.UtcNow.AddDays(1));
+        settings.SetAgentTrustPin(CertificatePinValidator.GetSpkiSha256(certificate));
+        var validator = new CertificatePinValidator(settings);
+
+        Assert.False(validator.Validate(
+            new HttpRequestMessage(HttpMethod.Get, settings.AgentUri),
+            certificate,
+            null,
+            SslPolicyErrors.None));
+    }
+
+    [Theory]
+    [InlineData(-3, -2)]
+    [InlineData(2, 3)]
+    public void CertificatePin_RejectsCertificateOutsideValidityWindow(
+        int notBeforeDays,
+        int notAfterDays)
+    {
+        using var certificate = CreateCertificate(
+            DateTimeOffset.UtcNow.AddDays(notBeforeDays),
+            DateTimeOffset.UtcNow.AddDays(notAfterDays));
+        var settings = new ViewerSettings
+        {
+            AgentUri = "https://agent.example.test:18443"
+        };
+        settings.SetAgentTrustPin(CertificatePinValidator.GetSpkiSha256(certificate));
+        var validator = new CertificatePinValidator(settings);
+
+        Assert.False(validator.Validate(
+            new HttpRequestMessage(HttpMethod.Get, settings.AgentUri),
+            certificate,
+            null,
+            SslPolicyErrors.None));
+    }
+
+    [Fact]
+    public async Task IdentityResponsePinMismatchFailsClosed()
+    {
+        using var certificate = CreateCertificate();
+        using var other = CreateCertificate();
+        var fixture = CreateClientFixture(
+            certificate,
+            controlResponse: _ => JsonResponse(
+                HttpStatusCode.OK,
+                IdentityJson(certificate, CertificatePinValidator.GetSpkiSha256(other))));
+        await using var client = fixture.Client;
+
+        var exception = await Assert.ThrowsAsync<AgentClientException>(() =>
+            client.StartAsync(CancellationToken.None));
+        Assert.Equal("AGENT_IDENTITY_CHANGED", exception.ErrorCode);
     }
 
     [Fact]
@@ -207,7 +288,7 @@ public sealed class ViewerConnectionTests
             certificate,
             queryResponse: request =>
             {
-                var isTest = request.RequestUri?.AbsolutePath == AgentApiRoutes.TelnetTestV4;
+                var isTest = request.RequestUri?.AbsolutePath == AgentApiRoutes.TelnetTestV5;
                 return JsonResponse(
                     HttpStatusCode.OK,
                     TelnetResultJson(
@@ -254,7 +335,7 @@ public sealed class ViewerConnectionTests
             },
             queryResponse: request =>
             {
-                var isTest = request.RequestUri?.AbsolutePath == AgentApiRoutes.TelnetTestV4;
+                var isTest = request.RequestUri?.AbsolutePath == AgentApiRoutes.TelnetTestV5;
                 return JsonResponse(
                     HttpStatusCode.OK,
                     TelnetResultJson(
@@ -319,7 +400,7 @@ public sealed class ViewerConnectionTests
         var control = new RecordingHandler(
             _ => JsonResponse(HttpStatusCode.OK, IdentityJson(certificate)));
         var query = new CancellationBlockingHandler(holdAfterCancellation: true);
-        var client = new HttpAgentClient(settings, control, query, validator);
+        var client = new HttpAgentClient(settings, control, query, validator, TestBearerToken);
         var states = new ConcurrentQueue<AgentConnectionState>();
         client.ConnectionStateChanged += (_, state) => states.Enqueue(state);
 
@@ -364,7 +445,7 @@ public sealed class ViewerConnectionTests
         var control = new RecordingHandler(
             _ => JsonResponse(HttpStatusCode.OK, IdentityJson(certificate)));
         var query = new BlockingCancellationCallbackHandler();
-        var client = new HttpAgentClient(settings, control, query, validator);
+        var client = new HttpAgentClient(settings, control, query, validator, TestBearerToken);
 
         await client.StartAsync(CancellationToken.None);
         var queryTask = client.TestTelnetAsync(Target(), CancellationToken.None);
@@ -406,7 +487,7 @@ public sealed class ViewerConnectionTests
         var control = new CancellationBlockingHandler();
         var query = new RecordingHandler(
             _ => JsonResponse(HttpStatusCode.OK, TelnetResultJson("test-1", [])));
-        var client = new HttpAgentClient(settings, control, query, validator);
+        var client = new HttpAgentClient(settings, control, query, validator, TestBearerToken);
 
         var activeStart = client.StartAsync(CancellationToken.None);
         await control.RequestStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
@@ -508,7 +589,7 @@ public sealed class ViewerConnectionTests
     }
 
     [Fact]
-    public async Task IdentityBodyPinDifference_DoesNotBlockApiV4TelnetRequest()
+    public async Task IdentityBodyPinDifference_BlocksApiV5TelnetRequest()
     {
         using var certificate = CreateCertificate();
         var fixture = CreateClientFixture(
@@ -518,11 +599,12 @@ public sealed class ViewerConnectionTests
                 IdentityJson(certificate, new string('A', 64))));
         await using var client = fixture.Client;
 
-        var result = await client.TestTelnetAsync(Target(), CancellationToken.None);
+        var failure = await Assert.ThrowsAsync<AgentClientException>(
+            () => client.TestTelnetAsync(Target(), CancellationToken.None));
 
-        Assert.True(result.Success);
+        Assert.Equal("AGENT_IDENTITY_CHANGED", failure.ErrorCode);
         Assert.Equal(1, fixture.ControlHandler.RequestCount);
-        Assert.Equal(1, fixture.QueryHandler.RequestCount);
+        Assert.Equal(0, fixture.QueryHandler.RequestCount);
     }
 
     [Fact]
@@ -940,6 +1022,7 @@ public sealed class ViewerConnectionTests
             DemoMode = false,
             AgentUri = "https://agent.example.test:18443"
         };
+        settings.SetAgentTrustPin(CertificatePinValidator.GetSpkiSha256(certificate));
         var validator = new CertificatePinValidator(settings);
         Assert.True(validator.Validate(
             new HttpRequestMessage(HttpMethod.Get, settings.AgentUri),
@@ -951,7 +1034,7 @@ public sealed class ViewerConnectionTests
         var query = new RecordingHandler(
             queryResponse ?? (_ => JsonResponse(HttpStatusCode.OK, TelnetResultJson("test-1", []))));
         return new ClientFixture(
-            new HttpAgentClient(settings, control, query, validator),
+            new HttpAgentClient(settings, control, query, validator, TestBearerToken),
             control,
             query);
     }
@@ -960,6 +1043,7 @@ public sealed class ViewerConnectionTests
         ViewerSettings settings,
         X509Certificate2 certificate)
     {
+        settings.SetAgentTrustPin(CertificatePinValidator.GetSpkiSha256(certificate));
         var validator = new CertificatePinValidator(settings);
         Assert.True(validator.Validate(
             new HttpRequestMessage(HttpMethod.Get, settings.AgentUri),
@@ -981,7 +1065,7 @@ public sealed class ViewerConnectionTests
         publicKeySha256 ??= CertificatePinValidator.GetSpkiSha256(certificate);
         return $$"""
         {
-          "apiVersion": 4,
+          "apiVersion": 5,
           "agentId": "agent-test",
           "instanceId": "instance-test",
           "certificatePublicKeySha256": "{{publicKeySha256}}",
@@ -998,7 +1082,7 @@ public sealed class ViewerConnectionTests
         string output = "ok") =>
         JsonSerializer.Serialize(new
         {
-            apiVersion = 4,
+            apiVersion = 5,
             requestId,
             success = true,
             privilege = "user",
@@ -1017,16 +1101,26 @@ public sealed class ViewerConnectionTests
             })
         });
 
-    private static X509Certificate2 CreateCertificate()
+    private static X509Certificate2 CreateCertificate(
+        DateTimeOffset? notBefore = null,
+        DateTimeOffset? notAfter = null)
     {
         using var key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
         var request = new CertificateRequest(
             "CN=SamsungSwitchWatch.Test",
             key,
             HashAlgorithmName.SHA256);
+        request.CertificateExtensions.Add(
+            new X509BasicConstraintsExtension(false, false, 0, true));
+        request.CertificateExtensions.Add(
+            new X509KeyUsageExtension(X509KeyUsageFlags.DigitalSignature, true));
+        request.CertificateExtensions.Add(
+            new X509EnhancedKeyUsageExtension(
+                new OidCollection { new("1.3.6.1.5.5.7.3.1") },
+                true));
         return request.CreateSelfSigned(
-            DateTimeOffset.UtcNow.AddMinutes(-1),
-            DateTimeOffset.UtcNow.AddDays(1));
+            notBefore ?? DateTimeOffset.UtcNow.AddMinutes(-1),
+            notAfter ?? DateTimeOffset.UtcNow.AddDays(1));
     }
 
     private sealed record ClientFixture(
@@ -1039,6 +1133,7 @@ public sealed class ViewerConnectionTests
     {
         private readonly ConcurrentQueue<(HttpMethod Method, string PathAndQuery)> _requests = [];
         private readonly ConcurrentQueue<string> _userAgents = [];
+        private readonly ConcurrentQueue<string> _authorizations = [];
         private int _requestCount;
         private int _disposeCount;
 
@@ -1047,6 +1142,7 @@ public sealed class ViewerConnectionTests
         public IReadOnlyList<(HttpMethod Method, string PathAndQuery)> Requests =>
             _requests.ToArray();
         public IReadOnlyList<string> UserAgents => _userAgents.ToArray();
+        public IReadOnlyList<string> Authorizations => _authorizations.ToArray();
 
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
@@ -1055,6 +1151,7 @@ public sealed class ViewerConnectionTests
             Interlocked.Increment(ref _requestCount);
             _requests.Enqueue((request.Method, request.RequestUri?.PathAndQuery ?? string.Empty));
             _userAgents.Enqueue(request.Headers.UserAgent.ToString());
+            _authorizations.Enqueue(request.Headers.Authorization?.ToString() ?? string.Empty);
             return Task.FromResult(responseFactory(request));
         }
 

@@ -23,6 +23,9 @@ public static class AgentApiRoutes
     public const string IdentityV4 = "/api/v4/identity";
     public const string TelnetTestV4 = "/api/v4/telnet/test";
     public const string TelnetExecuteV4 = "/api/v4/telnet/execute";
+    public const string IdentityV5 = "/api/v5/identity";
+    public const string TelnetTestV5 = "/api/v5/telnet/test";
+    public const string TelnetExecuteV5 = "/api/v5/telnet/execute";
     public static string Command(string deviceId, string commandId) =>
         $"/api/v1/commands/{Uri.EscapeDataString(deviceId)}/{Uri.EscapeDataString(commandId)}";
     public static string Acknowledge(string eventId) => $"/api/v1/events/{Uri.EscapeDataString(eventId)}/ack";
@@ -30,7 +33,11 @@ public static class AgentApiRoutes
 
 public static class AgentContractMapper
 {
-    public static AgentIdentityDto MapIdentityV4(string json)
+    public static AgentIdentityDto MapIdentityV4(string json) => MapIdentity(json, 4);
+
+    public static AgentIdentityDto MapIdentityV5(string json) => MapIdentity(json, 5);
+
+    private static AgentIdentityDto MapIdentity(string json, int expectedApiVersion)
     {
         using var document = JsonDocument.Parse(json);
         var root = document.RootElement;
@@ -42,7 +49,7 @@ public static class AgentContractMapper
             StringValue(root, "protocol") ?? string.Empty,
             IntValue(root, "maxCommandsPerRequest") ?? 0,
             IntValue(root, "maxOutputBytes") ?? 0);
-        if (result.ApiVersion != 4
+        if (result.ApiVersion != expectedApiVersion
             || string.IsNullOrWhiteSpace(result.AgentId)
             || string.IsNullOrWhiteSpace(result.InstanceId)
             || result.CertificatePublicKeySha256.Length != 64
@@ -96,7 +103,20 @@ public static class AgentContractMapper
             json,
             expectedRequestId: null,
             expectedCommands: null,
-            ReadOnlyQueryPolicy.MaximumOutputBytes);
+            ReadOnlyQueryPolicy.MaximumOutputBytes,
+            expectedApiVersion: 4);
+
+    public static TelnetExecutionResultDto MapTelnetExecutionResultV5(
+        string json,
+        string expectedRequestId,
+        IReadOnlyList<string> expectedCommands,
+        int maximumOutputBytes) =>
+        MapTelnetExecutionResultV4Core(
+            json,
+            expectedRequestId,
+            expectedCommands,
+            maximumOutputBytes,
+            expectedApiVersion: 5);
 
     public static TelnetExecutionResultDto MapTelnetExecutionResultV4(
         string json,
@@ -110,14 +130,16 @@ public static class AgentContractMapper
             json,
             expectedRequestId,
             expectedCommands,
-            maximumOutputBytes);
+            maximumOutputBytes,
+            expectedApiVersion: 4);
     }
 
     private static TelnetExecutionResultDto MapTelnetExecutionResultV4Core(
         string json,
         string? expectedRequestId,
         IReadOnlyList<string>? expectedCommands,
-        int maximumOutputBytes)
+        int maximumOutputBytes,
+        int expectedApiVersion)
     {
         if (maximumOutputBytes is < 1 or > 16 * 1024 * 1024)
         {
@@ -146,7 +168,7 @@ public static class AgentContractMapper
         using var document = JsonDocument.Parse(json);
         var root = document.RootElement;
         if (root.ValueKind != JsonValueKind.Object
-            || StrictIntValue(root, "apiVersion") != 4
+            || StrictIntValue(root, "apiVersion") != expectedApiVersion
             || StrictStringValue(root, "requestId") is not { Length: > 0 } requestId
             || StrictBoolValue(root, "success") is not true
             || StrictStringValue(root, "privilege") is not { Length: > 0 } privilege
@@ -237,7 +259,7 @@ public static class AgentContractMapper
         }
 
         return new TelnetExecutionResultDto(
-            4,
+            expectedApiVersion,
             requestId,
             true,
             privilege,

@@ -15,26 +15,32 @@ public static class ApiEndpoints
 
     public static void MapAgentEndpoints(this WebApplication app, AgentOptions options)
     {
-        app.MapGet("/health/live", () => Results.Ok(new
+        app.MapGet("/health/live", (HttpContext context) =>
         {
-            status = "live",
-            agentId = options.AgentId,
-            utc = DateTimeOffset.UtcNow
-        }));
+            context.Response.Headers.CacheControl = "no-store";
+            return Results.Ok(new
+            {
+                status = "live",
+                utc = DateTimeOffset.UtcNow
+            });
+        });
 
-        app.MapGet("/health/ready", () => Results.Ok(new
+        app.MapGet("/health/ready", (HttpContext context) =>
         {
-            status = "ready",
-            agentId = options.AgentId,
-            apiVersion = 4,
-            productVersion = ProductVersion,
-            protocol = "https",
-            utc = DateTimeOffset.UtcNow
-        }));
+            context.Response.Headers.CacheControl = "no-store";
+            return Results.Ok(new
+            {
+                status = "ready",
+                apiVersion = 5,
+                productVersion = ProductVersion,
+                protocol = "https",
+                utc = DateTimeOffset.UtcNow
+            });
+        });
 
-        app.MapGet("/api/v4/identity", (AgentIdentity identity) => Results.Ok(new
+        app.MapGet("/api/v5/identity", (AgentIdentity identity) => Results.Ok(new
         {
-            apiVersion = 4,
+            apiVersion = 5,
             productVersion = ProductVersion,
             agentId = options.AgentId,
             instanceId = identity.InstanceId,
@@ -44,7 +50,7 @@ public static class ApiEndpoints
             maxOutputBytes = options.MaxOutputBytes
         }));
 
-        app.MapPost("/api/v4/telnet/test", (
+        app.MapPost("/api/v5/telnet/test", (
             TelnetApiRequest request,
             HttpContext context,
             TargetNetworkPolicy targetPolicy,
@@ -63,7 +69,7 @@ public static class ApiEndpoints
                 executor,
                 cancellationToken));
 
-        app.MapPost("/api/v4/telnet/execute", (
+        app.MapPost("/api/v5/telnet/execute", (
             TelnetApiRequest request,
             HttpContext context,
             TargetNetworkPolicy targetPolicy,
@@ -81,6 +87,35 @@ public static class ApiEndpoints
                 admission,
                 executor,
                 cancellationToken));
+
+        app.MapMethods("/api/v4", AllHttpMethods, UpgradeRequired);
+        app.MapMethods("/api/v4/{**remainder}", AllHttpMethods, UpgradeRequired);
+    }
+
+    private static readonly string[] AllHttpMethods =
+    [
+        HttpMethods.Get,
+        HttpMethods.Post,
+        HttpMethods.Put,
+        HttpMethods.Patch,
+        HttpMethods.Delete,
+        HttpMethods.Options,
+        HttpMethods.Head
+    ];
+
+    private static IResult UpgradeRequired(HttpContext context)
+    {
+        context.Response.Headers.CacheControl = "no-store";
+        return Results.Json(
+            new
+            {
+                error = new
+                {
+                    code = AgentErrorCodes.ApiUpgradeRequired,
+                    message = "Agent API v5 and a new pairing code are required."
+                }
+            },
+            statusCode: StatusCodes.Status426UpgradeRequired);
     }
 
     private static string ResolveProductVersion()
@@ -209,9 +244,9 @@ public sealed class ErrorHandlingMiddleware(
     private static string SafeStage(PathString path) =>
         path.Value?.ToLowerInvariant() switch
         {
-            "/api/v4/telnet/test" => "telnet-test",
-            "/api/v4/telnet/execute" => "telnet-execute",
-            "/api/v4/identity" => "identity",
+            "/api/v5/telnet/test" => "telnet-test",
+            "/api/v5/telnet/execute" => "telnet-execute",
+            "/api/v5/identity" => "identity",
             "/health/live" => "health-live",
             "/health/ready" => "health-ready",
             _ => "http-request"

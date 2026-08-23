@@ -67,6 +67,8 @@ internal sealed class ViewerDiagnosticLog
         "AGENT_IDENTITY_CHANGED",
         "AGENT_INTERNAL_ERROR",
         "AGENT_NOT_READY",
+        "AGENT_PAIRING_REJECTED",
+        "AGENT_API_UPGRADE_REQUIRED",
         "AGENT_PROTOCOL_MISMATCH",
         "AGENT_RESPONSE_INVALID",
         "AGENT_RESPONSE_TOO_LARGE",
@@ -75,6 +77,8 @@ internal sealed class ViewerDiagnosticLog
         "AGENT_UNREACHABLE",
         "VIEWER_CONFIGURATION_INVALID",
         "VIEWER_CONNECTION_REQUIRED",
+        "VIEWER_PAIRING_REQUIRED",
+        "VIEWER_PAIRING_CORRUPT",
         "VIEWER_UNEXPECTED_ERROR"
     ];
     private static readonly HashSet<string> AllowedConnectionTransitions =

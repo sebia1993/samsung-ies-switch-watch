@@ -36,11 +36,13 @@ public static class AgentApplication
             builder.Configuration.GetSection(AgentOptions.SectionName).Get<AgentOptions>() ??
             new AgentOptions();
         AgentOptionsValidator.ValidateAndNormalize(options, builder.Environment.ContentRootPath);
-        var identity = EphemeralAgentIdentityFactory.Create();
+        var identity = AgentIdentityStore.LoadOrCreate(options);
+        AgentAuthenticationMaterial? authentication = null;
         WebApplication? app = null;
 
         try
         {
+            authentication = AgentAuthenticationStore.LoadOrCreate(options, identity);
             builder.WebHost.UseUrls(options.ListenUrl);
             builder.WebHost.ConfigureKestrel(kestrel =>
             {
@@ -64,6 +66,7 @@ public static class AgentApplication
             // AddSingleton(instance) treats the object as externally owned and
             // would leave the temporary Windows user-key container behind.
             builder.Services.AddSingleton<AgentIdentity>(_ => identity);
+            builder.Services.AddSingleton<AgentAuthenticationMaterial>(_ => authentication!);
             builder.Services.AddSingleton(new DeviceProfileRegistry(
             [
                 Ies4224GpProfile.Create(),
@@ -85,6 +88,7 @@ public static class AgentApplication
             // the identity API might never be called. Resolve the factory-backed
             // singleton now so the host tracks its disposal on every shutdown.
             _ = app.Services.GetRequiredService<AgentIdentity>();
+            _ = app.Services.GetRequiredService<AgentAuthenticationMaterial>();
             app.UseStatusCodePages(async statusContext =>
             {
                 var response = statusContext.HttpContext.Response;
@@ -112,6 +116,7 @@ public static class AgentApplication
             });
             app.UseMiddleware<ErrorHandlingMiddleware>();
             app.UseMiddleware<ViewerIpAccessMiddleware>();
+            app.UseMiddleware<BearerAuthenticationMiddleware>();
             app.MapAgentEndpoints(options);
             return app;
         }
@@ -121,6 +126,7 @@ public static class AgentApplication
             {
                 if (app is null)
                 {
+                    authentication?.Dispose();
                     identity.Dispose();
                 }
                 else

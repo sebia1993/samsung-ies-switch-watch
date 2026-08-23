@@ -32,7 +32,7 @@ public sealed class ViewerV0923CompatibilityTests
             var deviceLoad = deviceStore.LoadWithStatus();
             var monitoringStore = new ViewerMonitoringStore(monitoringPath);
 
-            Assert.Equal(ViewerSettingsLoadStatus.Ok, settingsStore.LastLoadStatus);
+            Assert.Equal(ViewerSettingsLoadStatus.NeedsConnection, settingsStore.LastLoadStatus);
             Assert.Equal("https://agent.example.test:18443", settings.AgentUri);
             Assert.Equal(42, settings.LastEventSequence);
             Assert.Equal(42, settings.EventCursors["fixture-agent-cursor"]);

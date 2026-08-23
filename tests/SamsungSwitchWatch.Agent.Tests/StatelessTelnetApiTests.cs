@@ -12,11 +12,11 @@ namespace SamsungSwitchWatch.Agent.Tests;
 public sealed class StatelessTelnetApiTests
 {
     [Fact]
-    public async Task Runtime_ExposesOnlyStatelessV4SurfaceAndNoBackgroundServices()
+    public async Task Runtime_ExposesOnlyAuthenticatedStatelessV5SurfaceAndNoBackgroundServices()
     {
         await using var host = await TestAgentHost.StartAsync();
 
-        using var identityResponse = await host.Client.GetAsync("/api/v4/identity");
+        using var identityResponse = await host.Client.GetAsync("/api/v5/identity");
         using var liveResponse = await host.Client.GetAsync("/health/live");
         using var readyResponse = await host.Client.GetAsync("/health/ready");
         using var oldStatus = await host.Client.GetAsync("/api/v1/status");
@@ -29,7 +29,7 @@ public sealed class StatelessTelnetApiTests
         Assert.True(liveResponse.IsSuccessStatusCode);
         Assert.True(readyResponse.IsSuccessStatusCode);
         Assert.Equal(HttpStatusCode.NotFound, oldStatus.StatusCode);
-        Assert.Equal(4, identity.RootElement.GetProperty("apiVersion").GetInt32());
+        Assert.Equal(5, identity.RootElement.GetProperty("apiVersion").GetInt32());
         Assert.Matches(
             @"^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$",
             identity.RootElement.GetProperty("productVersion").GetString()!);
@@ -38,7 +38,7 @@ public sealed class StatelessTelnetApiTests
             "^[0-9A-F]{64}$",
             identity.RootElement.GetProperty("certificatePublicKeySha256").GetString()!);
         Assert.Equal("ready", readiness.RootElement.GetProperty("status").GetString());
-        Assert.Equal(4, readiness.RootElement.GetProperty("apiVersion").GetInt32());
+        Assert.Equal(5, readiness.RootElement.GetProperty("apiVersion").GetInt32());
         Assert.Equal(
             identity.RootElement.GetProperty("productVersion").GetString(),
             readiness.RootElement.GetProperty("productVersion").GetString());
@@ -392,12 +392,12 @@ public sealed class StatelessTelnetApiTests
     private static Task<HttpResponseMessage> PostTestAsync(
         TestAgentHost host,
         object request) =>
-        host.Client.PostAsJsonAsync("/api/v4/telnet/test", request);
+        host.Client.PostAsJsonAsync("/api/v5/telnet/test", request);
 
     private static Task<HttpResponseMessage> PostExecuteAsync(
         TestAgentHost host,
         object request) =>
-        host.Client.PostAsJsonAsync("/api/v4/telnet/execute", request);
+        host.Client.PostAsJsonAsync("/api/v5/telnet/execute", request);
 
     private static async Task<string> ErrorCodeAsync(HttpResponseMessage response)
     {
@@ -418,7 +418,7 @@ public sealed class StatelessTelnetApiTests
             var outputs = request.Commands.Select(command =>
                 new TelnetApiCommandResult(command, "synthetic output", false, now)).ToArray();
             return Task.FromResult(new TelnetApiResult(
-                4,
+                5,
                 request.RequestId,
                 true,
                 request.Credentials.EnablePassword is null ? "user" : "privileged",

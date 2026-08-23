@@ -1,5 +1,5 @@
 ﻿param(
-    [string]$Version = '0.11.11-poc',
+    [string]$Version = '0.12.0-poc',
     [switch]$SkipTests,
     [switch]$AllowDirty,
     [string]$SigningCertificatePath,
@@ -130,6 +130,8 @@ if (-not (Test-Path -LiteralPath $userManualPdf -PathType Leaf)) {
 }
 Copy-Item -LiteralPath (Join-Path $repoRoot 'docs\INSTALL_KO.md') -Destination $agentOut
 Copy-Item -LiteralPath (Join-Path $repoRoot 'docs\INSTALL_KO.md') -Destination $viewerOut
+Copy-Item -LiteralPath (Join-Path $repoRoot 'LICENSE') -Destination $agentOut
+Copy-Item -LiteralPath (Join-Path $repoRoot 'LICENSE') -Destination $viewerOut
 Copy-Item -LiteralPath $userManualPdf -Destination $agentOut
 Copy-Item -LiteralPath $userManualPdf -Destination $viewerOut
 $releaseNotesToken = $Version.Replace('-', '_').ToUpperInvariant()
@@ -201,7 +203,7 @@ function Write-PackageManifest {
         version = $Version
         sourceCommit = $sourceCommit
         sourceDirty = $sourceDirty
-        repository = 'https://github.com/sebia1993/samsung_switch_check.git'
+        repository = 'https://github.com/sebia1993/samsung-ies-switch-watch.git'
         runtimeIdentifier = 'win-x64'
         dotnetSdk = (& $dotnet --version).Trim()
         builtUtc = [DateTimeOffset]::UtcNow.ToString('O')
@@ -227,7 +229,7 @@ $rootManifest = [ordered]@{
     version = $Version
     sourceCommit = $sourceCommit
     sourceDirty = $sourceDirty
-    repository = 'https://github.com/sebia1993/samsung_switch_check.git'
+    repository = 'https://github.com/sebia1993/samsung-ies-switch-watch.git'
     runtimeIdentifier = 'win-x64'
     dotnetSdk = (& $dotnet --version).Trim()
     builtUtc = [DateTimeOffset]::UtcNow.ToString('O')

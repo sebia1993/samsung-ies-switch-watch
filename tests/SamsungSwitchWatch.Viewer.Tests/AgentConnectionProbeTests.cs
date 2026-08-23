@@ -219,7 +219,7 @@ public sealed class AgentConnectionProbeTests
     }
 
     [Fact]
-    public async Task ProbeAsync_ProductVersionMismatchConnectsWithWarningWhenApiV4IsCompatible()
+    public async Task ProbeAsync_ProductVersionMismatchConnectsWithWarningWhenApiV5IsCompatible()
     {
         var probe = CreateProbe(
             identity: Identity("0.9.23-poc"),
@@ -232,14 +232,14 @@ public sealed class AgentConnectionProbeTests
         Assert.Null(result.ErrorCode);
         Assert.NotNull(result.Identity);
         Assert.Equal("0.9.23-poc", result.Identity.ProductVersion);
-        Assert.Equal(4, result.Identity.ApiVersion);
+        Assert.Equal(5, result.Identity.ApiVersion);
         Assert.Contains("0.9.23-poc", result.Detail, StringComparison.Ordinal);
         Assert.Contains("0.10.0-poc", result.Detail, StringComparison.Ordinal);
         Assert.StartsWith("경고", result.Detail, StringComparison.Ordinal);
     }
 
     [Fact]
-    public async Task ProbeAsync_MissingProductVersionConnectsWithWarningWhenApiV4IsCompatible()
+    public async Task ProbeAsync_MissingProductVersionConnectsWithWarningWhenApiV5IsCompatible()
     {
         var probe = CreateProbe(
             identity: Identity(),
@@ -255,11 +255,12 @@ public sealed class AgentConnectionProbeTests
     }
 
     [Fact]
-    public async Task ProbeAsync_DoesNotPersistPinAndAcceptsEphemeralCertificateChanges()
+    public async Task ProbeAsync_UsesExistingPinAndRejectsCertificateChanges()
     {
         using var probeCertificate = CreateCertificate();
         using var changedCertificate = CreateCertificate();
         var settings = Settings();
+        settings.SetAgentTrustPin(CertificatePinValidator.GetSpkiSha256(probeCertificate));
         var probe = new AgentConnectionProbe(
             new FakeNetworkProbe(),
             new CertificateIdentityProbe(probeCertificate, "0.10.0-poc"),
@@ -275,9 +276,9 @@ public sealed class AgentConnectionProbeTests
             SslPolicyErrors.None);
 
         Assert.True(result.Succeeded);
-        Assert.Empty(settings.AgentTrustPins);
-        Assert.True(acceptedChangedCertificate);
-        Assert.False(applyValidator.IdentityChanged);
+        Assert.Single(settings.AgentTrustPins);
+        Assert.False(acceptedChangedCertificate);
+        Assert.True(applyValidator.IdentityChanged);
     }
 
     [Fact]
@@ -306,7 +307,7 @@ public sealed class AgentConnectionProbeTests
 
     private static AgentIdentityDto Identity(string? productVersion = null) =>
         new(
-            4,
+            5,
             "agent-test",
             "instance-test",
             new string('A', 64),
@@ -324,6 +325,14 @@ public sealed class AgentConnectionProbeTests
             "CN=SamsungSwitchWatch.Probe.Test",
             key,
             HashAlgorithmName.SHA256);
+        request.CertificateExtensions.Add(
+            new X509BasicConstraintsExtension(false, false, 0, true));
+        request.CertificateExtensions.Add(
+            new X509KeyUsageExtension(X509KeyUsageFlags.DigitalSignature, true));
+        request.CertificateExtensions.Add(
+            new X509EnhancedKeyUsageExtension(
+                new OidCollection { new("1.3.6.1.5.5.7.3.1") },
+                true));
         return request.CreateSelfSigned(
             DateTimeOffset.UtcNow.AddMinutes(-1),
             DateTimeOffset.UtcNow.AddDays(1));

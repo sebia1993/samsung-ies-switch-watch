@@ -484,7 +484,11 @@ public sealed class ViewerFailureReportingTests
         var originalPin = new string('A', 64);
         var latestOriginalPin = new string('B', 64);
         var replacementPin = new string('C', 64);
+        var originalToken = Convert.ToBase64String("original-token"u8);
+        var latestOriginalToken = Convert.ToBase64String("latest-original-token"u8);
+        var replacementToken = Convert.ToBase64String("replacement-token"u8);
         originalSettings.SetAgentTrustPin(originalPin);
+        originalSettings.SetProtectedAgentBearerToken(originalToken);
         var viewModel = new DashboardViewModel(
             originalSettings,
             settingsStore,
@@ -501,6 +505,7 @@ public sealed class ViewerFailureReportingTests
             staleCandidate.AgentUri = "https://replacement.example.test:18443";
             staleCandidate.StartMinimizedToTray = true;
             staleCandidate.SetAgentTrustPin(replacementPin);
+            staleCandidate.SetProtectedAgentBearerToken(replacementToken);
 
             var switching = viewModel.SwitchClientAsync(staleCandidate);
             await replacementStart.Task.WaitAsync(TimeSpan.FromSeconds(2));
@@ -513,6 +518,7 @@ public sealed class ViewerFailureReportingTests
                     settings.MiniTopmost = false;
                     settings.SetEventCursor("fake", 99);
                     settings.SetAgentTrustPin(latestOriginalPin);
+                    settings.SetProtectedAgentBearerToken(latestOriginalToken);
                 },
                 "settings-save-interactive",
                 out var updateErrorCode));
@@ -536,6 +542,12 @@ public sealed class ViewerFailureReportingTests
             Assert.Equal(
                 replacementPin,
                 current.AgentTrustPins["HTTPS://REPLACEMENT.EXAMPLE.TEST:18443"]);
+            Assert.Equal(
+                latestOriginalToken,
+                current.ProtectedAgentBearerTokens["HTTPS://ORIGINAL.EXAMPLE.TEST:18443"]);
+            Assert.Equal(
+                replacementToken,
+                current.ProtectedAgentBearerTokens["HTTPS://REPLACEMENT.EXAMPLE.TEST:18443"]);
             Assert.Equal(current.AgentUri, persisted.AgentUri);
             Assert.Equal(current.StartMinimizedToTray, persisted.StartMinimizedToTray);
             Assert.Equal(current.MiniLeft, persisted.MiniLeft);
@@ -549,6 +561,12 @@ public sealed class ViewerFailureReportingTests
             Assert.Equal(
                 replacementPin,
                 persisted.AgentTrustPins["HTTPS://REPLACEMENT.EXAMPLE.TEST:18443"]);
+            Assert.Equal(
+                latestOriginalToken,
+                persisted.ProtectedAgentBearerTokens["HTTPS://ORIGINAL.EXAMPLE.TEST:18443"]);
+            Assert.Equal(
+                replacementToken,
+                persisted.ProtectedAgentBearerTokens["HTTPS://REPLACEMENT.EXAMPLE.TEST:18443"]);
         }
         finally
         {

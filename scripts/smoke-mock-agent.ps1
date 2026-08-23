@@ -24,7 +24,8 @@ $environmentNames = @(
     'Agent__ListenUrl',
     'Agent__DataDirectory',
     'Agent__MockMode',
-    'Agent__AllowedTargetCidrs__0'
+    'Agent__AllowedTargetCidrs__0',
+    'SSW_MOCK_BEARER_TOKEN'
 )
 $previousEnvironment = @{}
 foreach ($name in $environmentNames) {
@@ -35,6 +36,13 @@ $env:Agent__ListenUrl = $baseUri
 $env:Agent__DataDirectory = $smokeDirectory
 $env:Agent__MockMode = 'true'
 $env:Agent__AllowedTargetCidrs__0 = '10.40.0.0/16'
+$mockBearerBytes = New-Object byte[] 32
+$mockRandom = [Security.Cryptography.RandomNumberGenerator]::Create()
+try { $mockRandom.GetBytes($mockBearerBytes) }
+finally { $mockRandom.Dispose() }
+$mockBearerToken = [Convert]::ToBase64String($mockBearerBytes).TrimEnd('=').Replace('+', '-').Replace('/', '_')
+$env:SSW_MOCK_BEARER_TOKEN = $mockBearerToken
+$authHeaders = @{ Authorization = "Bearer $mockBearerToken" }
 $process = $null
 
 try {
@@ -44,7 +52,8 @@ try {
     $ready = $false
     for ($attempt = 0; $attempt -lt 40; $attempt++) {
         try {
-            $health = Invoke-RestMethod -Uri "$baseUri/health/ready" -TimeoutSec 2
+            $health = Invoke-RestMethod -Uri "$baseUri/health/ready" `
+                -Headers $authHeaders -TimeoutSec 2
             $ready = $health.status -eq 'ready'
             if ($ready) { break }
         }
@@ -54,7 +63,8 @@ try {
         throw '모의 Agent가 제한 시간 안에 시작되지 않았습니다.'
     }
 
-    $identity = Invoke-RestMethod -Uri "$baseUri/api/v4/identity" -TimeoutSec 5
+    $identity = Invoke-RestMethod -Uri "$baseUri/api/v5/identity" `
+        -Headers $authHeaders -TimeoutSec 5
     $commonRequest = [ordered]@{
         requestId = 'smoke-test'
         host = '10.40.0.10'
@@ -67,20 +77,22 @@ try {
     $testRequest = [ordered]@{} + $commonRequest
     $testRequest.purpose = 'test'
     $testRequest.commands = @()
-    $testResult = Invoke-RestMethod -Uri "$baseUri/api/v4/telnet/test" `
+    $testResult = Invoke-RestMethod -Uri "$baseUri/api/v5/telnet/test" `
         -Method Post -ContentType 'application/json' `
+        -Headers $authHeaders `
         -Body ($testRequest | ConvertTo-Json -Depth 5 -Compress) -TimeoutSec 5
 
     $executeRequest = [ordered]@{} + $commonRequest
     $executeRequest.requestId = 'smoke-execute'
     $executeRequest.purpose = 'manual'
     $executeRequest.commands = @('show port status')
-    $executeResult = Invoke-RestMethod -Uri "$baseUri/api/v4/telnet/execute" `
+    $executeResult = Invoke-RestMethod -Uri "$baseUri/api/v5/telnet/execute" `
         -Method Post -ContentType 'application/json' `
+        -Headers $authHeaders `
         -Body ($executeRequest | ConvertTo-Json -Depth 5 -Compress) -TimeoutSec 5
 
-    if ($identity.apiVersion -ne 4 -or $identity.protocol -ne 'https') {
-        throw 'Agent identity 계약이 v4 HTTPS 실행기와 일치하지 않습니다.'
+    if ($identity.apiVersion -ne 5 -or $identity.protocol -ne 'https') {
+        throw 'Agent identity 계약이 v5 HTTPS 실행기와 일치하지 않습니다.'
     }
     if (-not $testResult.success -or @($testResult.commands).Count -ne 0) {
         throw '모의 Telnet 접속 시험 응답이 올바르지 않습니다.'
@@ -111,4 +123,7 @@ finally {
             [string]$previousEnvironment[$name],
             'Process')
     }
+    [Array]::Clear($mockBearerBytes, 0, $mockBearerBytes.Length)
+    $mockBearerToken = $null
+    $authHeaders = $null
 }

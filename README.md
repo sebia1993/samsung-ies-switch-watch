@@ -1,256 +1,137 @@
-# Samsung Switch Watch — Samsung iES 원격 점검·변경 감시
+# Samsung iES Switch Watch
 
-[![Windows CI](https://github.com/sebia1993/samsung_switch_check/actions/workflows/windows-ci.yml/badge.svg?branch=main)](https://github.com/sebia1993/samsung_switch_check/actions/workflows/windows-ci.yml)
+[![Windows CI](https://github.com/sebia1993/samsung-ies-switch-watch/actions/workflows/windows-ci.yml/badge.svg?branch=main)](https://github.com/sebia1993/samsung-ies-switch-watch/actions/workflows/windows-ci.yml)
 
-**Samsung iES 스위치를 운영자 PC에서 안전하게 조회하고, 반복 점검과 상태 변화를 기록하기 위한 Windows 기반 읽기 전용 네트워크 운영 도구입니다.**
+Samsung iES 스위치의 반복 점검을 한 화면에서 수행하고 변화를 추적하는 Windows 운영 도구입니다. 네트워크 장비를 모르는 독자에게는 **“여러 설비의 상태를 안전하게 원격 확인하는 대시보드”**로 이해하면 됩니다.
 
-Viewer가 장비·자격 증명·감시 기준을 소유하고, 별도 Windows Service Agent가 HTTPS 요청을 받아 스위치와 짧은 Telnet 세션을 생성합니다. Agent는 장비 정보와 명령 결과를 보관하지 않으며, 수동 명령은 한 줄의 `show` 명령만 허용합니다.
+현재 공개 버전은 **`v0.12.0-poc`**입니다. 이 저장소는 실제 회사망 성과를 꾸며내지 않습니다. 공개된 검증 결과는 합성 Telnet 서버, 비식별 fixture, Windows CI와 패키지 smoke에 한정되며 실제 모델·펌웨어 검증은 별도 항목으로 표시합니다.
 
-현재 공개 버전은 **`v0.11.11-poc`**입니다. 자동 테스트와 Windows 패키지 검증은 수행하지만, Samsung iES 모델별 실제 펌웨어 동작은 현장 검증 결과와 분리해 기록합니다.
+## 프로젝트가 해결하는 문제
 
-> 문서·테스트·화면 예시는 문서용 IP와 합성 데이터만 사용합니다. 실제 운영망 주소, 계정, MAC, 장비 출력은 공개 저장소에 포함하지 않습니다.
+운영자는 여러 스위치에 반복 로그인해 같은 상태 명령을 실행하고 이전 결과와 비교해야 합니다. 이 프로젝트는 그 과정을 다음처럼 분리했습니다.
 
-## 한눈에 보기
+- **Viewer**는 장비 목록, 암호화된 자격 증명, 점검 일정과 이력을 관리합니다.
+- **Agent**는 별도 Windows 서비스로 동작하며 요청받은 읽기 전용 점검만 실행합니다.
+- 스위치에는 한 줄 `show` 명령만 전송하고 설정 변경 명령은 양쪽에서 차단합니다.
+- Agent와 Viewer는 수동 페어링을 거쳐 서로를 확인합니다.
+- 설치·업데이트는 중간 실패 시 기존 버전을 복구할 수 있도록 트랜잭션으로 처리합니다.
 
-| 항목 | 내용 |
+정량적인 시간 절감이나 장애 감소 수치는 실제 현장 측정 전에는 주장하지 않습니다. 대신 코드와 CI가 재현할 수 있는 **보안 경계, 실패 처리, 배포 무결성**을 성과로 제시합니다.
+
+## 한눈에 보는 결과
+
+| 관점 | 구현 결과 |
 |---|---|
-| 목적 | Samsung iES 스위치 원격 조회·주기 점검·변화 감시 |
-| 운영 구조 | Viewer → HTTPS Agent → Telnet Switch |
-| Agent | 창 없는 Windows Service, stateless 실행 중계 |
-| Viewer | 장비 목록, DPAPI 자격 증명, 감시 기준·이력 소유 |
-| 스위치 연결 | Telnet TCP/23 |
-| Viewer→Agent | HTTPS TCP/18443 |
-| 수동 명령 | 한 줄 `show` 명령만 허용 |
-| 감시 요청 | 검증된 조회 명령 최대 8개 |
-| 모델 식별 | 로그인 후 `show version`, 정확히 한 모델만 식별 |
-| 지원 대상으로 등록된 모델 | IES4224GP, IES4028XP, IES4226XP |
-| 재시도 | 연결 단절 시 미완료 명령만 최대 1회 재연결 |
-| 자격 증명 | Viewer의 Windows DPAPI CurrentUser 보호 |
-| 원문 출력 | 수동 결과는 Viewer 메모리에서만 사용, 저장·내보내기 금지 |
-| 배포 | Agent/Viewer 각각 Windows x64 self-contained ZIP |
-| 현재 단계 | POC — Windows 자동검증 완료, 모델별 현장 검증은 별도 |
+| 반복 업무 | 여러 장비의 조회·감시 흐름을 하나의 WPF Viewer로 통합 |
+| 책임 분리 | 운영 데이터는 Viewer, 네트워크 실행은 stateless Agent가 담당 |
+| 장비 안전 | 줄바꿈·구분자·설정 명령을 차단하고 최대 8개 조회 명령만 허용 |
+| 원격 인증 | 256-bit bearer token과 Agent 인증서 공개키 pin을 하나의 수동 페어링 코드로 전달 |
+| 로컬 비밀 보호 | Agent token은 DPAPI LocalMachine, Viewer token은 DPAPI CurrentUser로 보호 |
+| 전송 신뢰 | 자체 서명 인증서라도 사전에 페어링한 SPKI SHA-256과 고정 시간 비교 |
+| API 전환 | 인증이 필수인 API v5만 실행하고 v4는 HTTP 426으로 명시적 차단 |
+| 장애 대응 | 제한 시간·출력 크기·동시 실행 상한, stale 응답 거부, 제한적 재연결 |
+| 배포 품질 | lock file, 취약 패키지 검사, SBOM, SHA-256, 다운로드 후 EXE smoke |
+| 증거 구분 | 합성/CI 검증과 실제 장비·GPO·EDR 현장 검증을 명확히 분리 |
 
-## 해결하려 한 운영 문제
-
-스위치 여러 대를 반복 점검할 때 운영자는 장비별로 접속해 동일한 `show` 명령을 실행하고, 이전 결과와 현재 결과를 비교해야 합니다. 특히 Telnet 기반 장비가 남아 있는 환경에서는 운영 PC마다 접속 경로와 자격 증명을 직접 다루게 되는 것도 부담입니다.
-
-이 프로젝트는 다음 문제를 분리해서 다룹니다.
-
-- 장비마다 반복 로그인하고 동일한 조회 명령을 수동 실행하는 작업
-- 여러 장비의 상태를 일정 주기로 확인하고 변화를 놓치지 않는 문제
-- 운영자 PC가 스위치 Telnet 세션을 직접 대량으로 관리하는 구조
-- 장비 모델을 사용자가 잘못 선택해 잘못된 명령 세트를 적용하는 위험
-- 네트워크 단절을 무조건 재시도해 같은 작업을 중복 실행하는 위험
-- 자격 증명·장비 원문·운영 이력이 Agent에 남는 문제
-- 설치/업데이트 실패가 정상 동작 중인 Agent까지 손상시키는 위험
-
-핵심 방향은 **“Viewer가 운영 상태를 소유하고, Agent는 제한된 조회 실행만 중계한다”**입니다.
-
-## 아키텍처
+## 시스템 구조
 
 ```mermaid
 flowchart LR
     O["운영자"] --> V["Viewer\nWPF / Windows"]
-    V -->|"HTTPS 18443"| A["Agent\nWindows Service"]
-    A -->|"Telnet 23"| S["Samsung iES Switch"]
-
-    V --> D["장비 목록 / DPAPI 자격 증명"]
-    V --> H["Baseline / 감시 이력 / Event"]
-
-    A -. "장비·자격 증명·결과 비저장" .-> X["Stateless"]
+    V -->|"HTTPS 18443\nSPKI pin + bearer"| A["Agent\nWindows Service"]
+    A -->|"Telnet 23\n평문 · 사설 관리망 전용"| S["Samsung iES Switch"]
+    V --> D["장비·DPAPI 자격 증명\n기준선·이력"]
+    A -. "장비·암호·결과 비저장" .-> N["Stateless execution"]
 ```
 
-### 역할 분리
+### 페어링 흐름
 
-**Viewer**
+1. Agent가 최초 실행 때 HTTPS 인증서와 32-byte API token을 생성합니다.
+2. 인증서와 token은 Agent PC의 DPAPI LocalMachine으로 보호해 유지합니다.
+3. 관리자용 Setup이 `SSW1.<base64url(SPKI 32 bytes || token 32 bytes)>` 코드를 표시합니다.
+4. 운영자가 Viewer 연결 설정에 코드를 한 번 입력합니다.
+5. Viewer는 공개키 pin과 DPAPI CurrentUser로 보호한 token만 저장합니다.
+6. 이후 모든 `/api/v5/*` 요청은 인증서 pin과 bearer 인증을 모두 통과해야 합니다.
 
-- Agent 주소와 장비 목록 관리
-- Windows DPAPI로 장비 자격 증명 보호
-- 로그인 확인과 장비 모델 표시
-- 수동 조회 결과 표시
-- 주기 감시, baseline, gap, event 이력 관리
-- 경고·상태 변화의 현재성 판단
+페어링 코드는 API token을 포함하는 비밀입니다. 명령행 인수나 로그로 출력하지 않으며 Setup 화면에서 사용자가 명시적으로 표시·복사할 때만 다룹니다.
 
-**Agent**
+## 주요 화면
 
-- Windows Service로만 실행
-- Viewer의 제한된 HTTPS 요청 처리
-- 요청마다 새 Telnet 세션 생성 후 종료
-- 로그인 / enable / 명령 수집을 서로 다른 제한 시간·바이트 예산으로 처리
-- 장비 인벤토리·자격 증명·명령 결과·감시 이력 비저장
+화면은 실제 WPF UI를 문서용 IP와 합성 데이터로 렌더링한 예시입니다.
 
-**Switch**
+![Samsung iES Switch Watch 대시보드](docs/images/dashboard.png)
 
-- 등록된 사설 IPv4 대상만 허용
-- TCP/23 Telnet
-- 조회 전용 `show` 명령만 수행
+![읽기 전용 명령 결과](docs/images/command-output.png)
 
-상세 구성요소와 데이터 경계는 [ARCHITECTURE.md](docs/ARCHITECTURE.md)를 참고하십시오.
+## 기술적 핵심
 
-## 핵심 설계 판단
+### 1. 읽기 전용 실행 경계
 
-| 운영 문제 | 설계 판단 |
-|---|---|
-| 운영 PC마다 Telnet 접속을 직접 관리 | Agent Service가 Telnet 실행을 중계하고 Viewer는 HTTPS만 사용 |
-| Agent 장애 시 운영 데이터 유실 우려 | 장비 목록·자격 증명·감시 이력은 Viewer만 소유 |
-| 장비 모델 오선택 | 로그인 후 `show version`으로 모델을 자동 식별하고 정확히 1개일 때만 수용 |
-| 임의 명령 실행 위험 | 수동 입력은 줄바꿈·구분자가 없는 한 줄 `show` 명령으로 제한 |
-| 장비가 명령 중 연결 종료 | 인증을 반복하지 않고 미완료 명령만 최대 1회 재연결 |
-| 무한 Telnet 대기 | 로그인·enable·명령 수집 각각 시간/바이트 상한 적용 |
-| 명령 원문에 운영정보 포함 | 수동 명령과 raw output은 Viewer 메모리에서만 사용하고 저장·export 금지 |
-| 자격 증명 평문 저장 | Windows DPAPI CurrentUser 사용 |
-| 이전 연결 결과가 현재 상태를 덮음 | Viewer client generation을 구분하고 stale 결과를 거부 |
-| 이벤트 폭주로 UI 지연 | 제한된 queue에서 동일 변경을 coalesce |
-| 설치 실패가 기존 Agent를 손상 | staging/backup/journal 기반 transactional update와 rollback |
-| 설치는 성공했지만 연결 준비가 불완전 | 설치 성공과 readiness 경고를 분리하고 정상 설치를 불필요하게 rollback하지 않음 |
-
-자세한 운영 판정과 실패 처리 기준은 [OPERATING_LOGIC.md](docs/OPERATING_LOGIC.md)에 정리했습니다.
-
-## 읽기 전용 안전 경계
-
-이 프로젝트에서 가장 중요한 계약은 **장비 설정을 변경하지 않는 것**입니다.
-
-수동 입력은 다음 조건을 모두 만족해야 합니다.
+Viewer와 Agent가 각각 명령을 검증합니다.
 
 ```text
-한 줄
-show 로 시작
-명령 구분자 없음
-설정 모드 명령 없음
+한 줄 + show로 시작 + 128자 이하
++ CR/LF와 제어문자 없음
++ ; & | 같은 연결 문법 없음
++ configure / shutdown / reload / write 등 변경 흐름 없음
 ```
 
-모델 식별도 인증 후 읽기 전용 명령 하나만 실행합니다.
+인증·enable 실패와 명령 timeout은 무조건 재시도하지 않습니다. 장비가 명령 실행 도중 연결을 끊은 경우에만 새 세션을 최대 한 번 만들고 완료되지 않은 명령만 다시 처리합니다.
+
+### 2. 인증과 인증서 고정
+
+- `/health/live`, `/health/ready`를 포함한 모든 Agent 경로는 32-byte bearer token이 필요합니다.
+- health 응답은 인증 뒤에도 생존·버전·프로토콜에 필요한 최소 정보만 반환합니다.
+- token 비교와 SPKI pin 비교는 `CryptographicOperations.FixedTimeEquals`를 사용합니다.
+- 인증서 유효기간과 TLS Server Authentication EKU도 확인합니다.
+- pin 불일치, token 손상·누락, API 세대 불일치는 자동 수락하거나 구형 API로 fallback하지 않습니다.
+- 인증 정보, 장비 암호, 명령 원문과 출력은 진단 로그에 기록하지 않습니다.
+
+### 3. 상태와 장애 처리
+
+- 요청마다 별도 Telnet 세션을 만들고 종료합니다.
+- 로그인, enable, 명령 수집에 독립적인 시간·바이트 예산을 둡니다.
+- 장비 한 대 동시 세션 1개, Agent 전체 동시 실행과 요청 빈도를 제한합니다.
+- Agent를 바꾼 뒤 늦게 도착한 이전 응답은 client generation으로 식별해 폐기합니다.
+- 이벤트 queue는 제한된 크기에서 같은 변화를 합쳐 UI 정지를 방지합니다.
+
+### 4. 배포·공급망 검증
+
+- NuGet `packages.lock.json`과 `packages.win-x64.lock.json`을 고정합니다.
+- CI에서 전이 의존성을 포함한 취약 패키지를 검사합니다.
+- Agent/Viewer를 self-contained Windows x64 ZIP으로 만듭니다.
+- SPDX와 CycloneDX SBOM, build manifest, SHA-256을 생성합니다.
+- CI artifact를 다시 다운로드해 package contract와 실제 EXE smoke를 재검증합니다.
+- 공개 ZIP은 GitHub build provenance attestation과 immutable release 절차를 사용합니다.
+
+## 지원 범위
+
+코드에 등록된 모델은 다음 세 가지입니다.
+
+- IES4224GP
+- IES4028XP
+- IES4226XP
+
+등록 모델이라는 뜻은 fixture 기반 파서가 해당 모델을 인식한다는 의미입니다. 모든 실제 펌웨어에서 검증됐다는 뜻은 아닙니다.
+
+## 설치와 사용
+
+공식 Release에서 다음 두 파일을 받아 같은 버전으로 사용합니다.
 
 ```text
-show version
+SamsungSwitchWatch-Agent-0.12.0-poc-win-x64.zip
+SamsungSwitchWatch-Viewer-0.12.0-poc-win-x64.zip
 ```
 
-Agent는 한 요청에서 검증된 조회 명령을 최대 8개까지만 처리합니다. 인증 실패, enable 실패, 명령 timeout은 자동 반복하지 않습니다. 장비가 명령 처리 중 연결을 종료한 경우에만 새 세션을 한 번 만들고 **아직 완료되지 않은 명령만** 실행합니다.
+1. Agent PC에서 Agent ZIP을 풀고 `SamsungSwitchWatch.Agent.Setup.exe`를 관리자 권한으로 실행합니다.
+2. 설치 후 `페어링 코드 보기`에서 코드를 확인합니다.
+3. 운영자 PC에서 Viewer ZIP의 `SamsungSwitchWatch.Viewer.Setup.exe`를 실행합니다.
+4. Viewer 연결 설정에 Agent 주소와 페어링 코드를 입력합니다.
+5. 연결 확인 후 장비를 등록하고 로그인 시험을 수행합니다.
 
-### 보안 경계에서 과장하지 않는 부분
+이전 버전에서 업데이트하면 기존 장비·감시 이력은 보존하지만 기존의 무인증 연결은 신뢰하지 않습니다. Agent와 Viewer를 함께 업데이트하고 반드시 새 코드로 다시 페어링해야 합니다. 상세 절차는 [설치·마이그레이션 가이드](docs/INSTALL_KO.md)에 있습니다.
 
-- Agent→Switch 구간은 **Telnet이므로 암호화되지 않습니다.** 신뢰된 사설 관리망에서만 사용해야 합니다.
-- Viewer→Agent는 HTTPS로 암호화하지만, 현재 Agent 인증서를 Viewer가 신뢰 핀으로 검증하는 구조는 아닙니다.
-- Agent API에는 별도 애플리케이션 인증 계층이 없습니다.
-- 따라서 Agent를 사용자 VLAN, 공용 Wi-Fi 또는 인터넷에 노출하는 용도로 설계하지 않았습니다.
-
-공개 저장소의 민감정보 처리 기준은 [SECURITY.md](.github/SECURITY.md)를 참고하십시오.
-
-## 모델 식별 흐름
-
-```text
-Viewer에서 로그인 확인
-        ↓
-Agent가 Telnet 연결
-        ↓
-인증 / 선택적 enable
-        ↓
-show version
-        ↓
-등록된 모델 token 비교
-        ↓
-정확히 1개 → canonical model 반환
-0개 → MODEL_NOT_DETECTED
-2개 이상 → MODEL_AMBIGUOUS
-```
-
-모델 판별에 사용한 원문은 Viewer 응답·설정·로그에 저장하지 않습니다.
-
-## 실행 화면
-
-아래 화면은 저장소의 `SamsungSwitchWatch.ManualCapture` 도구가 **실제 WPF Viewer를 문서용 IP와 합성 장비 상태로 렌더링한 결과**입니다.
-
-### 운영 대시보드
-
-![Samsung Switch Watch 운영 대시보드](docs/images/dashboard.png)
-
-### 조회 결과
-
-![Samsung Switch Watch 조회 결과](docs/images/command-output.png)
-
-## 운영 흐름
-
-```text
-Agent 1회 설치
-   ↓
-Viewer 설치
-   ↓
-Agent 연결 확인
-   ↓
-장비 등록
-   ↓
-show version 기반 모델 식별
-   ↓
-수동 show 조회 또는 주기 감시
-   ↓
-현재 상태 / baseline / event 확인
-```
-
-### Agent 설치
-
-Release의 Agent ZIP을 압축 해제한 뒤 `SamsungSwitchWatch.Agent.Setup.exe`를 실행합니다. Agent는 관리자 권한이 필요한 Windows Service 설치 단계만 Setup을 통해 수행합니다.
-
-Agent Service는 정상 설치 이후 창이나 트레이 아이콘 없이 실행됩니다.
-
-### Viewer 설치
-
-Viewer ZIP의 `SamsungSwitchWatch.Viewer.Setup.exe`를 사용합니다. Viewer는 현재 Windows 사용자 영역에 설치되며 장비 목록과 감시 데이터도 Viewer 측에 유지됩니다.
-
-## 배포 파일
-
-현재 공식 Release는 두 사용자용 ZIP을 제공합니다.
-
-```text
-SamsungSwitchWatch-Agent-0.11.11-poc-win-x64.zip
-SamsungSwitchWatch-Viewer-0.11.11-poc-win-x64.zip
-```
-
-두 패키지는 Windows x64 self-contained 빌드입니다. 대상 PC에 별도 .NET Runtime을 설치하지 않아도 됩니다.
-
-Release에는 사용자용 Agent/Viewer 패키지만 게시하고, 내부 CI 후보 artifact와 검증 증거는 GitHub Actions에서 분리해 관리합니다.
-
-## 검증 체계
-
-`Windows CI`는 단순 컴파일보다 넓은 범위를 검증합니다.
-
-```text
-dotnet restore --locked-mode
-        ↓
-dotnet build
-        ↓
-dotnet test
-        ↓
-PowerShell 배포 helper 검증
-        ↓
-unsigned POC Agent/Viewer package 생성
-        ↓
-artifact 다운로드
-        ↓
-manifest / SHA-256 / package contract 재검증
-        ↓
-추출된 release executable smoke
-```
-
-테스트에서는 실제 사내 장비 대신 synthetic Telnet server와 비식별 fixture를 사용합니다.
-
-검증 수준은 다음처럼 구분합니다.
-
-| 검증 | 상태 |
-|---|---|
-| Core / Viewer / Agent 자동 테스트 | ✅ CI |
-| 합성 Telnet 로그인·IAC·Latin-1·timeout 경계 | ✅ CI |
-| 읽기 전용 command validation | ✅ CI |
-| Windows self-contained package | ✅ CI |
-| 다운로드 후 manifest / SHA-256 | ✅ CI |
-| 추출 EXE smoke | ✅ CI |
-| 실제 Windows SCM/EDR/GPO 조합 | ⚠️ 현장 검증 별도 |
-| IES4224GP / IES4028XP / IES4226XP 실제 펌웨어 명령 | ⚠️ 현장 검증 별도 |
-
-세부 검증 기준과 증거의 의미는 [VALIDATION_REPORT.md](docs/VALIDATION_REPORT.md)에서 확인할 수 있습니다.
-
-## 로컬 개발·검증
-
-.NET SDK 버전은 저장소 `global.json` 기준을 사용합니다.
+## 검증
 
 ```powershell
 dotnet restore SamsungSwitchWatch.sln --locked-mode
@@ -259,39 +140,32 @@ dotnet test SamsungSwitchWatch.sln -c Release --no-build
 .\scripts\validate.ps1 -Configuration Release
 ```
 
-패키지 생성:
+릴리스 패키지 생성:
 
 ```powershell
-.\scripts\build-release.ps1 -Version 0.11.11-poc
+.\scripts\build-release.ps1 -Version 0.12.0-poc
 ```
 
-개발 규칙은 [DEVELOPMENT.md](DEVELOPMENT.md)에 정리했습니다.
+자동 검증은 합성 데이터만 사용합니다. 실제 사내 스위치, 주소, 계정, MAC, 원문 출력을 공개 fixture나 CI에 넣지 않습니다. 자세한 범위는 [검증 보고서](docs/VALIDATION_REPORT.md)를 참고하십시오.
+
+## 분명한 한계
+
+- **Agent→Switch는 Telnet/TCP 23 평문입니다.** 사용자 이름, 암호와 장비 출력이 암호화되지 않으므로 격리된 사설 관리망에서만 사용해야 합니다.
+- 이 도구는 설정 변경 자동화, 인터넷 공개 API, 무중단 24시간 NMS를 목표로 하지 않습니다.
+- POC ZIP은 코드 서명되지 않을 수 있으므로 조직의 SmartScreen·EDR·AppLocker 정책 승인이 필요합니다.
+- 실제 Windows Service 복구, GPO/방화벽, 백신 잠금과 모델별 펌웨어 차이는 현장에서 별도 검증해야 합니다.
 
 ## 문서
 
-- [현재 릴리즈 노트](docs/RELEASE_NOTES_0.11.11_POC_KO.md)
-- [프로그램 구조](docs/ARCHITECTURE.md)
-- [운영 판단·실패 처리 기준](docs/OPERATING_LOGIC.md)
+- [현재 릴리스 노트](docs/RELEASE_NOTES_0.12.0_POC_KO.md)
+- [설치·재페어링](docs/INSTALL_KO.md)
+- [보안 설계](docs/SECURITY.md)
+- [아키텍처](docs/ARCHITECTURE.md)
 - [검증 보고서](docs/VALIDATION_REPORT.md)
-- [프로젝트 현재 상태](docs/PROJECT_STATUS.md)
-- [설치 가이드](docs/INSTALL_KO.md)
-- [현장 POC 체크리스트](docs/FIELD_POC_CHECKLIST_KO.md)
+- [한계와 운영 전제](docs/LIMITATIONS_KO.md)
+- [보안 제보 정책](.github/SECURITY.md)
+- [개발 가이드](DEVELOPMENT.md)
 
-과거 버전별 상세 변경은 `docs/RELEASE_NOTES_*` 문서와 GitHub Releases에서 확인합니다. README에는 현재 운영 구조와 최신 사용 흐름만 유지합니다.
+## 라이선스
 
-## 범위 밖
-
-현재 POC가 목표로 하지 않는 항목입니다.
-
-- 스위치 설정 변경 자동화
-- 인터넷 공개형 Agent API
-- Agent에 장비 자격 증명·인벤토리 저장
-- raw 명령 결과 장기 보관
-- Telnet 자체를 암호화된 프로토콜로 변환
-- 모든 Samsung iES 모델·펌웨어에 대한 포괄적 호환성 보장
-
-## 현재 단계
-
-현재 POC는 **읽기 전용 원격 점검·주기 감시·Windows 배포/복구 체계를 검증하는 단계**입니다.
-
-실제 장비 적용 여부는 반드시 허가된 환경에서 모델·펌웨어·관리망·EDR/GPO 조건을 확인한 뒤 판단해야 합니다.
+MIT License. 자세한 내용은 [LICENSE](LICENSE)를 확인하십시오.

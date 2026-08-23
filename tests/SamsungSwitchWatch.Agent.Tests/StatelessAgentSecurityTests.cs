@@ -146,7 +146,7 @@ public sealed class StatelessAgentSecurityTests
             RequestServices = services
         };
         context.Connection.RemoteIpAddress = IPAddress.Parse("192.0.2.10");
-        context.Request.Path = "/api/v4/telnet/execute";
+        context.Request.Path = "/api/v5/telnet/execute";
         context.Request.QueryString = new QueryString(
             "?username=operator-private&password=login-private");
         context.Response.Body = new MemoryStream();

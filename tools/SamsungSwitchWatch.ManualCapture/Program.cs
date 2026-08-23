@@ -22,7 +22,7 @@ namespace SamsungSwitchWatch.ManualCapture;
 
 internal static class Program
 {
-    private const string ManualProductVersion = "0.11.11-poc";
+    private const string ManualProductVersion = "0.12.0-poc";
 
     private static readonly string[] ExpectedScreenshotNames =
     [
@@ -620,7 +620,7 @@ internal static class Program
                          (AgentConnectionProbeStage.Dns, "Agent PC IPv4를 확인했습니다."),
                          (AgentConnectionProbeStage.Tcp, "TCP/18443 연결에 성공했습니다."),
                          (AgentConnectionProbeStage.Https, "HTTPS 보호 연결을 확인했습니다."),
-                         (AgentConnectionProbeStage.Identity, $"Agent {ManualProductVersion} · API v4 확인")
+                         (AgentConnectionProbeStage.Identity, $"Agent {ManualProductVersion} · API v5 확인")
                      })
             {
                 progress?.Report(new AgentConnectionProbeUpdate(
@@ -642,7 +642,7 @@ internal static class Program
             };
             return Task.FromResult(AgentConnectionProbeResult.Success(
                 identity,
-                $"Agent {ManualProductVersion} · API v4 호환"));
+                $"Agent {ManualProductVersion} · API v5 인증"));
         }
     }
 

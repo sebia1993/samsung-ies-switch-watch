@@ -32,16 +32,17 @@ dotnet test SamsungSwitchWatch.sln -c Release --no-build
 패키지:
 
 ```powershell
-.\scripts\build-release.ps1 -Version 0.11.11-poc
+.\scripts\build-release.ps1 -Version 0.12.0-poc
 ```
 
 ## 변경 원칙
 
-- 기존 운영 UI, 저장 형식, Agent API 계약은 목적과 무관하게 변경하지 않습니다.
+- 공개 API 변경은 명시적인 버전 전환·마이그레이션 문서와 회귀 테스트를 함께 제공합니다.
 - Telnet parser와 filesystem/deployment 경계는 deterministic test가 가능해야 합니다.
 - 실제 회사 IP, 계정, MAC, 명령 결과, 인증서를 fixture에 넣지 않습니다.
 - live switch test는 허가된 환경에서 사람이 명시적으로 수행합니다.
 - mock/package/smoke 결과를 실제 장비 검증으로 표현하지 않습니다.
+- pairing code와 bearer token을 인수·로그·fixture·진단 자료에 넣지 않습니다.
 - 생성된 `bin`, `obj`, `artifacts`, release output, database, certificate를 커밋하지 않습니다.
 
 ## 장비 접근 계약
@@ -80,6 +81,7 @@ login/enable/command collection의 bounded time/byte budget과 Telnet IAC/Latin-
 Viewer가 다음을 소유합니다.
 
 - Agent endpoint
+- authority별 Agent SPKI pin과 DPAPI CurrentUser API token
 - device inventory
 - canonical model
 - DPAPI CurrentUser credentials
@@ -102,8 +104,9 @@ Agent public runtime은 `--service` Windows Service만 허용합니다.
 - Production Agent: HTTPS TCP/18443
 - Viewer source / switch target: private management network 범위
 - Switch: Telnet TCP/23
-- Agent API에 별도 application authentication 없음
-- Agent TLS는 transport encryption 목적이며 endpoint identity pinning이 아님
+- Agent 기능 API: bearer 인증 필수 API v5
+- Agent TLS: 수동 페어링한 SPKI SHA-256 pin 검증
+- 공개 health 외의 무인증 경로, TOFU와 v4 fallback 금지
 
 Agent를 public Internet 또는 user access network에 노출하는 방향으로 변경하지 않습니다.
 

@@ -1,6 +1,6 @@
 <Project>
   <PropertyGroup>
-    <Version>0.11.11-poc</Version>
+    <Version>0.12.0-poc</Version>
     <LangVersion>latest</LangVersion>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
@@ -9,7 +9,7 @@
     <InvariantGlobalization>false</InvariantGlobalization>
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
     <RestoreLockedMode Condition="'$(ContinuousIntegrationBuild)' == 'true'">true</RestoreLockedMode>
-    <RepositoryUrl>https://github.com/sebia1993/samsung_switch_check.git</RepositoryUrl>
+    <RepositoryUrl>https://github.com/sebia1993/samsung-ies-switch-watch.git</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
   </PropertyGroup>
 </Project>

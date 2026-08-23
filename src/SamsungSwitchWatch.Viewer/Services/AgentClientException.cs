@@ -54,7 +54,16 @@ internal static class AgentClientErrors
 
         if (statusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
         {
-            return new AgentClientException("AGENT_ACCESS_DENIED", AgentConnectionState.Stale);
+            return new AgentClientException(
+                serverCode == "AUTH_REQUIRED" ? "AGENT_PAIRING_REJECTED" : "AGENT_ACCESS_DENIED",
+                AgentConnectionState.Stale);
+        }
+
+        if ((int)statusCode == 426)
+        {
+            return new AgentClientException(
+                serverCode ?? "AGENT_API_UPGRADE_REQUIRED",
+                AgentConnectionState.NeedsConnection);
         }
 
         if (statusCode == HttpStatusCode.ServiceUnavailable)
@@ -311,8 +320,12 @@ internal static class ViewerConnectionMessages
         "AGENT_ACCESS_DENIED" => "Agent 접근이 거부되었습니다. Viewer 출발지 주소가 loopback 또는 RFC1918 사설 IPv4인지 확인하고 Windows 방화벽 또는 회사 GPO 경로를 확인해 주세요.",
         "AGENT_CLIENT_NOT_ALLOWED" => "현재 Viewer 주소는 Agent의 자동 허용 범위에 포함되지 않습니다. Agent PC까지 loopback 또는 RFC1918 사설 IPv4 경로를 사용해 주세요.",
         "AGENT_PROTOCOL_MISMATCH" => "Agent HTTPS/TLS 응답을 확인하지 못했습니다. Agent PC에서 로컬 HTTPS 준비 상태와 Agent 서비스 진단을 확인해 주세요.",
-        "AGENT_VERSION_MISMATCH" => "Agent와 Viewer 버전이 다릅니다. API v4가 호환되면 경고 후 연결되지만 같은 릴리스 사용을 권장합니다.",
-        "AGENT_IDENTITY_CHANGED" => "이 코드는 이전 버전 호환용입니다. 현재 Viewer는 Agent의 임시 TLS 인증서를 자동 수락합니다.",
+        "AGENT_VERSION_MISMATCH" => "Agent와 Viewer 버전이 다릅니다. API v5가 호환되면 경고 후 연결되지만 같은 릴리스 사용을 권장합니다.",
+        "AGENT_IDENTITY_CHANGED" => "Agent 인증서가 페어링 당시와 다릅니다. 연결을 중지하고 Agent PC에서 새 페어링 코드를 직접 확인해 다시 등록하세요.",
+        "VIEWER_PAIRING_REQUIRED" => "Agent Setup에 표시된 페어링 코드로 먼저 연결을 등록해 주세요.",
+        "VIEWER_PAIRING_CORRUPT" => "저장된 페어링 정보를 사용할 수 없습니다. Agent PC에서 새 페어링 코드를 확인해 다시 등록하세요.",
+        "AGENT_PAIRING_REJECTED" => "Agent가 페어링 토큰을 거부했습니다. Agent PC에서 새 페어링 코드를 확인해 다시 등록하세요.",
+        "AGENT_API_UPGRADE_REQUIRED" => "이 Agent는 안전한 API v5 페어링이 필요합니다. Agent와 Viewer를 함께 업데이트하고 다시 페어링하세요.",
         "AGENT_NOT_READY" or "STORAGE_WRITE_FAILED" => "Agent가 아직 상태 제공을 준비하지 못했습니다. Agent 상태를 확인해 주세요.",
         "AGENT_RESPONSE_INVALID" => "Agent 응답 형식이 올바르지 않습니다. Agent와 Viewer 버전을 확인해 주세요.",
         "QUERY_DISABLED" => "Agent에서 장비 명령 기능이 꺼져 있습니다. Agent 설치 설정을 확인해 주세요.",

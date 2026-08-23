@@ -114,7 +114,7 @@ public static class AgentIdentityStore
         ArgumentNullException.ThrowIfNull(beforeCreationMarkerAcquire);
         if (options.MockMode)
         {
-            return new AgentIdentity(Guid.NewGuid().ToString("N"), CreateCertificate());
+            return EphemeralAgentIdentityFactory.Create();
         }
 
         if (!OperatingSystem.IsWindows())

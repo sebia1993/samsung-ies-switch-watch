@@ -16,19 +16,20 @@ public interface IAgentClient : IAsyncDisposable
     Task<bool> AcknowledgeAsync(string eventId, CancellationToken cancellationToken);
 
     bool SupportsStatelessV4 => false;
+    bool SupportsStatelessV5 => SupportsStatelessV4;
 
     Task<AgentIdentityDto> GetIdentityAsync(CancellationToken cancellationToken) =>
-        Task.FromException<AgentIdentityDto>(new NotSupportedException("AGENT_V4_NOT_SUPPORTED"));
+        Task.FromException<AgentIdentityDto>(new NotSupportedException("AGENT_V5_NOT_SUPPORTED"));
 
     Task<TelnetExecutionResultDto> TestTelnetAsync(
         TelnetTargetDto target,
         CancellationToken cancellationToken) =>
-        Task.FromException<TelnetExecutionResultDto>(new NotSupportedException("AGENT_V4_NOT_SUPPORTED"));
+        Task.FromException<TelnetExecutionResultDto>(new NotSupportedException("AGENT_V5_NOT_SUPPORTED"));
 
     Task<TelnetExecutionResultDto> ExecuteTelnetAsync(
         TelnetExecuteRequestDto request,
         CancellationToken cancellationToken) =>
-        Task.FromException<TelnetExecutionResultDto>(new NotSupportedException("AGENT_V4_NOT_SUPPORTED"));
+        Task.FromException<TelnetExecutionResultDto>(new NotSupportedException("AGENT_V5_NOT_SUPPORTED"));
 }
 
 public interface IAgentClientFactory

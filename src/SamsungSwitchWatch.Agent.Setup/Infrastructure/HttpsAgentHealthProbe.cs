@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.Http.Headers;
 using System.Net.Sockets;
 using System.Runtime.InteropServices;
 using System.Security.Authentication;
@@ -16,33 +17,41 @@ public sealed partial class HttpsAgentHealthProbe : IAgentHealthProbe
     private const uint InsufficientBuffer = 122;
     private readonly Func<HttpMessageHandler> _handlerFactory;
     private readonly Func<int, int, ListenerOwnership> _listenerOwnership;
+    private readonly Func<string?> _bearerTokenProvider;
     private readonly TimeSpan _retryDelay;
 
     public HttpsAgentHealthProbe()
         : this(
             CreateHandler,
             GetListenerOwnership,
-            TimeSpan.FromMilliseconds(500))
+            TimeSpan.FromMilliseconds(500),
+            ReadInstalledBearerToken)
     {
     }
 
-    internal HttpsAgentHealthProbe(Func<HttpMessageHandler> handlerFactory)
+    internal HttpsAgentHealthProbe(
+        Func<HttpMessageHandler> handlerFactory,
+        Func<string?> bearerTokenProvider)
         : this(
             handlerFactory,
             GetListenerOwnership,
-            TimeSpan.FromMilliseconds(500))
+            TimeSpan.FromMilliseconds(500),
+            bearerTokenProvider)
     {
     }
 
     internal HttpsAgentHealthProbe(
         Func<HttpMessageHandler> handlerFactory,
         Func<int, int, ListenerOwnership> listenerOwnership,
-        TimeSpan retryDelay)
+        TimeSpan retryDelay,
+        Func<string?> bearerTokenProvider)
     {
         _handlerFactory = handlerFactory ??
                           throw new ArgumentNullException(nameof(handlerFactory));
         _listenerOwnership = listenerOwnership ??
                              throw new ArgumentNullException(nameof(listenerOwnership));
+        _bearerTokenProvider = bearerTokenProvider ??
+                               throw new ArgumentNullException(nameof(bearerTokenProvider));
         if (retryDelay < TimeSpan.Zero)
         {
             throw new ArgumentOutOfRangeException(nameof(retryDelay));
@@ -155,6 +164,12 @@ public sealed partial class HttpsAgentHealthProbe : IAgentHealthProbe
                     VersionPolicy = HttpVersionPolicy.RequestVersionExact
                 };
                 readyRequest.Headers.ConnectionClose = true;
+                var bearerToken = _bearerTokenProvider();
+                if (!string.IsNullOrWhiteSpace(bearerToken))
+                {
+                    readyRequest.Headers.Authorization =
+                        new AuthenticationHeaderValue("Bearer", bearerToken);
+                }
                 using var readyResponse = await client.SendAsync(
                     readyRequest,
                     HttpCompletionOption.ResponseHeadersRead,
@@ -388,7 +403,7 @@ public sealed partial class HttpsAgentHealthProbe : IAgentHealthProbe
             return AgentHealthProbeCode.PayloadInvalid;
         }
 
-        if (api != 4)
+        if (api != 5)
         {
             return AgentHealthProbeCode.ApiVersionMismatch;
         }
@@ -421,6 +436,17 @@ public sealed partial class HttpsAgentHealthProbe : IAgentHealthProbe
             StringComparison.OrdinalIgnoreCase)
             ? AgentHealthProbeCode.Ready
             : AgentHealthProbeCode.ProductVersionMismatch;
+    }
+
+    private static string? ReadInstalledBearerToken()
+    {
+        var dataDirectory = DeploymentPaths.ForCurrentMachine(
+            AppContext.BaseDirectory).DataDirectory;
+        return SetupPairingCodeReader.TryReadBearerToken(
+            dataDirectory,
+            out var token)
+            ? token
+            : null;
     }
 
     private static HttpMessageHandler CreateHandler() =>

@@ -13,6 +13,7 @@ public partial class ConnectionSettingsWindow : Window
     private readonly IAgentConnectionProbe _connectionProbe;
     private readonly ViewerFieldDiagnosticWriter _fieldDiagnosticWriter = new();
     private readonly CancellationTokenSource _lifetime = new();
+    private readonly IViewerSecretProtector _pairingProtector = new CurrentUserSecretProtector();
     private ViewerFieldDiagnosticSnapshot? _lastFieldDiagnostic;
     private AgentConnectionProbeResult? _lastDiagnosticProbeResult;
     private string _lastDiagnosticMode = "NORMAL";
@@ -105,6 +106,23 @@ public partial class ConnectionSettingsWindow : Window
         candidate.StartMinimizedToTray = StartMinimizedCheckBox.IsChecked == true;
         candidate.DemoMode = false;
         candidate.AgentUri = agentUri;
+        if (!string.IsNullOrWhiteSpace(PairingCodePasswordBox.Password))
+        {
+            if (!ViewerPairingCode.TryApply(
+                    candidate,
+                    PairingCodePasswordBox.Password,
+                    _pairingProtector,
+                    out reason))
+            {
+                ValidationText.Text = reason;
+                return;
+            }
+        }
+        else if (!candidate.HasAgentPairingCredential())
+        {
+            ValidationText.Text = "Agent Setup에 표시된 SSW1 페어링 코드를 입력해 주세요.";
+            return;
+        }
         var clean = ViewerSettingsSanitizer.Sanitize(candidate);
         if (!ViewerSettingsSanitizer.IsValidForLiveConnection(clean, out reason))
         {
@@ -125,6 +143,14 @@ public partial class ConnectionSettingsWindow : Window
             return;
         }
 
+        ConnectionProgressPanel.Visibility = Visibility.Collapsed;
+        ValidationText.Text = string.Empty;
+        ClearFieldDiagnostic();
+    }
+
+    private void PairingCode_Changed(object sender, RoutedEventArgs e)
+    {
+        if (!_addressTextInitialized) return;
         ConnectionProgressPanel.Visibility = Visibility.Collapsed;
         ValidationText.Text = string.Empty;
         ClearFieldDiagnostic();
@@ -222,6 +248,7 @@ public partial class ConnectionSettingsWindow : Window
         SaveButton.IsEnabled = !busy && !_settingsApplied;
         CancelButton.IsEnabled = !busy;
         AgentAddressTextBox.IsEnabled = !busy && !_settingsApplied;
+        PairingCodePasswordBox.IsEnabled = !busy && !_settingsApplied;
         DemoModeCheckBox.IsEnabled = !busy && !_settingsApplied;
         StartMinimizedCheckBox.IsEnabled = !busy && !_settingsApplied;
         DiagnosticSaveButton.IsEnabled = !busy && _lastFieldDiagnostic is not null;

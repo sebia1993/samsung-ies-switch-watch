@@ -206,13 +206,6 @@ public sealed class ViewerV04Tests
         Assert.Null(backend.Item);
     }
 
-    [Theory]
-    [InlineData(HttpStatusCode.NotFound, true)]
-    [InlineData(HttpStatusCode.Unauthorized, false)]
-    [InlineData(HttpStatusCode.ServiceUnavailable, false)]
-    public void ApiCompatibility_FallsBackOnlyWhenV3RouteIsMissing(HttpStatusCode status, bool expected) =>
-        Assert.Equal(expected, ApiCompatibilityPolicy.ShouldFallback(status));
-
     private static SwitchEventDto Event(long sequence, string kind, DeviceHealth health, string title, string detail) =>
         new(sequence, $"event-{sequence}", "SW-REAL-01", "ACCESS-SW-REAL-01", DateTimeOffset.UtcNow,
             health, kind, title, detail);

@@ -180,9 +180,9 @@ commit 전 실패하면 검증된 이전 설치를 복원합니다. 경로 소�
 ### Viewer → Agent
 
 - HTTPS TCP/18443
-- 전송 암호화 목적
-- 현재 Viewer가 Agent endpoint identity를 강한 trust pin으로 검증하는 구조는 아님
-- 별도 application authentication 없음
+- 수동 페어링한 SPKI SHA-256 pin으로 Agent 신원 검증
+- DPAPI CurrentUser로 보호한 32-byte bearer token으로 API v5 인증
+- pin·token 불일치, 인증서 오류, v4 호출은 자동 우회 없이 차단
 
 ### Agent → Switch
 
@@ -201,7 +201,7 @@ commit 전 실패하면 검증된 이전 설치를 복원합니다. 경로 소�
 - 실제 MAC
 - 실제 명령 결과
 - 조직명·사이트명
-- 인증서/토큰
+- 인증서 private key, 페어링 코드와 API token
 
 수동 조회 raw output은 프로그램 내부에서도 Viewer 메모리에서만 사용하고 장기 저장을 하지 않는 것이 기본 경계입니다.
 

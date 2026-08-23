@@ -13,6 +13,7 @@ public sealed class ViewerSettings
     public bool DemoMode { get; set; }
     public string AgentUri { get; set; } = string.Empty;
     public Dictionary<string, string> AgentTrustPins { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    public Dictionary<string, string> ProtectedAgentBearerTokens { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public long LastEventSequence { get; set; }
     public Dictionary<string, long> EventCursors { get; set; } = new(StringComparer.Ordinal);
     public bool MiniTopmost { get; set; } = true;
@@ -58,6 +59,39 @@ public sealed class ViewerSettings
             if (authority.Length > 0) AgentTrustPins.Remove(authority);
         }
     }
+
+    public bool TryGetProtectedAgentBearerToken(out string protectedToken)
+    {
+        lock (_syncRoot)
+        {
+            return ProtectedAgentBearerTokens.TryGetValue(
+                BuildAgentAuthority(),
+                out protectedToken!);
+        }
+    }
+
+    public void SetProtectedAgentBearerToken(string protectedToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(protectedToken);
+        lock (_syncRoot)
+        {
+            var authority = BuildAgentAuthority();
+            if (authority.Length == 0) throw new InvalidOperationException("VIEWER_CONNECTION_REQUIRED");
+            ProtectedAgentBearerTokens[authority] = protectedToken;
+        }
+    }
+
+    public void RemoveProtectedAgentBearerToken()
+    {
+        lock (_syncRoot)
+        {
+            var authority = BuildAgentAuthority();
+            if (authority.Length > 0) ProtectedAgentBearerTokens.Remove(authority);
+        }
+    }
+
+    public bool HasAgentPairingCredential() =>
+        TryGetAgentTrustPin(out _) && TryGetProtectedAgentBearerToken(out _);
 
     public string BuildAgentIdentity(string agentId)
     {
@@ -105,6 +139,9 @@ public sealed class ViewerSettings
                 AgentTrustPins = new Dictionary<string, string>(
                     AgentTrustPins ?? new Dictionary<string, string>(),
                     StringComparer.OrdinalIgnoreCase),
+                ProtectedAgentBearerTokens = new Dictionary<string, string>(
+                    ProtectedAgentBearerTokens ?? new Dictionary<string, string>(),
+                    StringComparer.OrdinalIgnoreCase),
                 LastEventSequence = LastEventSequence,
                 EventCursors = new Dictionary<string, long>(
                     EventCursors ?? new Dictionary<string, long>(),
@@ -139,6 +176,12 @@ public static class ViewerSettingsSanitizer
                 .Where(item => item.Key.Length is > 0 and <= 256 && IsSha256Hex(item.Value))
                 .Take(32)
                 .ToDictionary(item => item.Key, item => item.Value.ToUpperInvariant(), StringComparer.OrdinalIgnoreCase),
+            ProtectedAgentBearerTokens = (input.ProtectedAgentBearerTokens ?? new Dictionary<string, string>())
+                .Where(item => item.Key.Length is > 0 and <= 256
+                    && item.Value.Length is > 0 and <= 4096
+                    && IsBase64(item.Value))
+                .Take(32)
+                .ToDictionary(item => item.Key, item => item.Value, StringComparer.OrdinalIgnoreCase),
             LastEventSequence = Math.Max(0, input.LastEventSequence),
             EventCursors = (input.EventCursors ?? new Dictionary<string, long>())
                 .Where(item => item.Key.Length is > 0 and <= 128)
@@ -286,6 +329,18 @@ public static class ViewerSettingsSanitizer
             character is >= '0' and <= '9'
                 or >= 'A' and <= 'F'
                 or >= 'a' and <= 'f');
+
+    private static bool IsBase64(string value)
+    {
+        try
+        {
+            return Convert.FromBase64String(value).Length > 0;
+        }
+        catch (FormatException)
+        {
+            return false;
+        }
+    }
 }
 
 public sealed class ViewerSettingsStore
@@ -325,8 +380,9 @@ public sealed class ViewerSettingsStore
                 return new ViewerSettings();
             }
 
-            // Valid legacy trust-pin entries are retained for settings-file
-            // compatibility, but v0.11 transport does not consult or mutate them.
+            // v0.11 settings keep devices, history and the Agent address, but a
+            // live v0.12 connection is not considered ready until a DPAPI token
+            // and matching SPKI pin exist for the selected authority.
             var settings = JsonSerializer.Deserialize<ViewerSettings>(storedJson, JsonOptions)
                            ?? throw new ViewerSettingsFormatException();
             settings = ViewerSettingsSanitizer.Sanitize(settings);
@@ -346,7 +402,11 @@ public sealed class ViewerSettingsStore
                     return settings;
                 }
             }
-            LastLoadStatus = ViewerSettingsLoadStatus.Ok;
+            LastLoadStatus = !settings.DemoMode
+                && !string.IsNullOrWhiteSpace(settings.AgentUri)
+                && !settings.HasAgentPairingCredential()
+                    ? ViewerSettingsLoadStatus.NeedsConnection
+                    : ViewerSettingsLoadStatus.Ok;
             return settings;
         }
         catch (Exception exception) when (

@@ -452,7 +452,7 @@ internal sealed class HttpAgentIdentityProbe : IAgentIdentityProbe
         CancellationToken cancellationToken)
     {
         var validator = new CertificatePinValidator(settings, certificateAccepted);
-        await using var client = new HttpAgentClient(settings, null, null, validator);
+        await using var client = new HttpAgentClient(settings, null, null, validator, null);
         await client.StartAsync(cancellationToken).ConfigureAwait(false);
         return await client.GetIdentityAsync(cancellationToken).ConfigureAwait(false);
     }
@@ -472,7 +472,7 @@ internal static class AgentProductVersionPolicy
         if (normalizedAgent.Length == 0)
         {
             detail =
-                "경고 · Agent 제품 버전을 확인할 수 없지만 API v4가 호환되어 연결합니다.";
+                "경고 · Agent 제품 버전을 확인할 수 없지만 API v5가 호환되어 연결합니다.";
             return true;
         }
 
@@ -484,7 +484,7 @@ internal static class AgentProductVersionPolicy
         }
 
         detail =
-            $"경고 · Agent {normalizedAgent}와 Viewer {normalizedViewer} 버전이 다르지만 API v4가 호환되어 연결합니다.";
+            $"경고 · Agent {normalizedAgent}와 Viewer {normalizedViewer} 버전이 다르지만 API v5가 호환되어 연결합니다.";
         return true;
     }
 

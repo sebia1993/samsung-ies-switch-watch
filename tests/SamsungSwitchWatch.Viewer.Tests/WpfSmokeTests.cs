@@ -132,7 +132,7 @@ public sealed class WpfSmokeTests
                 connection.Show();
                 connection.UpdateLayout();
                 Assert.Equal("monitor-pc", connection.AgentAddressTextBox.Text);
-                Assert.Equal("API가 호환되면 연결합니다", connection.TransportWarningText.Text);
+                Assert.Equal("API v5만 연결합니다", connection.TransportWarningText.Text);
                 Assert.Equal(System.Windows.Visibility.Collapsed, connection.ConnectionProgressPanel.Visibility);
                 Assert.Equal(
                     System.Windows.Visibility.Collapsed,
@@ -170,6 +170,7 @@ public sealed class WpfSmokeTests
                     },
                     new SuccessfulAgentConnectionProbe());
                 successfulConnection.Show();
+                successfulConnection.PairingCodePasswordBox.Password = ValidPairingCode();
                 successfulConnection.SaveButton.RaiseEvent(
                     new RoutedEventArgs(System.Windows.Controls.Button.ClickEvent));
                 successfulConnection.UpdateLayout();
@@ -195,12 +196,13 @@ public sealed class WpfSmokeTests
                     (_, _) => Task.CompletedTask,
                     new VersionWarningAgentConnectionProbe());
                 versionWarningConnection.Show();
+                versionWarningConnection.PairingCodePasswordBox.Password = ValidPairingCode();
                 versionWarningConnection.SaveButton.RaiseEvent(
                     new RoutedEventArgs(System.Windows.Controls.Button.ClickEvent));
                 versionWarningConnection.UpdateLayout();
 
                 Assert.NotNull(versionWarningConnection.Result);
-                Assert.Contains("버전이 다르지만 API v4", versionWarningConnection.ValidationText.Text,
+                Assert.Contains("버전이 다르지만 API v5", versionWarningConnection.ValidationText.Text,
                     StringComparison.Ordinal);
                 Assert.False(versionWarningConnection.SaveButton.IsEnabled);
                 versionWarningConnection.Close();
@@ -215,6 +217,7 @@ public sealed class WpfSmokeTests
                         AgentConnectionState.Stale)),
                     new SuccessfulAgentConnectionProbe());
                 settingsSaveFailureConnection.Show();
+                settingsSaveFailureConnection.PairingCodePasswordBox.Password = ValidPairingCode();
                 settingsSaveFailureConnection.SaveButton.RaiseEvent(
                     new RoutedEventArgs(System.Windows.Controls.Button.ClickEvent));
                 settingsSaveFailureConnection.UpdateLayout();
@@ -1266,7 +1269,7 @@ public sealed class WpfSmokeTests
             cancellationToken.ThrowIfCancellationRequested();
             return Task.FromResult(AgentConnectionProbeResult.Success(
                 Identity() with { ProductVersion = "0.10.0-poc" },
-                "경고 · Agent 0.10.0-poc와 Viewer 0.11.4-poc 버전이 다르지만 API v4가 호환되어 연결합니다."));
+                "경고 · Agent 0.10.0-poc와 Viewer 0.12.0-poc 버전이 다르지만 API v5가 호환되어 연결합니다."));
         }
     }
 
@@ -1306,7 +1309,7 @@ public sealed class WpfSmokeTests
 
     private static AgentIdentityDto Identity() =>
         new(
-            4,
+            5,
             "agent-test",
             "instance-test",
             new string('A', 64),
@@ -1316,4 +1319,7 @@ public sealed class WpfSmokeTests
         {
             ProductVersion = AgentProductVersionPolicy.CurrentViewerVersion
         };
+
+    private static string ValidPairingCode() =>
+        "SSW1." + ViewerPairingCode.Base64Url(new byte[64]);
 }
