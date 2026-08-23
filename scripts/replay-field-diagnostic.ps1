@@ -1223,7 +1223,7 @@ function Resolve-SswFieldDiagnosticScenario {
         'VIEWER|AGENT_RESPONSE_INVALID|IDENTITY' =
             'AgentConnectionProbeTests.ProbeAsync_InvalidApiAfterTlsIsReportedAtIdentityStage'
         'VIEWER|AGENT_VERSION_MISMATCH|IDENTITY' =
-            'AgentConnectionProbeTests.ProbeAsync_ProductVersionMismatchConnectsWithWarningWhenApiV4IsCompatible'
+            'AgentConnectionProbeTests.ProbeAsync_ProductVersionMismatchConnectsWithWarningWhenApiV5IsCompatible'
         'VIEWER|VIEWER_SETTINGS_WRITE_FAILED|SETTINGS' =
             'ViewerSettingsTests.SaveCoordinator_SaveOrThrowPreservesFailClosedConnectionFlow'
     }
