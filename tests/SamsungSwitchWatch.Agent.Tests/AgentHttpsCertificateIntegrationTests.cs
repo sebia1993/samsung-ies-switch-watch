@@ -1,7 +1,9 @@
 using System.Net;
+using System.Net.Http.Headers;
 using System.Net.Security;
 using System.Net.Sockets;
 using System.Security.Authentication;
+using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
@@ -78,6 +80,35 @@ public sealed class AgentHttpsCertificateIntegrationTests
                 {
                     Timeout = TimeSpan.FromSeconds(5)
                 };
+
+                using var unauthenticatedResponse = await client.GetAsync(
+                    "https://127.0.0.1:18443/health/ready",
+                    timeout.Token);
+                Assert.Equal(
+                    HttpStatusCode.Unauthorized,
+                    unauthenticatedResponse.StatusCode);
+
+                var identity = app.Services.GetRequiredService<AgentIdentity>();
+                var authentication =
+                    app.Services.GetRequiredService<AgentAuthenticationMaterial>();
+                var pairingCode = authentication.CreatePairingCode(identity);
+                var payload = Convert.FromBase64String(
+                    pairingCode["SSW1.".Length..]
+                        .Replace('-', '+')
+                        .Replace('_', '/')
+                    + "==");
+                try
+                {
+                    client.DefaultRequestHeaders.Authorization =
+                        new AuthenticationHeaderValue(
+                            "Bearer",
+                            Base64Url.Encode(payload.AsSpan(32, 32)));
+                }
+                finally
+                {
+                    CryptographicOperations.ZeroMemory(payload);
+                }
+
                 using var response = await client.GetAsync(
                     "https://127.0.0.1:18443/health/ready",
                     timeout.Token);
