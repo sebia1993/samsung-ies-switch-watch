@@ -2149,6 +2149,58 @@ public sealed class ViewerManagedDeviceTests
     }
 
     [Fact]
+    public async Task ManualQuery_DefaultPolicyBlocksSensitiveCommandBeforeAgentRequest()
+    {
+        var folder = TemporaryFolder();
+        try
+        {
+            var devices = new ManagedDeviceStore(
+                Path.Combine(folder, "devices.json"),
+                new TestProtector());
+            var draft = Draft("login-secret", "enable-secret");
+            draft.ConnectionVerified = true;
+            draft.MonitoringEnabled = false;
+            draft.LastConnectionTestUtc = DateTimeOffset.UtcNow;
+            draft.LastConnectionTestCode = "OK";
+            devices.Save(draft);
+            var client = new StatelessFakeClient();
+            var viewModel = new DashboardViewModel(
+                new ViewerSettings { DemoMode = true },
+                new ViewerSettingsStore(Path.Combine(folder, "settings.json")),
+                new StatelessFactory(client),
+                deviceStore: devices,
+                monitoringStore: new ViewerMonitoringStore(
+                    Path.Combine(folder, "monitor.json")));
+            try
+            {
+                await viewModel.InitializeAsync();
+                viewModel.SelectedDevice = Assert.Single(viewModel.Devices);
+                viewModel.ReadOnlyQueryCommand = "show running-config";
+
+                viewModel.ExecuteReadOnlyQueryCommand.Execute(null);
+                await WaitUntilAsync(() =>
+                    viewModel.ReadOnlyQueryStatusText.Contains(
+                        "QUERY_COMMAND_BLOCKED",
+                        StringComparison.Ordinal));
+
+                Assert.Null(client.LastRequest);
+                Assert.Contains(
+                    "명시적으로 허용",
+                    viewModel.ReadOnlyQueryResultMeta,
+                    StringComparison.Ordinal);
+            }
+            finally
+            {
+                await viewModel.DisposeAsync();
+            }
+        }
+        finally
+        {
+            Directory.Delete(folder, true);
+        }
+    }
+
+    [Fact]
     public async Task ManualQuery_SendsTargetAndCredentialsOnEveryRequestAndKeepsRawOutputInMemoryOnly()
     {
         var folder = TemporaryFolder();
@@ -2165,7 +2217,11 @@ public sealed class ViewerManagedDeviceTests
             var saved = devices.Save(draft);
             var client = new StatelessFakeClient();
             var viewModel = new DashboardViewModel(
-                new ViewerSettings { DemoMode = true },
+                new ViewerSettings
+                {
+                    DemoMode = true,
+                    AllowSensitiveReadOnlyQueries = true
+                },
                 new ViewerSettingsStore(settingsPath),
                 new StatelessFactory(client),
                 deviceStore: devices,
@@ -2177,7 +2233,9 @@ public sealed class ViewerManagedDeviceTests
                 viewModel.ReadOnlyQueryCommand = "show running-config";
 
                 viewModel.ExecuteReadOnlyQueryCommand.Execute(null);
-                await WaitUntilAsync(() => !viewModel.IsReadOnlyQueryRunning && client.LastRequest is not null);
+                await WaitUntilAsync(() =>
+                    !viewModel.IsReadOnlyQueryRunning
+                    && client.LastRequest?.Purpose == "manual");
 
                 var request = Assert.IsType<TelnetExecuteRequestDto>(client.LastRequest);
                 Assert.Equal(saved.Host, request.Host);
@@ -2185,6 +2243,7 @@ public sealed class ViewerManagedDeviceTests
                 Assert.Equal("login-secret", request.Password);
                 Assert.Equal("enable-secret", request.EnablePassword);
                 Assert.Equal(["show running-config"], request.Commands);
+                Assert.True(request.AllowSensitiveReadOnlyQueries);
                 Assert.Equal("sensitive raw output", viewModel.ReadOnlyQueryOutput);
             }
             finally

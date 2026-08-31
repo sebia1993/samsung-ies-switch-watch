@@ -302,7 +302,7 @@ public sealed class AgentHttpsCertificateIntegrationTests
             ["Agent:DataDirectory"] = dataDirectory,
             ["Agent:MockMode"] = "false",
             ["Agent:AllowedViewerIpv4"] = "legacy-viewer-value",
-            ["Agent:AllowedTargetCidrs:0"] = "203.0.113.0/24"
+            ["Agent:AllowedTargetCidrs:0"] = "10.20.0.0/16"
         };
 
     private static string[] GetWindowsUserKeyFiles()

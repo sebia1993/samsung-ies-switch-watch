@@ -11,6 +11,7 @@ public sealed class AgentOptions
     public const string SectionName = "Agent";
     public const int MaximumConcurrentExecutionLimit = 16;
     public const int MaximumCommandsPerRequestLimit = 8;
+    public const int MaximumAllowedTargetCidrs = 32;
     public static IReadOnlyList<string> AutomaticPrivateNetworkCidrs { get; } =
         Array.AsReadOnly(new[]
         {
@@ -29,10 +30,9 @@ public sealed class AgentOptions
     // in-place update. Runtime access no longer depends on a single Viewer IP.
     public string AllowedViewerIpv4 { get; set; } = string.Empty;
 
-    // Retained for configuration compatibility. Runtime target access is
-    // always normalized to the three RFC1918 networks below.
-    public List<string> AllowedTargetCidrs { get; set; } =
-        [.. AutomaticPrivateNetworkCidrs];
+    // An empty list keeps upgrade compatibility by selecting all RFC1918
+    // networks. Any configured entries become the runtime target allowlist.
+    public List<string> AllowedTargetCidrs { get; set; } = [];
     public int MaxConcurrentExecutions { get; set; } = 2;
     public int RateLimitPerMinute { get; set; } = 60;
     public int MaxCommandsPerRequest { get; set; } = 8;
@@ -88,11 +88,11 @@ public static class AgentOptionsValidator
                 "Stateless execution limits are invalid.");
         }
 
-        // v0.10 accepted an exact Viewer IP and operator-selected target
-        // networks. v0.11 deliberately ignores both legacy authorities and
-        // applies one predictable private-network policy instead.
+        // The exact legacy Viewer authority remains ignored because API v5
+        // uses bearer authentication plus the private-source firewall boundary.
         options.AllowedViewerIpv4 = string.Empty;
-        options.AllowedTargetCidrs = [.. AgentOptions.AutomaticPrivateNetworkCidrs];
+        options.AllowedTargetCidrs = NormalizeAllowedTargetCidrs(
+            options.AllowedTargetCidrs);
 
         if (!Uri.TryCreate(options.ListenUrl, UriKind.Absolute, out var listenUri) ||
             !string.IsNullOrEmpty(listenUri.UserInfo) ||
@@ -126,10 +126,57 @@ public static class AgentOptionsValidator
         string.Equals(host, "localhost", StringComparison.OrdinalIgnoreCase) ||
         IPAddress.TryParse(host, out var address) && IPAddress.IsLoopback(address);
 
+    internal static List<string> NormalizeAllowedTargetCidrs(
+        IReadOnlyList<string>? configured)
+    {
+        if (configured is null || configured.Count == 0)
+        {
+            return [.. AgentOptions.AutomaticPrivateNetworkCidrs];
+        }
+        if (configured.Count > AgentOptions.MaximumAllowedTargetCidrs)
+        {
+            throw InvalidTargetNetworks();
+        }
+
+        var normalized = new List<string>(configured.Count);
+        var unique = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var value in configured)
+        {
+            if (!Ipv4Cidr.TryParse(value, out var cidr)
+                || !cidr.IsRfc1918Network)
+            {
+                throw InvalidTargetNetworks();
+            }
+            var canonical = cidr.ToString();
+            if (unique.Add(canonical))
+            {
+                normalized.Add(canonical);
+            }
+        }
+        return normalized;
+    }
+
+    private static AgentConfigurationException InvalidTargetNetworks() =>
+        new(
+            AgentErrorCodes.ConfigurationInvalid,
+            $"Allowed target CIDRs must be RFC1918 IPv4 network boundaries with at most {AgentOptions.MaximumAllowedTargetCidrs} entries.");
+
 }
 
 public readonly record struct Ipv4Cidr(uint Network, int PrefixLength)
 {
+    public bool IsRfc1918Network
+    {
+        get
+        {
+            var first = (byte)(Network >> 24);
+            var second = (byte)(Network >> 16);
+            return first == 10 && PrefixLength >= 8
+                   || first == 172 && second is >= 16 and <= 31 && PrefixLength >= 12
+                   || first == 192 && second == 168 && PrefixLength >= 16;
+        }
+    }
+
     public static bool TryParse(string? value, out Ipv4Cidr cidr)
     {
         cidr = default;
@@ -168,6 +215,9 @@ public readonly record struct Ipv4Cidr(uint Network, int PrefixLength)
         var mask = PrefixMask(PrefixLength);
         return (ToUInt32(address) & mask) == Network;
     }
+
+    public override string ToString() => FormattableString.Invariant(
+        $"{(byte)(Network >> 24)}.{(byte)(Network >> 16)}.{(byte)(Network >> 8)}.{(byte)Network}/{PrefixLength}");
 
     public static bool TryParseStrictAddress(string? value, out IPAddress address)
     {

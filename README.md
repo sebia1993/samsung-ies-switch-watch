@@ -4,7 +4,7 @@
 
 Samsung iES 스위치의 반복 점검을 한 화면에서 수행하고 변화를 추적하는 Windows 운영 도구입니다. 네트워크 장비를 모르는 독자에게는 **“여러 설비의 상태를 안전하게 원격 확인하는 대시보드”**로 이해하면 됩니다.
 
-현재 공개 버전은 **`v0.12.0-poc`**입니다. 이 저장소는 실제 회사망 성과를 꾸며내지 않습니다. 공개된 검증 결과는 합성 Telnet 서버, 비식별 fixture, Windows CI와 패키지 smoke에 한정되며 실제 모델·펌웨어 검증은 별도 항목으로 표시합니다.
+현재 공개 버전은 **`v0.13.0-poc`**입니다. 이 저장소는 실제 회사망 성과를 꾸며내지 않습니다. 공개된 검증 결과는 합성 Telnet 서버, 비식별 fixture, Windows CI와 패키지 smoke에 한정되며 실제 모델·펌웨어 검증은 별도 항목으로 표시합니다.
 
 ## 프로젝트가 해결하는 문제
 
@@ -29,7 +29,8 @@ Samsung iES 스위치의 반복 점검을 한 화면에서 수행하고 변화�
 | 로컬 비밀 보호 | Agent token은 DPAPI LocalMachine, Viewer token은 DPAPI CurrentUser로 보호 |
 | 전송 신뢰 | 자체 서명 인증서라도 사전에 페어링한 SPKI SHA-256과 고정 시간 비교 |
 | API 전환 | 인증이 필수인 API v5만 실행하고 v4는 HTTP 426으로 명시적 차단 |
-| 장애 대응 | 제한 시간·출력 크기·동시 실행 상한, stale 응답 거부, 제한적 재연결 |
+| 장애 대응 | bounded 감시 queue, worker 2개, 장비별 circuit breaker, stale 응답 거부, 제한적 재연결 |
+| 운영 진단 | 비밀·IP tag 없이 queue/worker/Telnet 상태를 로컬 .NET metrics로 노출 |
 | 배포 품질 | lock file, 취약 패키지 검사, SBOM, SHA-256, 다운로드 후 EXE smoke |
 | 증거 구분 | 합성/CI 검증과 실제 장비·GPO·EDR 현장 검증을 명확히 분리 |
 
@@ -92,10 +93,19 @@ Viewer와 Agent가 각각 명령을 검증합니다.
 - 요청마다 별도 Telnet 세션을 만들고 종료합니다.
 - 로그인, enable, 명령 수집에 독립적인 시간·바이트 예산을 둡니다.
 - 장비 한 대 동시 세션 1개, Agent 전체 동시 실행과 요청 빈도를 제한합니다.
+- Viewer 감시는 `PeriodicTimer`와 최대 256개 bounded queue, worker 2개를 사용하며 같은 장비의 중복 수집을 합칩니다.
+- 연결 계층 장애가 3회 연속 발생한 장비는 30초 동안 회로를 열고, 이후 한 번의 half-open 수집으로 복구 여부를 확인합니다.
 - Agent를 바꾼 뒤 늦게 도착한 이전 응답은 client generation으로 식별해 폐기합니다.
 - 이벤트 queue는 제한된 크기에서 같은 변화를 합쳐 UI 정지를 방지합니다.
 
-### 4. 배포·공급망 검증
+### 4. 관리망·민감 조회 경계
+
+- Agent target은 IPv4, RFC1918, TCP/23 조건과 함께 `AllowedTargetCidrs`에 포함되어야 합니다.
+- `AllowedTargetCidrs`가 비어 있으면 업그레이드 호환을 위해 기존 RFC1918 세 범위를 사용합니다. Agent Setup은 검증된 기존 범위를 복원하고 최대 32개의 canonical 사설 CIDR을 입력받아 관리 VLAN을 더 좁힙니다.
+- `show running-config`, `show startup-config`는 민감 조회로 분류하며 Viewer와 Agent 양쪽에서 기본 차단합니다. 연결 설정에서 명시적으로 허용한 요청만 실행합니다.
+- 명령 원문·출력, 자격 증명, token, 인증서 개인키와 실제 장비 IP는 metrics tag나 진단 로그에 넣지 않습니다.
+
+### 5. 배포·공급망 검증
 
 - NuGet `packages.lock.json`과 `packages.win-x64.lock.json`을 고정합니다.
 - CI에서 전이 의존성을 포함한 취약 패키지를 검사합니다.
@@ -119,8 +129,8 @@ Viewer와 Agent가 각각 명령을 검증합니다.
 공식 Release에서 다음 두 파일을 받아 같은 버전으로 사용합니다.
 
 ```text
-SamsungSwitchWatch-Agent-0.12.0-poc-win-x64.zip
-SamsungSwitchWatch-Viewer-0.12.0-poc-win-x64.zip
+SamsungSwitchWatch-Agent-0.13.0-poc-win-x64.zip
+SamsungSwitchWatch-Viewer-0.13.0-poc-win-x64.zip
 ```
 
 1. Agent PC에서 Agent ZIP을 풀고 `SamsungSwitchWatch.Agent.Setup.exe`를 관리자 권한으로 실행합니다.
@@ -143,10 +153,18 @@ dotnet test SamsungSwitchWatch.sln -c Release --no-build
 릴리스 패키지 생성:
 
 ```powershell
-.\scripts\build-release.ps1 -Version 0.12.0-poc
+.\scripts\build-release.ps1 -Version 0.13.0-poc
 ```
 
 자동 검증은 합성 데이터만 사용합니다. 실제 사내 스위치, 주소, 계정, MAC, 원문 출력을 공개 fixture나 CI에 넣지 않습니다. 자세한 범위는 [검증 보고서](docs/VALIDATION_REPORT.md)를 참고하십시오.
+
+Windows에서 실제 장비 없이 deterministic stability workload 실행:
+
+```powershell
+dotnet run --project .\tools\SamsungSwitchWatch.StabilityHarness -c Release -- --profile quick --devices 100 --seed 372811
+```
+
+`smoke` 5분, `quick` 15분, `standard` 1시간, `extended` 8시간, `manual` 24시간 profile을 제공합니다. 긴 profile은 기본 CI에서 자동 실행하지 않습니다.
 
 ## 분명한 한계
 
@@ -157,7 +175,7 @@ dotnet test SamsungSwitchWatch.sln -c Release --no-build
 
 ## 문서
 
-- [현재 릴리스 노트](docs/RELEASE_NOTES_0.12.0_POC_KO.md)
+- [현재 릴리스 노트](docs/RELEASE_NOTES_0.13.0_POC_KO.md)
 - [설치·재페어링](docs/INSTALL_KO.md)
 - [보안 설계](docs/SECURITY.md)
 - [아키텍처](docs/ARCHITECTURE.md)

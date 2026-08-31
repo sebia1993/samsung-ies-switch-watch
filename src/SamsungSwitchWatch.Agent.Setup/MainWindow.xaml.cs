@@ -31,13 +31,26 @@ public partial class MainWindow : Window
     public MainWindow(
         SetupDiagnosticsService diagnostics,
         AgentDeploymentOrchestrator deployment,
-        bool diagnosticsOnly)
+        bool diagnosticsOnly,
+        IReadOnlyList<string>? initialTargetCidrs = null,
+        string? targetCidrLoadWarning = null)
     {
         _diagnostics = diagnostics;
         _deployment = deployment;
         _diagnosticsOnly = diagnosticsOnly;
         InitializeComponent();
         ResultItemsControl.ItemsSource = _results;
+        TargetCidrsTextBox.Text = string.Join(
+            Environment.NewLine,
+            initialTargetCidrs is { Count: > 0 }
+                ? initialTargetCidrs
+                : SetupConstants.PrivateNetworkTargetCidrs);
+        if (!string.IsNullOrWhiteSpace(targetCidrLoadWarning))
+        {
+            TargetCidrsGuidanceText.Text =
+                $"{targetCidrLoadWarning} 기본 RFC1918 범위를 표시했습니다. 설치 전에 승인된 관리 VLAN CIDR로 확인하세요.";
+            TargetCidrsGuidanceText.Foreground = Brushes.DarkGoldenrod;
+        }
 
         if (_diagnosticsOnly)
         {
@@ -166,7 +179,10 @@ public partial class MainWindow : Window
 
     private async void CheckButton_Click(object sender, RoutedEventArgs e)
     {
-        var request = CreateRequest();
+        if (!TryCreateRequest(out var request))
+        {
+            return;
+        }
         var result = await RunOperationAsync(
             "preflight",
             "사전 점검 중",
@@ -263,11 +279,14 @@ public partial class MainWindow : Window
             return;
         }
 
-        var request = CreateRequest();
+        if (!TryCreateRequest(out var request))
+        {
+            return;
+        }
         var confirmation = MessageBox.Show(
             this,
             "창 없이 실행되는 Agent 서비스를 설치하거나 업데이트합니다.\n" +
-            "사설 Viewer 대역과 사설 스위치 관리망 범위는 자동으로 적용됩니다.\n\n" +
+            "사설 Viewer 대역과 입력한 스위치 관리망 CIDR을 적용합니다.\n\n" +
             "계속하시겠습니까?",
             "Agent 설치 확인",
             MessageBoxButton.YesNo,
@@ -346,8 +365,29 @@ public partial class MainWindow : Window
         }
     }
 
-    private SetupRequest CreateRequest() =>
-        SetupConstants.CreateAutomaticRequest();
+    private bool TryCreateRequest(out SetupRequest request)
+    {
+        try
+        {
+            request = new SetupRequest(
+                SetupConstants.LegacyAllowedViewerIpv4,
+                SetupTargetCidrPolicy.Parse(TargetCidrsTextBox.Text));
+            return true;
+        }
+        catch (SetupException exception) when (
+            exception.Code == SetupErrorCodes.NetworkSelectionInvalid)
+        {
+            request = SetupConstants.CreateAutomaticRequest();
+            ShowSingleFailure(
+                exception.Code,
+                "관리망 CIDR 확인",
+                exception.Message,
+                "target-cidr-input");
+            OperationStateText.Text = $"입력 확인 필요 · {exception.Code}";
+            TargetCidrsTextBox.Focus();
+            return false;
+        }
+    }
 
     private async Task<SetupOperationResult?> RunOperationAsync(
         string operationName,

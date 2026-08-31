@@ -444,7 +444,7 @@ public sealed class AgentIdentityStoreRecoveryTests
             ListenUrl = "https://127.0.0.1:18443",
             DataDirectory = folder,
             AllowedViewerIpv4 = "192.168.10.20",
-            AllowedTargetCidrs = ["192.0.2.0/24"]
+            AllowedTargetCidrs = ["10.20.0.0/16"]
         };
         AgentOptionsValidator.ValidateAndNormalize(options, folder);
         return options;

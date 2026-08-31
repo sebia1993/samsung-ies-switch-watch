@@ -250,7 +250,9 @@ public sealed class HttpAgentClient : IAgentClient
             async token =>
             {
                 ValidateTarget(request.Host, request.Port, request.Model);
-                var normalizedCommands = NormalizeCommands(request.Commands);
+                var normalizedCommands = NormalizeCommands(
+                    request.Commands,
+                    request.AllowSensitiveReadOnlyQueries);
                 var normalizedRequest = request with { Commands = normalizedCommands };
                 await EnsureStartedAsync(token).ConfigureAwait(false);
                 return await SendTelnetAsync(
@@ -509,7 +511,9 @@ public sealed class HttpAgentClient : IAgentClient
         }
     }
 
-    private static IReadOnlyList<string> NormalizeCommands(IReadOnlyList<string>? commands)
+    private static IReadOnlyList<string> NormalizeCommands(
+        IReadOnlyList<string>? commands,
+        bool allowSensitiveReadOnlyQueries)
     {
         if (commands is not { Count: > 0 and <= 8 })
         {
@@ -521,7 +525,10 @@ public sealed class HttpAgentClient : IAgentClient
         for (var index = 0; index < commands.Count; index++)
         {
             var validation = ReadOnlyQueryPolicy.Validate(commands[index]);
-            if (!validation.IsAllowed || !unique.Add(validation.NormalizedCommand!))
+            if (!validation.IsAllowed
+                || validation.Sensitivity == ReadOnlyQuerySensitivity.Sensitive
+                && !allowSensitiveReadOnlyQueries
+                || !unique.Add(validation.NormalizedCommand!))
             {
                 throw new AgentClientException("QUERY_COMMAND_BLOCKED", AgentConnectionState.Stale);
             }

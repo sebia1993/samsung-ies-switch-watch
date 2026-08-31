@@ -98,7 +98,8 @@ public sealed class StatelessTelnetApiTests
             {
                 "  show   port status  ",
                 "show running-config"
-            }
+            },
+            allowSensitiveReadOnlyQueries = true
         });
         using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
 
@@ -111,6 +112,21 @@ public sealed class StatelessTelnetApiTests
         Assert.Equal(1, body.RootElement.GetProperty("sessionCount").GetInt32());
         Assert.Equal(0, body.RootElement.GetProperty("reconnectCount").GetInt32());
         Assert.DoesNotContain("login-secret", await response.Content.ReadAsStringAsync());
+    }
+
+    [Theory]
+    [InlineData("show running-config")]
+    [InlineData("show startup-config backup")]
+    public async Task Execute_BlocksSensitiveQueriesUnlessRequestExplicitlyOptsIn(string command)
+    {
+        var executor = new RecordingExecutor();
+        await using var host = await TestAgentHost.StartAsync(executor);
+
+        using var response = await PostExecuteAsync(host, ValidExecute(command));
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("QUERY_COMMAND_BLOCKED", await ErrorCodeAsync(response));
+        Assert.Empty(executor.Requests);
     }
 
     [Theory]

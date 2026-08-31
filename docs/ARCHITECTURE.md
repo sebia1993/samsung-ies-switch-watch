@@ -25,13 +25,18 @@ Viewer는 업무 상태를 소유하고 Agent는 요청을 실행한 뒤 장비 
 - 장비 목록과 DPAPI CurrentUser 장비 자격 증명 관리
 - 수동 조회, 주기 감시, baseline, gap, event 관리
 - 늦게 도착한 이전 client generation 결과 거부
+- `MonitoringCoordinator`: `PeriodicTimer` → bounded channel → worker 2개와 종료 lifecycle
+- `AgentConnectionCoordinator`: HTTP/realtime 상태, client generation과 교체
+- `ManualQueryService`: 조회 검증·취소·history와 실제 실행
+- `DeviceLifecycleService`: 장비 revision·credential block과 stale operation 방어
+- `EventFeedCoordinator`: bounded change buffer, sequence·overflow·coalescing
 
 ### Agent
 
 - 창 없는 Windows Service
 - 영구 HTTPS 신원과 API token 소유
 - API v5 인증·인가, 요청 크기·빈도·동시 실행 제한
-- 대상 사설 IPv4, 모델과 읽기 전용 명령 재검증
+- configured CIDR 안의 사설 IPv4, 모델과 읽기 전용 명령 재검증
 - 요청마다 Telnet 세션 생성·종료
 
 ### Setup
@@ -102,7 +107,7 @@ Setup은 DPAPI LocalMachine으로 보호된 설치 token을 읽어 health 요청
 
 ```text
 request validation
-  → target RFC1918/port/model validation
+  → target IPv4/RFC1918/AllowedTargetCidrs/port/model validation
   → per-client rate limit / per-device gate
   → TCP connect
   → Telnet IAC negotiation
@@ -121,7 +126,19 @@ request validation
 - Agent 전체 기본 동시 실행: 2개
 - 장비 한 대: 동시 세션 1개
 
-## 7. 데이터 소유권
+## 7. Viewer 자동 감시
+
+```text
+PeriodicTimer
+  → MonitoringCoordinator scheduler
+  → bounded Channel (capacity 256, 오래된 queued work drop)
+  → workers ×2
+  → 장비별 operation gate
+```
+
+같은 장비가 queued 또는 running이면 새 cycle은 별도 실행을 추가하지 않고 기존 작업의 completion을 공유합니다. 장비 revision과 Agent client generation이 달라진 late result는 저장·UI 반영 전에 폐기합니다. 연결 계층 실패 3회는 장비별 circuit을 30초 동안 Open으로 만들고, 시간이 지난 뒤 HalfOpen 수집 한 번만 허용합니다.
+
+## 8. 데이터 소유권
 
 | 데이터 | Viewer | Agent |
 |---|---:|---:|
@@ -131,11 +148,11 @@ request validation
 | 점검 일정·baseline·event | 저장 | 비저장 |
 | 수동 명령·원문 출력 | 메모리만 | 메모리만 |
 
-## 8. 업데이트와 마이그레이션
+## 9. 업데이트와 마이그레이션
 
 v0.12는 무인증 API를 폐기합니다. 이전 Viewer 설정의 Agent 주소, 장비, 보호된 장비 자격 증명과 감시 이력은 유지하지만 연결 자격은 인정하지 않습니다. Agent와 Viewer를 함께 업데이트하고 새 `SSW1` 코드로 다시 페어링해야 합니다.
 
-## 9. 배포 공급망
+## 10. 배포 공급망
 
 - exact .NET SDK와 locked NuGet restore
 - 전이 의존성 취약점 검사

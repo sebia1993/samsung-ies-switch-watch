@@ -723,7 +723,7 @@ public sealed class ViewerMonitoringIntegrationTests
                 await client.FirstMonitorStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
                 viewModel.SelectedDevice = Assert.Single(viewModel.Devices);
-                viewModel.ReadOnlyQueryCommand = "show running-config";
+                viewModel.ReadOnlyQueryCommand = "show version";
                 viewModel.ExecuteReadOnlyQueryCommand.Execute(null);
                 await WaitUntilAsync(() => viewModel.IsReadOnlyQueryRunning);
                 await Task.Delay(100);

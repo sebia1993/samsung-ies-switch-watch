@@ -2,8 +2,8 @@ namespace SamsungSwitchWatch.Core.Profiles;
 
 /// <summary>
 /// Validates the Viewer-driven, read-only CLI surface exposed by the Agent.
-/// Every single-line show command is accepted, including running-config, while
-/// control characters and command separators are rejected before transport use.
+/// Every single-line show command is classified and validated while control
+/// characters and command separators are rejected before transport use.
 /// </summary>
 public static class ReadOnlyQueryPolicy
 {
@@ -67,7 +67,12 @@ public static class ReadOnlyQueryPolicy
             return ReadOnlyQueryValidation.Blocked(ReadOnlyQueryRejection.NotShowCommand);
         }
 
-        return ReadOnlyQueryValidation.Allowed(normalized);
+        var sensitivity = parts[1].Equals("running-config", StringComparison.OrdinalIgnoreCase)
+                          || parts[1].Equals("startup-config", StringComparison.OrdinalIgnoreCase)
+            ? ReadOnlyQuerySensitivity.Sensitive
+            : ReadOnlyQuerySensitivity.Normal;
+
+        return ReadOnlyQueryValidation.Allowed(normalized, sensitivity);
     }
 
     public static bool IsAllowed(string? command) => Validate(command).IsAllowed;
@@ -84,14 +89,23 @@ public enum ReadOnlyQueryRejection
     UnsupportedCharacter
 }
 
+public enum ReadOnlyQuerySensitivity
+{
+    Normal,
+    Sensitive
+}
+
 public sealed record ReadOnlyQueryValidation(
     bool IsAllowed,
     string? NormalizedCommand,
-    ReadOnlyQueryRejection Rejection)
+    ReadOnlyQueryRejection Rejection,
+    ReadOnlyQuerySensitivity Sensitivity)
 {
-    internal static ReadOnlyQueryValidation Allowed(string command) =>
-        new(true, command, ReadOnlyQueryRejection.None);
+    internal static ReadOnlyQueryValidation Allowed(
+        string command,
+        ReadOnlyQuerySensitivity sensitivity) =>
+        new(true, command, ReadOnlyQueryRejection.None, sensitivity);
 
     internal static ReadOnlyQueryValidation Blocked(ReadOnlyQueryRejection rejection) =>
-        new(false, null, rejection);
+        new(false, null, rejection, ReadOnlyQuerySensitivity.Normal);
 }

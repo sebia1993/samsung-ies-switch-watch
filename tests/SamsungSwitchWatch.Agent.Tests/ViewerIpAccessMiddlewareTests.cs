@@ -87,7 +87,7 @@ public sealed class ViewerIpAccessMiddlewareTests
     }
 
     [Fact]
-    public void Configuration_IgnoresLegacyViewerAndTargetAuthorities()
+    public void Configuration_IgnoresLegacyViewerButPreservesValidatedTargetAuthority()
     {
         var folder = NewTemporaryFolder();
         try
@@ -97,15 +97,13 @@ public sealed class ViewerIpAccessMiddlewareTests
                 ListenUrl = "https://0.0.0.0:18443",
                 DataDirectory = folder,
                 AllowedViewerIpv4 = "not-an-address",
-                AllowedTargetCidrs = ["203.0.113.0/24"]
+                AllowedTargetCidrs = ["10.20.0.0/16"]
             };
 
             AgentOptionsValidator.ValidateAndNormalize(options, folder);
 
             Assert.Equal(string.Empty, options.AllowedViewerIpv4);
-            Assert.Equal(
-                AgentOptions.AutomaticPrivateNetworkCidrs,
-                options.AllowedTargetCidrs);
+            Assert.Equal(["10.20.0.0/16"], options.AllowedTargetCidrs);
         }
         finally
         {

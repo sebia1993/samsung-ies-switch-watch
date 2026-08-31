@@ -94,7 +94,8 @@ public sealed record TelnetExecuteRequestDto(
     string Password,
     string? EnablePassword,
     string Purpose,
-    IReadOnlyList<string> Commands);
+    IReadOnlyList<string> Commands,
+    bool AllowSensitiveReadOnlyQueries = false);
 
 public sealed record TelnetCommandOutputDto(
     string Command,

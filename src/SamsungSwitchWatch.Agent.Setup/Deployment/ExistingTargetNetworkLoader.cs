@@ -13,6 +13,8 @@ internal sealed class ExistingTargetNetworkLoader(
     ISetupFileSystem fileSystem,
     DeploymentPaths paths)
 {
+    private const int MaximumConfigurationBytes = 64 * 1024;
+
     public ExistingTargetNetworksLoadResult Load()
     {
         try
@@ -23,23 +25,27 @@ internal sealed class ExistingTargetNetworkLoader(
             }
 
             if (JsonNode.Parse(
-                    fileSystem.ReadAllText(paths.ProductionConfigurationPath)) is not
-                    JsonObject root ||
+                    fileSystem.ReadAllTextBounded(
+                        paths.ProductionConfigurationPath,
+                        MaximumConfigurationBytes)) is not
+                JsonObject root ||
                 root["Agent"] is not JsonObject agent ||
                 agent["AllowedTargetCidrs"] is not JsonArray values ||
-                values.Count is < 1 or > 2)
+                values.Count > SetupConstants.MaximumTargetCidrs)
             {
                 return Warning();
             }
 
+            if (values.Count == 0)
+            {
+                return Success([]);
+            }
+
             var cidrs = new List<string>(values.Count);
-            var unique = new HashSet<string>(StringComparer.Ordinal);
             foreach (var value in values)
             {
                 if (value is not JsonValue jsonValue ||
-                    !jsonValue.TryGetValue<string>(out var cidr) ||
-                    !Ipv4Input.IsCanonicalPrivateCidr(cidr) ||
-                    !unique.Add(cidr))
+                    !jsonValue.TryGetValue<string>(out var cidr))
                 {
                     return Warning();
                 }
@@ -47,7 +53,7 @@ internal sealed class ExistingTargetNetworkLoader(
                 cidrs.Add(cidr);
             }
 
-            return Success(cidrs.ToArray());
+            return Success(SetupTargetCidrPolicy.Normalize(cidrs));
         }
         catch
         {
