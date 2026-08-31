@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.IO;
 using SamsungSwitchWatch.Viewer.Services;
 
@@ -110,6 +111,70 @@ public sealed class ViewerStoreSizeLimitTests
     }
 
     [Fact]
+    public void MonitoringStore_IgnoresPartialTemporaryFileAndLoadsCommittedState()
+    {
+        var folder = Path.Combine(
+            Path.GetTempPath(),
+            "ssw-monitor-partial-temp-" + Guid.NewGuid().ToString("N"));
+        var path = Path.Combine(folder, "viewer-monitor-state.json");
+        try
+        {
+            var source = new ViewerMonitoringStore(path);
+            source.Heartbeat();
+            var committed = File.ReadAllText(path);
+            var partial = Path.Combine(
+                folder,
+                ".viewer-monitor-state.json.interrupted.tmp");
+            File.WriteAllText(partial, "{\"SchemaVersion\":");
+
+            var restarted = new ViewerMonitoringStore(path);
+
+            Assert.True(restarted.IsOperational);
+            Assert.Equal(ViewerMonitoringLoadStatus.Ok, restarted.LastLoadStatus);
+            Assert.Equal(committed, File.ReadAllText(path));
+            Assert.Equal("{\"SchemaVersion\":", File.ReadAllText(partial));
+        }
+        finally
+        {
+            DeleteDirectoryBestEffort(folder);
+        }
+    }
+
+    [Fact]
+    public void MonitoringStore_ExclusiveFileLockFailsClosedWithoutReplacingCommittedState()
+    {
+        var folder = Path.Combine(
+            Path.GetTempPath(),
+            "ssw-monitor-locked-" + Guid.NewGuid().ToString("N"));
+        var path = Path.Combine(folder, "viewer-monitor-state.json");
+        try
+        {
+            var source = new ViewerMonitoringStore(path);
+            source.Heartbeat();
+            var committed = File.ReadAllText(path);
+            using (var locked = new FileStream(
+                       path,
+                       FileMode.Open,
+                       FileAccess.ReadWrite,
+                       FileShare.None))
+            {
+                var restarted = new ViewerMonitoringStore(path);
+
+                Assert.False(restarted.IsOperational);
+                Assert.Equal(
+                    ViewerMonitoringLoadStatus.StorageUnavailable,
+                    restarted.LastLoadStatus);
+                Assert.Equal("VIEWER_MONITOR_STATE_UNAVAILABLE", restarted.LoadErrorCode);
+            }
+            Assert.Equal(committed, File.ReadAllText(path));
+        }
+        finally
+        {
+            DeleteDirectoryBestEffort(folder);
+        }
+    }
+
+    [Fact]
     public void SettingsStore_OversizedPhysicalFileIsRejectedBeforeJsonParsing()
     {
         var (folder, path) = CreateOversizedFile(
@@ -195,11 +260,17 @@ public sealed class ViewerStoreSizeLimitTests
         {
             Directory.Delete(path, recursive: true);
         }
-        catch (IOException)
+        catch (IOException exception)
         {
+            Trace.TraceWarning(
+                "Test directory cleanup raised {0}.",
+                exception.GetType().Name);
         }
-        catch (UnauthorizedAccessException)
+        catch (UnauthorizedAccessException exception)
         {
+            Trace.TraceWarning(
+                "Test directory cleanup raised {0}.",
+                exception.GetType().Name);
         }
     }
 }

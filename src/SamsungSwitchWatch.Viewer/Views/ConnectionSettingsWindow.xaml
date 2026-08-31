@@ -107,6 +107,13 @@
                 <CheckBox x:Name="StartMinimizedCheckBox" Margin="0,14,0,12"
                           Content="Viewer 실행 시 트레이로 최소화"
                           AutomationProperties.Name="Viewer 실행 시 트레이로 최소화"/>
+                <CheckBox x:Name="AllowSensitiveQueriesCheckBox" Margin="0,0,0,12"
+                          Content="민감한 설정 조회 명령 허용"
+                          AutomationProperties.Name="민감한 읽기 전용 조회 허용"
+                          AutomationProperties.HelpText="show running-config 및 show startup-config 계열을 명시적으로 허용합니다."/>
+                <TextBlock Margin="24,-8,0,12" FontSize="11" Foreground="#B45309"
+                           TextWrapping="Wrap"
+                           Text="기본값은 꺼짐입니다. 출력에 계정, 주소 또는 설정 정보가 포함될 수 있습니다."/>
             </StackPanel>
         </ScrollViewer>
 

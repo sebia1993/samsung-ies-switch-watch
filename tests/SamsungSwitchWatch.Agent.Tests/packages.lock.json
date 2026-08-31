@@ -404,7 +404,7 @@
         "type": "Project",
         "dependencies": {
           "Microsoft.Extensions.Hosting.WindowsServices": "[10.0.11, )",
-          "SamsungSwitchWatch.Core": "[0.12.0-poc, )",
+          "SamsungSwitchWatch.Core": "[0.13.0-poc, )",
           "System.Security.Cryptography.ProtectedData": "[10.0.11, )"
         }
       },

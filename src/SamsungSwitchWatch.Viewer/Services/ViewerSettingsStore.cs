@@ -24,6 +24,7 @@ public sealed class ViewerSettings
     public double MainWidth { get; set; } = 1440;
     public double MainHeight { get; set; } = 900;
     public bool StartMinimizedToTray { get; set; }
+    public bool AllowSensitiveReadOnlyQueries { get; set; }
 
     public string BuildAgentAuthority()
     {
@@ -153,7 +154,8 @@ public sealed class ViewerSettings
                 MainTop = MainTop,
                 MainWidth = MainWidth,
                 MainHeight = MainHeight,
-                StartMinimizedToTray = StartMinimizedToTray
+                StartMinimizedToTray = StartMinimizedToTray,
+                AllowSensitiveReadOnlyQueries = AllowSensitiveReadOnlyQueries
             };
         }
     }
@@ -194,7 +196,8 @@ public static class ViewerSettingsSanitizer
             MainTop = NormalizeCoordinate(input.MainTop),
             MainWidth = Math.Clamp(IsFinite(input.MainWidth) ? input.MainWidth : 1440, 1280, 7680),
             MainHeight = Math.Clamp(IsFinite(input.MainHeight) ? input.MainHeight : 900, 720, 4320),
-            StartMinimizedToTray = input.StartMinimizedToTray
+            StartMinimizedToTray = input.StartMinimizedToTray,
+            AllowSensitiveReadOnlyQueries = input.AllowSensitiveReadOnlyQueries
         };
     }
 

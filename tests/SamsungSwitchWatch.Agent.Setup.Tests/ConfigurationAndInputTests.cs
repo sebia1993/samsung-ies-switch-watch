@@ -160,6 +160,53 @@ public sealed class ConfigurationAndInputTests
     }
 
     [Fact]
+    public void TargetCidrInput_ParsesMultipleSeparatorsAndRemovesDuplicates()
+    {
+        var parsed = SetupTargetCidrPolicy.Parse(
+            "10.20.0.0/16, 10.20.0.0/16\r\n192.168.40.0/24");
+
+        Assert.Equal(
+            ["10.20.0.0/16", "192.168.40.0/24"],
+            parsed);
+    }
+
+    [Theory]
+    [InlineData(32, true)]
+    [InlineData(33, false)]
+    public void TargetCidrInput_EnforcesMaximumUniqueNetworkCount(
+        int count,
+        bool expected)
+    {
+        var values = Enumerable.Range(0, count)
+            .Select(index => $"10.{index}.0.0/16")
+            .ToArray();
+
+        if (expected)
+        {
+            Assert.Equal(count, SetupTargetCidrPolicy.Normalize(values).Count);
+            return;
+        }
+
+        var exception = Assert.Throws<SetupException>(() =>
+            SetupTargetCidrPolicy.Normalize(values));
+        Assert.Equal(SetupErrorCodes.NetworkSelectionInvalid, exception.Code);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("10.20.30.40/16")]
+    [InlineData("8.8.8.0/24")]
+    [InlineData("2001:db8::/64")]
+    public void TargetCidrInput_RejectsEmptyNonCanonicalOrNonPrivateValues(
+        string value)
+    {
+        var exception = Assert.Throws<SetupException>(() =>
+            SetupTargetCidrPolicy.Parse(value));
+
+        Assert.Equal(SetupErrorCodes.NetworkSelectionInvalid, exception.Code);
+    }
+
+    [Fact]
     public void NetworkDiscovery_DropsPrivateAddressWithSupernetMask()
     {
         var candidates = WindowsNetworkDiscovery.BuildCandidates(

@@ -18,6 +18,7 @@ public static class SetupConstants
     public const string SetupExecutableName = "SamsungSwitchWatch.Agent.Setup.exe";
     public const string ManifestFileName = "BUILD-MANIFEST.json";
     public const string LegacyAllowedViewerIpv4 = "127.0.0.1";
+    public const int MaximumTargetCidrs = 32;
     public const string PrivateNetworkFirewallRemoteAddresses =
         "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16";
     public static IReadOnlyList<string> PrivateNetworkTargetCidrs { get; } =
@@ -921,4 +922,54 @@ public static class Ipv4Input
     internal static bool IsCanonicalPrivateCidr(string? value) =>
         TryNormalizePrivateCidr(value, out var canonicalCidr) &&
         string.Equals(value, canonicalCidr, StringComparison.Ordinal);
+}
+
+internal static class SetupTargetCidrPolicy
+{
+    public static IReadOnlyList<string> Parse(string? input)
+    {
+        var values = (input ?? string.Empty).Split(
+            [',', ';', '\r', '\n', ' ', '\t'],
+            StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        return Normalize(values);
+    }
+
+    public static IReadOnlyList<string> Normalize(IEnumerable<string>? values)
+    {
+        if (values is null)
+        {
+            throw InvalidTargetCidrs();
+        }
+
+        var normalized = new List<string>();
+        var unique = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var value in values)
+        {
+            if (!Ipv4Input.IsCanonicalPrivateCidr(value))
+            {
+                throw InvalidTargetCidrs();
+            }
+            if (!unique.Add(value))
+            {
+                continue;
+            }
+
+            normalized.Add(value);
+            if (normalized.Count > SetupConstants.MaximumTargetCidrs)
+            {
+                throw InvalidTargetCidrs();
+            }
+        }
+
+        if (normalized.Count == 0)
+        {
+            throw InvalidTargetCidrs();
+        }
+        return normalized;
+    }
+
+    private static SetupException InvalidTargetCidrs() =>
+        new(
+            SetupErrorCodes.NetworkSelectionInvalid,
+            $"스위치가 연결된 canonical 사설 관리망 CIDR을 1~{SetupConstants.MaximumTargetCidrs}개 입력하세요.");
 }

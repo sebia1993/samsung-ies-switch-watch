@@ -1366,7 +1366,7 @@ public sealed class DashboardViewModelTests
         fixture.Client.BlockReadOnlyQuery = true;
         var viewModel = fixture.CreateViewModel();
         await viewModel.InitializeAsync();
-        viewModel.ReadOnlyQueryCommand = "show running-config";
+        viewModel.ReadOnlyQueryCommand = "show version";
         viewModel.ExecuteReadOnlyQueryCommand.Execute(null);
         await fixture.Client.ReadOnlyQueryStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
 
@@ -1509,7 +1509,8 @@ public sealed class DashboardViewModelTests
 
     [Theory]
     [InlineData("show running-config", true)]
-    [InlineData(" SHOW TECH-SUPPORT ", true)]
+    [InlineData("show startup-config", true)]
+    [InlineData(" SHOW TECH-SUPPORT ", false)]
     [InlineData("show port status", false)]
     public async Task ManualQuery_WarnsForPotentiallySensitiveShowOutput(string command, bool expected)
     {

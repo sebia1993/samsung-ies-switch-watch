@@ -58,7 +58,7 @@ show version
 
 감시 요청은 Agent API 하나에서 검증된 명령을 최대 8개까지만 허용합니다.
 
-`show running-config`도 조회 명령으로 취급할 수 있지만, 결과는 Viewer 메모리에서만 다루며 자동 저장·export 대상이 아닙니다.
+`show running-config`와 `show startup-config`는 읽기 전용 형식이지만 민감 조회로 분류합니다. 기본값은 차단이며 Viewer 연결 설정에서 명시적으로 허용한 요청만 Agent의 이중 검증을 통과할 수 있습니다. 결과는 Viewer 메모리에서만 다루며 자동 저장·export 대상이 아닙니다.
 
 ## 4. Telnet 재시도
 
@@ -110,6 +110,8 @@ Viewer의 자동 감시는 다음을 구분해야 합니다.
 - 설정/저장소 문제로 감시 자체가 중지된 상태
 
 통신이 한 번 실패했다고 이전 정상 결과를 현재 정상 상태처럼 유지하지 않습니다. 반대로 수집 실패 자체를 장비의 특정 포트/프로토콜 장애로 단정하지도 않습니다.
+
+자동 감시는 `PeriodicTimer`, 최대 256개 bounded queue와 worker 2개로 실행합니다. 같은 장비의 queued/running 작업은 중복 등록하지 않으며 queue가 가득 차면 오래된 queued 작업을 drop하고 진단 수치에 반영합니다. 연결 거부·reset·network unreachable·session close가 3회 연속 발생하면 해당 장비 circuit을 30초 동안 열고, 이후 HalfOpen probe 한 번으로 복구 여부를 판단합니다. 인증 실패·차단된 명령·지원하지 않는 parser·잘못된 설정은 circuit breaker 실패로 합치지 않습니다.
 
 ## 7. stale result 방지
 
@@ -188,7 +190,7 @@ commit 전 실패하면 검증된 이전 설치를 복원합니다. 경로 소�
 
 - Telnet TCP/23
 - 평문 프로토콜
-- RFC1918 기반 신뢰된 관리망 전제
+- RFC1918이며 `AllowedTargetCidrs`로 제한된 신뢰 관리망
 
 따라서 Agent는 사설 관리 네트워크 안에서만 사용해야 하며 인터넷/공용망 서비스로 해석하면 안 됩니다.
 

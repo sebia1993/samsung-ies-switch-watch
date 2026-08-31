@@ -1,4 +1,4 @@
-# Samsung iES Switch Watch v0.12 보안 설계
+# Samsung iES Switch Watch v0.13 보안 설계
 
 ## 보안 목표
 
@@ -80,9 +80,13 @@ Viewer는 일반 CA 신뢰 대신 사전 페어링한 정확한 공개키를 사
 
 ## 대상과 명령 인가
 
-- 대상: canonical 사설 IPv4, TCP/23, loopback·link-local·multicast 제외
+- 대상: canonical IPv4, RFC1918, TCP/23, configured `AllowedTargetCidrs` 포함
+- CIDR: canonical network boundary, 최대 32개, 중복 제거; malformed·IPv6·공인망 거부
+- 빈 CIDR 목록: 업그레이드 호환을 위해 RFC1918 기본 세 범위로 정규화
+- 금지 주소: loopback·link-local·multicast와 configured CIDR 밖의 target
 - 모델: 등록된 IES4224GP, IES4028XP, IES4226XP
 - 명령: 한 줄 `show`, 128자 이하, 제어문자·separator·설정 흐름 차단
+- 민감 조회: `show running-config`, `show startup-config`는 기본 차단하고 명시적 Viewer opt-in이 있는 요청만 허용
 - Viewer 검증을 신뢰하지 않고 Agent가 다시 검사
 - 요청당 최대 8개, 본문·출력·시간·동시 실행·빈도 상한
 
@@ -96,7 +100,7 @@ Viewer는 일반 CA 신뢰 대신 사전 페어링한 정확한 공개키를 사
 - 명령 문자열과 Telnet 원문
 - 인증서 개인 키
 
-기록 가능한 값은 안정적인 오류 코드, 단계, 제한된 상태, 소요 시간과 출력 byte 수입니다. 예외 메시지나 요청 body를 그대로 기록하지 않습니다.
+기록 가능한 값은 안정적인 오류 코드, 단계, 제한된 상태, 소요 시간과 출력 byte 수입니다. Viewer/Agent metrics에도 비밀, 명령, 원문 출력과 실제 장비 IP tag를 넣지 않습니다. 예외 메시지나 요청 body를 그대로 기록하지 않습니다.
 
 ## Telnet 평문 위험
 

@@ -16,6 +16,18 @@ public sealed class ViewerSettingsTests
         ViewerSettingsSanitizer.SplitAgentUri(settings.AgentUri, out var address, out var port);
         Assert.Empty(address);
         Assert.Equal(ViewerSettingsSanitizer.DefaultAgentPort, port);
+        Assert.False(settings.AllowSensitiveReadOnlyQueries);
+    }
+
+    [Fact]
+    public void Sanitize_PreservesExplicitSensitiveQueryOptIn()
+    {
+        var clean = ViewerSettingsSanitizer.Sanitize(new ViewerSettings
+        {
+            AllowSensitiveReadOnlyQueries = true
+        });
+
+        Assert.True(clean.AllowSensitiveReadOnlyQueries);
     }
 
     [Fact]

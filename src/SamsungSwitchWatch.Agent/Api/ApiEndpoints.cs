@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Reflection;
+using SamsungSwitchWatch.Agent.Diagnostics;
 using SamsungSwitchWatch.Agent.Configuration;
 using SamsungSwitchWatch.Agent.Domain;
 using SamsungSwitchWatch.Agent.Execution;
@@ -143,26 +144,47 @@ public static class ApiEndpoints
         IStatelessTelnetExecutor executor,
         CancellationToken cancellationToken)
     {
+        AgentRuntimeDiagnostics.RecordRequestStarted();
+        var startedTimestamp = Stopwatch.GetTimestamp();
         context.Response.Headers.CacheControl = "no-store";
         context.Response.Headers.Pragma = "no-cache";
-        var validated = TelnetRequestValidator.Validate(
-            request,
-            isTest,
-            targetPolicy,
-            profiles,
-            options);
-        var clientAddress = context.Connection.RemoteIpAddress?.ToString() ?? "unknown";
-        await using var lease = await admission.EnterAsync(
-            clientAddress,
-            validated.Address,
-            cancellationToken);
         try
         {
-            return Results.Ok(await executor.ExecuteAsync(validated, cancellationToken));
+            var validated = TelnetRequestValidator.Validate(
+                request,
+                isTest,
+                targetPolicy,
+                profiles,
+                options);
+            var clientAddress = context.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+            await using var lease = await admission.EnterAsync(
+                clientAddress,
+                validated.Address,
+                cancellationToken);
+            using var activeSession = AgentRuntimeDiagnostics.BeginActiveSession();
+            var result = await executor.ExecuteAsync(validated, cancellationToken);
+            AgentRuntimeDiagnostics.RecordReconnects(result.ReconnectCount);
+            return Results.Ok(result);
         }
         catch (SwitchWatchException exception)
         {
+            AgentRuntimeDiagnostics.RecordRequestFailed(exception.Error.Code);
             throw TelnetFailureMapper.Map(exception);
+        }
+        catch (AgentOperationException exception)
+        {
+            AgentRuntimeDiagnostics.RecordRequestFailed(exception.Code);
+            throw;
+        }
+        catch
+        {
+            AgentRuntimeDiagnostics.RecordRequestFailed(AgentErrorCodes.InternalError);
+            throw;
+        }
+        finally
+        {
+            AgentRuntimeDiagnostics.RecordDuration(
+                Stopwatch.GetElapsedTime(startedTimestamp));
         }
     }
 }

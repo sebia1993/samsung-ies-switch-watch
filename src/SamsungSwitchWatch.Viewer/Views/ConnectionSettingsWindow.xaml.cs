@@ -42,6 +42,7 @@ public partial class ConnectionSettingsWindow : Window
         AgentAddressTextBox.Text = address;
         _addressTextInitialized = true;
         StartMinimizedCheckBox.IsChecked = settings.StartMinimizedToTray;
+        AllowSensitiveQueriesCheckBox.IsChecked = settings.AllowSensitiveReadOnlyQueries;
         Loaded += (_, _) =>
         {
             FitToWorkingArea();
@@ -84,6 +85,7 @@ public partial class ConnectionSettingsWindow : Window
         {
             var demoCandidate = ViewerSettingsSanitizer.Copy(_original);
             demoCandidate.StartMinimizedToTray = StartMinimizedCheckBox.IsChecked == true;
+            demoCandidate.AllowSensitiveReadOnlyQueries = AllowSensitiveQueriesCheckBox.IsChecked == true;
             demoCandidate.DemoMode = true;
             await ApplyAndCloseAsync(
                 ViewerSettingsSanitizer.Sanitize(demoCandidate),
@@ -104,6 +106,7 @@ public partial class ConnectionSettingsWindow : Window
 
         var candidate = ViewerSettingsSanitizer.Copy(_original);
         candidate.StartMinimizedToTray = StartMinimizedCheckBox.IsChecked == true;
+        candidate.AllowSensitiveReadOnlyQueries = AllowSensitiveQueriesCheckBox.IsChecked == true;
         candidate.DemoMode = false;
         candidate.AgentUri = agentUri;
         if (!string.IsNullOrWhiteSpace(PairingCodePasswordBox.Password))
@@ -213,6 +216,7 @@ public partial class ConnectionSettingsWindow : Window
         catch (OperationCanceledException)
         {
             // Application shutdown or an explicit dialog close cancels the operation.
+            return;
         }
         catch (AgentClientException exception)
         {

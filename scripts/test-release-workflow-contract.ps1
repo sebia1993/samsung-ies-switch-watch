@@ -196,6 +196,11 @@ if ($ciPackageContractIndex -lt 0 -or
 Assert-PatternCount $ciVerifyBlock `
     ([regex]::Escape('.\scripts\test-release-executable-smoke.ps1')) 1 `
     'Windows CI must execute the packaged binaries exactly once.'
+Assert-Pattern $windowsCi '(?m)^  stability-smoke:\s*$' `
+    'Windows CI must include the bounded stability smoke job.'
+Assert-Pattern $windowsCi `
+    'SamsungSwitchWatch\.StabilityHarness.+--profile\s+smoke\s+--devices\s+100\s+--seed\s+372811' `
+    'Windows CI stability smoke must use the documented deterministic profile and seed.'
 
 if ($workflow -match "(?m)^\s*\`$arguments\s*=\s*@\('-Version'") {
     throw 'Array splatting cannot preserve named parameters for a PowerShell script.'

@@ -27,6 +27,15 @@ public sealed class ExistingTargetNetworkLoaderTests
         """{"Agent":{"AllowedTargetCidrs":["172.16.0.0/12","192.168.50.0/24"]}}""",
         "172.16.0.0/12",
         "192.168.50.0/24")]
+    [InlineData(
+        """{"Agent":{"AllowedTargetCidrs":["10.0.0.0/8","172.16.0.0/12","192.168.0.0/16"]}}""",
+        "10.0.0.0/8",
+        "172.16.0.0/12",
+        "192.168.0.0/16")]
+    [InlineData(
+        """{"Agent":{"AllowedTargetCidrs":["10.20.0.0/16","10.20.0.0/16"]}}""",
+        "10.20.0.0/16")]
+    [InlineData("""{"Agent":{"AllowedTargetCidrs":[]}}""")]
     public void Load_ReturnsCanonicalPrivateNetworks(
         string configuration,
         params string[] expected)
@@ -52,10 +61,7 @@ public sealed class ExistingTargetNetworkLoaderTests
     [InlineData("""{"Agent":{}}""")]
     [InlineData("""{"Agent":{"AllowedTargetCidrs":null}}""")]
     [InlineData("""{"Agent":{"AllowedTargetCidrs":"10.0.0.0/8"}}""")]
-    [InlineData("""{"Agent":{"AllowedTargetCidrs":[]}}""")]
-    [InlineData("""{"Agent":{"AllowedTargetCidrs":["10.0.0.0/8","172.16.0.0/12","192.168.0.0/16"]}}""")]
     [InlineData("""{"Agent":{"AllowedTargetCidrs":[10]}}""")]
-    [InlineData("""{"Agent":{"AllowedTargetCidrs":["10.0.0.0/8","10.0.0.0/8"]}}""")]
     [InlineData("""{"Agent":{"AllowedTargetCidrs":["10.20.30.40/16"]}}""")]
     [InlineData("""{"Agent":{"AllowedTargetCidrs":["8.8.8.0/24"]}}""")]
     [InlineData("""{"Agent":{"AllowedTargetCidrs":[" 10.0.0.0/8"]}}""")]

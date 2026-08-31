@@ -209,9 +209,9 @@ public sealed class SetupDiagnosticsService(
             return;
         }
 
-        // Keep the legacy request shape valid for transactional recovery and
-        // older internal callers. The public Setup UI always uses the automatic
-        // request above and no longer exposes these values.
+        // Keep the legacy Viewer IPv4 request shape valid for transactional
+        // recovery and older internal callers. The public Setup UI fixes that
+        // value while allowing the switch target CIDRs to be narrowed.
         if (!Ipv4Input.TryParseStrict(request.ViewerIpv4, out var viewer) ||
             !Ipv4Input.IsPrivate(viewer))
         {
@@ -220,14 +220,17 @@ public sealed class SetupDiagnosticsService(
                 "Viewer PC의 고정 사설 IPv4 주소를 입력하세요.");
         }
 
-        if (request.TargetCidrs.Count is < 1 or > 2 ||
-            request.TargetCidrs.Any(cidr => !Ipv4Input.IsCanonicalPrivateCidr(cidr)) ||
-            request.TargetCidrs.Distinct(StringComparer.Ordinal).Count() !=
-                request.TargetCidrs.Count)
+        try
+        {
+            _ = SetupTargetCidrPolicy.Normalize(request.TargetCidrs);
+        }
+        catch (SetupException exception) when (
+            exception.Code == SetupErrorCodes.NetworkSelectionInvalid)
         {
             throw new SetupException(
                 SetupErrorCodes.NetworkSelectionInvalid,
-                "스위치가 연결된 사설 관리망을 1~2개 선택하거나 추가하세요.");
+                $"스위치가 연결된 canonical 사설 관리망 CIDR을 1~{SetupConstants.MaximumTargetCidrs}개 입력하세요.",
+                exception);
         }
     }
 

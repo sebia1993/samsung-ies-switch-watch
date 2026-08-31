@@ -4,6 +4,7 @@ using System.Net;
 using System.Text;
 using System.Text.Json.Serialization;
 using SamsungSwitchWatch.Agent.Configuration;
+using SamsungSwitchWatch.Agent.Diagnostics;
 using SamsungSwitchWatch.Agent.Domain;
 using SamsungSwitchWatch.Core.Diagnostics;
 using SamsungSwitchWatch.Core.Parsing;
@@ -23,6 +24,7 @@ public sealed class TelnetApiRequest
     public string? EnablePassword { get; init; }
     public string? Purpose { get; init; }
     public IReadOnlyList<string>? Commands { get; init; }
+    public bool AllowSensitiveReadOnlyQueries { get; init; }
 
     public override string ToString() =>
         "TelnetApiRequest { Endpoint = [REDACTED], Credentials = [REDACTED], Commands = [REDACTED] }";
@@ -205,17 +207,19 @@ public sealed class MockStatelessTelnetExecutor(TimeProvider? timeProvider = nul
 
 public sealed class TargetNetworkPolicy
 {
-    private static readonly Ipv4Cidr[] AutomaticPrivateNetworks =
-        AgentOptions.AutomaticPrivateNetworkCidrs
-            .Select(value => Ipv4Cidr.TryParse(value, out var cidr)
-                ? cidr
-                : throw new InvalidOperationException(
-                    "The built-in private target policy is invalid."))
-            .ToArray();
+    private readonly Ipv4Cidr[] _allowedNetworks;
 
     public TargetNetworkPolicy(AgentOptions options)
     {
         ArgumentNullException.ThrowIfNull(options);
+        var normalized = AgentOptionsValidator.NormalizeAllowedTargetCidrs(
+            options.AllowedTargetCidrs);
+        _allowedNetworks = normalized
+            .Select(value => Ipv4Cidr.TryParse(value, out var cidr)
+                ? cidr
+                : throw new InvalidOperationException(
+                    "The validated target policy is invalid."))
+            .ToArray();
     }
 
     public bool TryValidate(string? host, int port, out IPAddress address)
@@ -224,7 +228,8 @@ public sealed class TargetNetworkPolicy
         if (port != 23 ||
             !Ipv4Cidr.TryParseStrictAddress(host, out var parsed) ||
             Ipv4Cidr.IsForbiddenTarget(parsed) ||
-            !AutomaticPrivateNetworks.Any(network => network.Contains(parsed)))
+            !Ipv4Cidr.IsRfc1918Address(parsed) ||
+            !_allowedNetworks.Any(network => network.Contains(parsed)))
         {
             return false;
         }
@@ -276,6 +281,7 @@ public sealed class TelnetExecutionAdmission
         PruneExpiredRateWindows(now);
         if (window.Count > _options.RateLimitPerMinute)
         {
+            AgentRuntimeDiagnostics.RecordRateLimited();
             throw new AgentOperationException(
                 AgentErrorCodes.QueryRateLimited,
                 "Too many Telnet requests were submitted.",
@@ -371,11 +377,14 @@ public sealed class TelnetExecutionAdmission
         }
     }
 
-    private static AgentOperationException Busy(string message) =>
-        new(
+    private static AgentOperationException Busy(string message)
+    {
+        AgentRuntimeDiagnostics.RecordBusy();
+        return new(
             AgentErrorCodes.AgentBusy,
             message,
             StatusCodes.Status503ServiceUnavailable);
+    }
 
     private static void ReleaseTargetReference(
         string targetKey,
@@ -490,11 +499,13 @@ public static class TelnetRequestValidator
         foreach (var command in suppliedCommands)
         {
             var validation = ReadOnlyQueryPolicy.Validate(command, options.MaxCommandLength);
-            if (!validation.IsAllowed)
+            if (!validation.IsAllowed
+                || validation.Sensitivity == ReadOnlyQuerySensitivity.Sensitive
+                && !request.AllowSensitiveReadOnlyQueries)
             {
                 throw new AgentOperationException(
                     AgentErrorCodes.QueryCommandBlocked,
-                    "Only a single-line show command is permitted.",
+                    "The read-only query is not permitted by the active policy.",
                     StatusCodes.Status400BadRequest);
             }
             normalized.Add(validation.NormalizedCommand!);

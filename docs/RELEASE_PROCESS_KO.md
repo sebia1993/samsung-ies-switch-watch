@@ -2,8 +2,8 @@
 
 ## 릴리스 계약
 
-- 현재 버전: `0.12.0-poc`
-- 태그: annotated tag `v0.12.0-poc`
+- 현재 버전: `0.13.0-poc`
+- 태그: annotated tag `v0.13.0-poc`
 - 대상: Windows x64, self-contained, single-file managed publish, untrimmed
 - GitHub Release 사용자 정의 Asset: Agent ZIP과 Viewer ZIP 정확히 두 개
 - 공개 패키지: PowerShell·CMD·개발 설정·DB·인증정보 제외
@@ -12,15 +12,15 @@
 공개 Asset:
 
 ```text
-SamsungSwitchWatch-Agent-0.12.0-poc-win-x64.zip
-SamsungSwitchWatch-Viewer-0.12.0-poc-win-x64.zip
+SamsungSwitchWatch-Agent-0.13.0-poc-win-x64.zip
+SamsungSwitchWatch-Viewer-0.13.0-poc-win-x64.zip
 ```
 
 내부 검증 파일:
 
 ```text
-SamsungSwitchWatch-Agent-0.12.0-poc-win-x64.zip
-SamsungSwitchWatch-Viewer-0.12.0-poc-win-x64.zip
+SamsungSwitchWatch-Agent-0.13.0-poc-win-x64.zip
+SamsungSwitchWatch-Viewer-0.13.0-poc-win-x64.zip
 BUILD-MANIFEST.json
 SBOM.spdx.json
 SBOM.cdx.json
@@ -43,6 +43,7 @@ dotnet restore SamsungSwitchWatch.sln --locked-mode
 dotnet build SamsungSwitchWatch.sln -c Release --no-restore
 dotnet test SamsungSwitchWatch.sln -c Release --no-build
 .\scripts\validate.ps1 -Configuration Release
+dotnet run --project .\tools\SamsungSwitchWatch.StabilityHarness -c Release -- --profile smoke --devices 100 --seed 372811
 ```
 
 추가 확인:
@@ -52,6 +53,7 @@ dotnet test SamsungSwitchWatch.sln -c Release --no-build
 - 사용자 매뉴얼 생성 소스의 버전과 흐름이 현재 릴리스와 일치함
 - 최종 DOCX/PDF를 새로 생성하고 화면과 페이지를 확인함
 - 사용자 매뉴얼 캡처에 실제 Viewer Setup 준비 화면이 포함됨
+- Windows CI의 deterministic 5분 stability smoke가 queue/worker 상한과 clean shutdown을 통과함
 - 공개 ZIP에 `.ps1`, `.cmd`, `.bat`, 개발 설정, PDB, DOCX가 없음
 - `BUILD-MANIFEST.json`이 ZIP의 모든 파일 해시를 포함함
 - Agent ZIP의 기본 진입점이 `SamsungSwitchWatch.Agent.Setup.exe`임
@@ -186,7 +188,7 @@ python .\tools\build-user-manual.py `
 python .\tools\render-user-manual-pdf.py `
   --input .\docs\SamsungSwitchWatch_User_Manual_KO.docx `
   --output .\docs\SamsungSwitchWatch_User_Manual_KO.pdf `
-  --render-dir .\tmp\manual-render-0.12.0-poc
+  --render-dir .\tmp\manual-render-0.13.0-poc
 ```
 
 DOCX는 저장소 편집 원본이고 공개 패키지에는 넣지 않습니다. PDF는 두 ZIP에 포함합니다.
@@ -195,13 +197,13 @@ QA 페이지 PNG는 시각 검사 후 임시 폴더에만 두며 커밋하지 �
 ## 로컬 패키지 생성
 
 ```powershell
-.\scripts\build-release.ps1 -Version 0.12.0-poc
+.\scripts\build-release.ps1 -Version 0.13.0-poc
 ```
 
 진단용 dirty 빌드는 게시하지 않습니다.
 
 ```powershell
-.\scripts\build-release.ps1 -Version 0.12.0-poc -AllowDirty
+.\scripts\build-release.ps1 -Version 0.13.0-poc -AllowDirty
 ```
 
 빌드 스크립트는 다음 순서로 실행됩니다.
@@ -278,7 +280,7 @@ Viewer Setup은 UAC 없이 `%LOCALAPPDATA%\Programs\SamsungSwitchWatch\Viewer`�
 $commit = (git rev-parse HEAD).Trim()
 .\scripts\test-package-contract.ps1 `
   -ReleaseDirectory .\artifacts\release `
-  -Version 0.12.0-poc `
+  -Version 0.13.0-poc `
   -ExpectedSourceCommit $commit
 .\scripts\test-release-workflow-contract.ps1
 ```
@@ -288,7 +290,7 @@ $commit = (git rev-parse HEAD).Trim()
 ```powershell
 .\scripts\test-release-executable-smoke.ps1 `
   -ReleaseDirectory .\artifacts\release `
-  -Version 0.12.0-poc
+  -Version 0.13.0-poc
 ```
 
 검사는 다음 조건을 fail-closed로 확인합니다.
@@ -311,8 +313,8 @@ $commit = (git rev-parse HEAD).Trim()
 ## 태그와 게시
 
 ```powershell
-git tag -a v0.12.0-poc -m "Samsung Switch Watch v0.12.0-poc"
-git push origin v0.12.0-poc
+git tag -a v0.13.0-poc -m "Samsung Switch Watch v0.13.0-poc"
+git push origin v0.13.0-poc
 ```
 
 Release workflow는 태그가 `origin/main`에 포함되고 annotated tag의 객체와 peeled commit이
@@ -328,10 +330,10 @@ Release workflow는 태그가 `origin/main`에 포함되고 annotated tag의 객
 ## 게시 후 확인
 
 ```powershell
-$tag = 'v0.12.0-poc'
+$tag = 'v0.13.0-poc'
 $expected = @(
-  'SamsungSwitchWatch-Agent-0.12.0-poc-win-x64.zip',
-  'SamsungSwitchWatch-Viewer-0.12.0-poc-win-x64.zip'
+  'SamsungSwitchWatch-Agent-0.13.0-poc-win-x64.zip',
+  'SamsungSwitchWatch-Viewer-0.13.0-poc-win-x64.zip'
 ) | Sort-Object
 $release = gh release view $tag --json isDraft,isPrerelease,assets,url | ConvertFrom-Json
 $actual = @($release.assets | ForEach-Object { $_.name } | Sort-Object)

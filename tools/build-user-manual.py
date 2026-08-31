@@ -20,7 +20,7 @@ from docx.oxml.ns import qn
 from docx.shared import Inches, Pt, RGBColor
 
 
-VERSION = "0.12.0-poc"
+VERSION = "0.13.0-poc"
 DOCUMENT_DATE = "2026-08-24"
 FONT = "Noto Sans KR"
 MONO = "Consolas"
@@ -1537,7 +1537,7 @@ Viewer 허용 범위      : 10/8, 172.16/12, 192.168/16
             ("VIEWER_SETUP_PATH_INVALID / VIEWER_SETUP_PATH_NOT_WRITABLE / VIEWER_SETUP_INSTALL_WRITE_FAILED", "공식 ZIP 위치, LocalAppData 쓰기 권한과 EDR 차단 기록 확인"),
             ("VIEWER_SETUP_SMOKE_FAILED / VIEWER_SETUP_LAUNCH_FAILED", "새 Viewer 자체점검 또는 실행 유지 실패. 이전 설치 복구 결과와 EDR 차단 확인"),
             ("VIEWER_SETUP_ROLLBACK_FAILED", "반복 설치와 폴더 수동 삭제를 중지하고 남은 Setup journal·증거를 Windows 관리자에게 전달"),
-            ("Viewer format 3 복구 필요", "v0.12.0-poc 또는 더 최신 Viewer Setup으로 이전 상태 복구 완료 → 설치/업데이트 별도 실행 → 그 뒤에만 downgrade"),
+            ("Viewer format 3 복구 필요", "v0.13.0-poc 또는 더 최신 Viewer Setup으로 이전 상태 복구 완료 → 설치/업데이트 별도 실행 → 그 뒤에만 downgrade"),
             ("SWS1 지원 코드", "Viewer Setup 실패 전용 코드만 전달 → 경로·사용자·해시·transaction ID·자격 증명·장비 정보는 포함되지 않음"),
             ("TARGET_NOT_ALLOWED", "장비 IPv4가 10/8, 172.16/12 또는 192.168/16인지 확인"),
             ("TCP_TIMEOUT", "Agent PC에서 장비 TCP/23 경로, ACL, 장비 Telnet 상태 확인"),

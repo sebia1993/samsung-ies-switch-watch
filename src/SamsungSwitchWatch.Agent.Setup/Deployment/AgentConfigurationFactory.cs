@@ -12,6 +12,8 @@ public static class AgentConfigurationFactory
         string? existingConfiguration)
     {
         var existing = ReadExistingAgent(existingConfiguration);
+        var normalizedTargetCidrs = SetupTargetCidrPolicy.Normalize(
+            allowedTargetCidrs);
         var agentId = ReadString(existing, "AgentId", IsAgentId) ??
                       SanitizeAgentId($"agent-{Environment.MachineName}");
         var maxConcurrent = ReadInt(existing, "MaxConcurrentExecutions", 1, 16, 2);
@@ -43,7 +45,7 @@ public static class AgentConfigurationFactory
                 DataDirectory = Path.GetFullPath(dataDirectory),
                 MockMode = false,
                 AllowedViewerIpv4 = allowedViewerIpv4,
-                AllowedTargetCidrs = allowedTargetCidrs,
+                AllowedTargetCidrs = normalizedTargetCidrs,
                 MaxConcurrentExecutions = maxConcurrent,
                 RateLimitPerMinute = rateLimit,
                 MaxRequestBodyBytes = maxRequestBody,

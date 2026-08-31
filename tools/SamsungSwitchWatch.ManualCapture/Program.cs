@@ -22,7 +22,7 @@ namespace SamsungSwitchWatch.ManualCapture;
 
 internal static class Program
 {
-    private const string ManualProductVersion = "0.12.0-poc";
+    private const string ManualProductVersion = "0.13.0-poc";
 
     private static readonly string[] ExpectedScreenshotNames =
     [

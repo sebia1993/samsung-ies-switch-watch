@@ -34,15 +34,41 @@ jobs:
 
       - name: Build unsigned POC packages
         shell: powershell
-        run: .\scripts\build-release.ps1 -Version 0.12.0-poc -SkipTests
+        run: .\scripts\build-release.ps1 -Version 0.13.0-poc -SkipTests
 
       - name: Upload immutable candidate artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: samsung-switch-watch-0.12.0-poc-${{ github.sha }}
+          name: samsung-switch-watch-0.13.0-poc-${{ github.sha }}
           path: artifacts/release/*
           if-no-files-found: error
           retention-days: 14
+
+  stability-smoke:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install exact .NET SDK
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: 10.0.302
+
+      - name: Restore locked stability harness
+        shell: powershell
+        run: dotnet restore .\tools\SamsungSwitchWatch.StabilityHarness\SamsungSwitchWatch.StabilityHarness.csproj --locked-mode
+
+      - name: Build stability harness
+        shell: powershell
+        run: dotnet build .\tools\SamsungSwitchWatch.StabilityHarness\SamsungSwitchWatch.StabilityHarness.csproj -c Release --no-restore
+
+      - name: Run deterministic five-minute stability smoke
+        shell: powershell
+        run: dotnet run --project .\tools\SamsungSwitchWatch.StabilityHarness\SamsungSwitchWatch.StabilityHarness.csproj -c Release --no-build --no-restore -- --profile smoke --devices 100 --seed 372811
 
   verify-downloaded-artifact:
     needs: validate-and-package
@@ -57,15 +83,15 @@ jobs:
       - name: Download candidate artifact
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: samsung-switch-watch-0.12.0-poc-${{ github.sha }}
+          name: samsung-switch-watch-0.13.0-poc-${{ github.sha }}
           path: artifacts/release
 
       - name: Verify post-download hashes and package contract
         shell: powershell
         env:
           SSW_EXPECTED_SOURCE_COMMIT: ${{ github.sha }}
-        run: .\scripts\test-package-contract.ps1 -ReleaseDirectory .\artifacts\release -Version 0.12.0-poc -ExpectedSourceCommit $env:SSW_EXPECTED_SOURCE_COMMIT
+        run: .\scripts\test-package-contract.ps1 -ReleaseDirectory .\artifacts\release -Version 0.13.0-poc -ExpectedSourceCommit $env:SSW_EXPECTED_SOURCE_COMMIT
 
       - name: Execute downloaded release binaries without installed runtimes
         shell: powershell
-        run: .\scripts\test-release-executable-smoke.ps1 -ReleaseDirectory .\artifacts\release -Version 0.12.0-poc
+        run: .\scripts\test-release-executable-smoke.ps1 -ReleaseDirectory .\artifacts\release -Version 0.13.0-poc

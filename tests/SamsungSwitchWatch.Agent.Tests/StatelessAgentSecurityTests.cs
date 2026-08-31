@@ -23,20 +23,23 @@ public sealed class StatelessAgentSecurityTests
         Assert.Equal(expected, Ipv4Cidr.TryParse(value, out _));
 
     [Theory]
-    [InlineData("10.10.20.25")]
-    [InlineData("172.16.0.1")]
-    [InlineData("172.31.255.254")]
-    [InlineData("192.168.20.25")]
-    public void TargetPolicy_AllowsBuiltInRfc1918NetworksOnPort23(string target)
+    [InlineData("10.10.10.10", true)]
+    [InlineData("10.10.10.255", true)]
+    [InlineData("10.10.11.10", false)]
+    [InlineData("192.168.10.1", true)]
+    [InlineData("192.168.11.1", false)]
+    public void TargetPolicy_RequiresConfiguredCidrMembership(
+        string target,
+        bool expected)
     {
         var options = new AgentOptions
         {
-            AllowedTargetCidrs = ["203.0.113.0/24"]
+            AllowedTargetCidrs = ["10.10.10.0/24", "192.168.10.0/24"]
         };
         var policy = new TargetNetworkPolicy(options);
 
-        Assert.True(policy.TryValidate(target, 23, out var address));
-        Assert.Equal(target, address.ToString());
+        Assert.Equal(expected, policy.TryValidate(target, 23, out var address));
+        if (expected) Assert.Equal(target, address.ToString());
     }
 
     [Theory]
@@ -57,10 +60,51 @@ public sealed class StatelessAgentSecurityTests
     {
         var policy = new TargetNetworkPolicy(new AgentOptions
         {
-            AllowedTargetCidrs = ["0.0.0.0/0"]
+            AllowedTargetCidrs = ["192.168.0.0/16"]
         });
 
         Assert.False(policy.TryValidate(target, port, out _));
+    }
+
+    [Theory]
+    [InlineData("10.10.10.1/24", null)]
+    [InlineData("2001:db8::/64", null)]
+    [InlineData("8.8.8.0/24", null)]
+    [InlineData("10.0.0.0/7", null)]
+    public void Configuration_RejectsMalformedPublicOrBoundaryCidrs(
+        string first,
+        string? second = null)
+    {
+        var options = new AgentOptions
+        {
+            AllowedTargetCidrs = second is null ? [first] : [first, second]
+        };
+
+        var exception = Assert.Throws<AgentConfigurationException>(() =>
+            AgentOptionsValidator.NormalizeAllowedTargetCidrs(
+                options.AllowedTargetCidrs));
+
+        Assert.Equal(AgentErrorCodes.ConfigurationInvalid, exception.Code);
+    }
+
+    [Fact]
+    public void Configuration_CanonicalizesAndRemovesDuplicateCidrs()
+    {
+        var normalized = AgentOptionsValidator.NormalizeAllowedTargetCidrs(
+            ["10.10.0.0/16", "10.10.0.0/016", "192.168.10.0/24"]);
+
+        Assert.Equal(["10.10.0.0/16", "192.168.10.0/24"], normalized);
+    }
+
+    [Fact]
+    public void Configuration_LimitsTargetCidrsToThirtyTwo()
+    {
+        var options = Enumerable.Range(0, 33)
+            .Select(index => $"10.{index}.0.0/16")
+            .ToArray();
+
+        Assert.Throws<AgentConfigurationException>(() =>
+            AgentOptionsValidator.NormalizeAllowedTargetCidrs(options));
     }
 
     [Fact]
@@ -179,7 +223,7 @@ public sealed class StatelessAgentSecurityTests
                 ListenUrl = "http://0.0.0.0:18443",
                 DataDirectory = folder,
                 AllowedViewerIpv4 = "192.168.10.20",
-                AllowedTargetCidrs = ["192.0.2.0/24"]
+                AllowedTargetCidrs = ["10.20.0.0/16"]
             };
 
             var exception = Assert.Throws<AgentConfigurationException>(() =>
@@ -263,7 +307,7 @@ public sealed class StatelessAgentSecurityTests
                 ListenUrl = "https://127.0.0.1:18443",
                 DataDirectory = folder,
                 AllowedViewerIpv4 = "192.168.10.20",
-                AllowedTargetCidrs = ["192.0.2.0/24"]
+                AllowedTargetCidrs = ["10.20.0.0/16"]
             };
             AgentOptionsValidator.ValidateAndNormalize(options, folder);
 

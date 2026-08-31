@@ -752,6 +752,31 @@ public sealed class ViewerConnectionTests
     }
 
     [Fact]
+    public async Task ExecuteTelnetAsync_RejectsSensitiveCommandWithoutExplicitOptInBeforeSending()
+    {
+        using var certificate = CreateCertificate();
+        var fixture = CreateClientFixture(certificate);
+        await using var client = fixture.Client;
+        var request = new TelnetExecuteRequestDto(
+            "execute-sensitive",
+            "192.0.2.10",
+            23,
+            "IES4224GP",
+            "operator",
+            "secret",
+            null,
+            "manual",
+            ["show running-config"]);
+
+        var failure = await Assert.ThrowsAsync<AgentClientException>(
+            () => client.ExecuteTelnetAsync(request, CancellationToken.None));
+
+        Assert.Equal("QUERY_COMMAND_BLOCKED", failure.ErrorCode);
+        Assert.Equal(0, fixture.ControlHandler.RequestCount);
+        Assert.Equal(0, fixture.QueryHandler.RequestCount);
+    }
+
+    [Fact]
     public async Task ExecuteTelnetAsync_AcceptsEightMaximumSizedCommandOutputs()
     {
         using var certificate = CreateCertificate();
@@ -989,6 +1014,7 @@ public sealed class ViewerConnectionTests
             MainWidth = 1700,
             MainHeight = 950,
             StartMinimizedToTray = true,
+            AllowSensitiveReadOnlyQueries = true,
             EventCursors = new Dictionary<string, long> { ["identity"] = 9 }
         };
 
@@ -999,6 +1025,7 @@ public sealed class ViewerConnectionTests
         Assert.Equal(1700, copy.MainWidth);
         Assert.Equal(950, copy.MainHeight);
         Assert.True(copy.StartMinimizedToTray);
+        Assert.True(copy.AllowSensitiveReadOnlyQueries);
         Assert.Equal(9, original.EventCursors["identity"]);
     }
 

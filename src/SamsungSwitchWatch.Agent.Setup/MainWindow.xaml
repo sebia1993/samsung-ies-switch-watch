@@ -39,11 +39,26 @@
                            Text="● 사설 Viewer 대역용 HTTPS/TCP 18443 연결 규칙" />
                 <TextBlock Margin="0,6,0,0"
                            Text="● RFC1918 사설 관리망 스위치의 Telnet/TCP 23 조회" />
-                <TextBlock Margin="0,8,0,0"
+                <TextBlock Margin="0,12,0,0"
+                           FontWeight="SemiBold"
+                           Text="허용할 스위치 관리망 CIDR" />
+                <TextBox x:Name="TargetCidrsTextBox"
+                         Margin="0,6,0,0"
+                         Height="72"
+                         MaxLength="4096"
+                         Padding="8,6"
+                         VerticalContentAlignment="Top"
+                         AcceptsReturn="True"
+                         TextWrapping="Wrap"
+                         VerticalScrollBarVisibility="Auto"
+                         AutomationProperties.Name="허용할 스위치 관리망 CIDR"
+                         AutomationProperties.HelpText="한 줄에 하나씩 최대 32개의 canonical RFC1918 CIDR을 입력합니다." />
+                <TextBlock x:Name="TargetCidrsGuidanceText"
+                           Margin="0,6,0,0"
                            FontSize="11"
                            Foreground="{StaticResource MutedTextBrush}"
                            TextWrapping="Wrap"
-                           Text="Viewer IP와 관리망 CIDR은 따로 입력하지 않습니다. 10/8, 172.16/12, 192.168/16 사설 대역을 자동 적용합니다." />
+                           Text="한 줄에 하나씩 1~32개를 입력하세요. 예: 10.20.30.0/24. 빈 값·공인망·IPv6·host bit가 포함된 범위는 거부됩니다." />
             </StackPanel>
         </Border>
 

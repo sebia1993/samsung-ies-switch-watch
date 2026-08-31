@@ -19,6 +19,7 @@
 - `tests`: synthetic Telnet server와 비식별 fixture 기반 검증
 - `scripts`: build / validate / package contract / deployment helper
 - `tools/SamsungSwitchWatch.ManualCapture`: 비식별 WPF 문서 화면 생성
+- `tools/SamsungSwitchWatch.StabilityHarness`: seeded synthetic 장시간 감시 workload
 
 ## 기본 검증
 
@@ -32,8 +33,16 @@ dotnet test SamsungSwitchWatch.sln -c Release --no-build
 패키지:
 
 ```powershell
-.\scripts\build-release.ps1 -Version 0.12.0-poc
+.\scripts\build-release.ps1 -Version 0.13.0-poc
 ```
+
+Windows stability harness:
+
+```powershell
+dotnet run --project .\tools\SamsungSwitchWatch.StabilityHarness -c Release -- --profile smoke --devices 100 --seed 372811
+```
+
+기본 Windows CI는 5분 `smoke`만 실행합니다. 15분·1시간·8시간·24시간 profile은 목적과 실행 환경을 기록한 수동 검증에 사용합니다.
 
 ## 변경 원칙
 

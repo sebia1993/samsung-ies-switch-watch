@@ -42,11 +42,18 @@ public partial class App : Application
             administrator,
             new WindowsMachineDeploymentLock(),
             paths);
+        var existingTargetNetworks =
+            new ExistingTargetNetworkLoader(fileSystem, paths).Load();
 
         var diagnosticsOnly = e.Args.Any(argument =>
             string.Equals(argument, "--diagnostics", StringComparison.OrdinalIgnoreCase));
         var mainWindow =
-            new MainWindow(diagnostics, deployment, diagnosticsOnly);
+            new MainWindow(
+                diagnostics,
+                deployment,
+                diagnosticsOnly,
+                existingTargetNetworks.TargetCidrs,
+                existingTargetNetworks.Warning?.Message);
         MainWindow = mainWindow;
         mainWindow.Show();
     }

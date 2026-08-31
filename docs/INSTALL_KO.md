@@ -2,18 +2,18 @@
 
 ## 1. 받을 파일
 
-공식 GitHub `v0.12.0-poc` Release의 Assets에서 다음 두 파일을 받습니다.
+공식 GitHub `v0.13.0-poc` Release의 Assets에서 다음 두 파일을 받습니다.
 
-- `SamsungSwitchWatch-Agent-0.12.0-poc-win-x64.zip`
-- `SamsungSwitchWatch-Viewer-0.12.0-poc-win-x64.zip`
+- `SamsungSwitchWatch-Agent-0.13.0-poc-win-x64.zip`
+- `SamsungSwitchWatch-Viewer-0.13.0-poc-win-x64.zip`
 
 두 패키지는 Windows x64 self-contained 시험판입니다. 별도 .NET Runtime은 필요하지 않지만 코드 서명되지 않았을 수 있으므로 조직의 SmartScreen·EDR·AppLocker·WDAC 승인 절차를 먼저 따르십시오.
 
 Release 설명에 표시된 SHA-256과 내려받은 ZIP의 hash를 비교합니다.
 
 ```powershell
-Get-FileHash .\SamsungSwitchWatch-Agent-0.12.0-poc-win-x64.zip -Algorithm SHA256
-Get-FileHash .\SamsungSwitchWatch-Viewer-0.12.0-poc-win-x64.zip -Algorithm SHA256
+Get-FileHash .\SamsungSwitchWatch-Agent-0.13.0-poc-win-x64.zip -Algorithm SHA256
+Get-FileHash .\SamsungSwitchWatch-Viewer-0.13.0-poc-win-x64.zip -Algorithm SHA256
 ```
 
 ## 2. 설치 전 조건
@@ -31,11 +31,14 @@ Agent→Switch는 Telnet 평문입니다. 인터넷, 공용 Wi-Fi와 사용자 V
 1. Agent ZIP을 새 로컬 폴더에 풉니다.
 2. `SamsungSwitchWatch.Agent.Setup.exe`를 실행하고 UAC를 승인합니다.
 3. `설치 / 업데이트`를 선택합니다.
-4. 서비스·파일 설치 성공과 HTTPS/방화벽 확인 결과를 구분해 읽습니다.
-5. `페어링 코드 보기`를 선택하고 경고를 확인합니다.
-6. `SSW1.`로 시작하는 코드를 Viewer 연결 설정에 직접 전달합니다.
+4. `허용할 스위치 관리망 CIDR`에 승인된 관리 VLAN의 canonical CIDR을 한 줄에 하나씩 입력합니다(최대 32개). 업데이트에서는 검증된 기존 값이 먼저 표시됩니다.
+5. 서비스·파일 설치 성공과 HTTPS/방화벽 확인 결과를 구분해 읽습니다.
+6. `페어링 코드 보기`를 선택하고 경고를 확인합니다.
+7. `SSW1.`로 시작하는 코드를 Viewer 연결 설정에 직접 전달합니다.
 
 Agent는 `SamsungSwitchWatchAgent` Windows Service로 실행됩니다. Setup 창을 계속 열어 둘 필요는 없습니다.
+
+Agent는 스위치 target이 RFC1918 사설 IPv4, TCP/23, `Agent:AllowedTargetCidrs` 안에 모두 포함될 때만 요청을 허용합니다. 빈 목록은 업그레이드 호환을 위해 RFC1918 전체로 정규화되므로, 실제 운영 설치에서는 Setup의 관리망 범위를 승인된 VLAN CIDR로 좁히십시오. 잘못된 CIDR, IPv6, 공인망, network boundary가 맞지 않는 범위는 시작 단계에서 거부됩니다.
 
 페어링 코드는 API token을 포함합니다. 메신저·메일·이슈·진단 로그에 붙이지 마십시오. 나중에 다시 필요하면 Agent PC에서 같은 Setup을 관리자 권한으로 실행하고 `페어링 코드 보기`를 사용합니다.
 
@@ -47,6 +50,8 @@ Agent는 `SamsungSwitchWatchAgent` Windows Service로 실행됩니다. Setup 창
 4. 연결 설정에 `https://<Agent IPv4>:18443` 형식의 주소를 입력합니다.
 5. Agent Setup의 페어링 코드를 입력합니다.
 6. 연결 시험을 실행하고 저장합니다.
+
+`running-config` 또는 `startup-config` 조회가 꼭 필요한 경우에만 연결 설정의 민감 조회 허용을 켭니다. 기본값은 꺼짐이며, 이 설정을 켜도 한 줄 `show` 검증과 출력 상한은 그대로 적용됩니다.
 
 Viewer는 코드에서 인증서 공개키 pin과 token을 분리합니다. token은 현재 Windows 사용자 DPAPI로 보호해 저장하므로 다른 PC나 계정에 설정 파일만 복사해 사용할 수 없습니다.
 

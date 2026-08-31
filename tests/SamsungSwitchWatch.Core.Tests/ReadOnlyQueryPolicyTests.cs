@@ -35,6 +35,30 @@ public sealed class ReadOnlyQueryPolicyTests
         Assert.Equal(ReadOnlyQueryRejection.None, result.Rejection);
     }
 
+    [Theory]
+    [InlineData("show running-config")]
+    [InlineData("SHOW STARTUP-CONFIG")]
+    [InlineData("show running-config section system")]
+    public void Validate_ClassifiesConfirmedConfigurationFamiliesAsSensitive(string command)
+    {
+        var result = ReadOnlyQueryPolicy.Validate(command);
+
+        Assert.True(result.IsAllowed);
+        Assert.Equal(ReadOnlyQuerySensitivity.Sensitive, result.Sensitivity);
+    }
+
+    [Theory]
+    [InlineData("show version")]
+    [InlineData("show running-configuration")]
+    [InlineData("show tech-support")]
+    public void Validate_DoesNotGuessAdditionalSensitiveFamilies(string command)
+    {
+        var result = ReadOnlyQueryPolicy.Validate(command);
+
+        Assert.True(result.IsAllowed);
+        Assert.Equal(ReadOnlyQuerySensitivity.Normal, result.Sensitivity);
+    }
+
     [Fact]
     public void Validate_NormalizesRepeatedSpaces()
     {
@@ -58,6 +82,7 @@ public sealed class ReadOnlyQueryPolicyTests
         Assert.False(result.IsAllowed);
         Assert.Null(result.NormalizedCommand);
         Assert.Equal(expected, result.Rejection);
+        Assert.Equal(ReadOnlyQuerySensitivity.Normal, result.Sensitivity);
     }
 
     [Fact]

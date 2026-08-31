@@ -1,12 +1,18 @@
 using System.Collections.ObjectModel;
+using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using System.Windows.Input;
 using SamsungSwitchWatch.Core.Diagnostics;
 using SamsungSwitchWatch.Core.Parsing;
 using SamsungSwitchWatch.Core.Profiles;
+using SamsungSwitchWatch.Viewer.Connections;
+using SamsungSwitchWatch.Viewer.Devices;
+using SamsungSwitchWatch.Viewer.Diagnostics;
+using SamsungSwitchWatch.Viewer.Events;
 using SamsungSwitchWatch.Viewer.Infrastructure;
 using SamsungSwitchWatch.Viewer.Models;
+using SamsungSwitchWatch.Viewer.Monitoring;
 using SamsungSwitchWatch.Viewer.Services;
 
 namespace SamsungSwitchWatch.Viewer.ViewModels;
@@ -61,14 +67,6 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
         bool Ready,
         bool ExplicitlyUnsupported,
         string? ErrorCode);
-    private sealed record DeviceLifecycleToken(string DeviceId, long Revision);
-    private sealed record MonitoringWorkItem(
-        ManagedDeviceProfile Profile,
-        long Revision,
-        long ClientEpoch)
-    {
-        public DeviceLifecycleToken Token => new(Profile.Id, Revision);
-    }
     private sealed record AutomaticCollectionFreshness(
         long Revision,
         AutomaticCollectionFreshnessState State,
@@ -102,34 +100,24 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
     private readonly CancellationTokenSource _lifetime = new();
     private readonly SemaphoreSlim _initializeGate = new(1, 1);
     private readonly SemaphoreSlim _syncGate = new(1, 1);
-    private readonly object _changeSync = new();
     private readonly object _settingsSync = new();
-    private readonly object _monitoringCredentialBlockSync = new();
-    private readonly object _deviceOperationGateSync = new();
-    private readonly object _deviceLifecycleSync = new();
-    private readonly object _monitorLoopSync = new();
-    private readonly object _readOnlyQueryCancellationSync = new();
+    private readonly object _disposeSync = new();
+    private readonly ManualQueryService _manualQueryService;
     private readonly Dictionary<string, EventViewModel> _eventsById = new(StringComparer.Ordinal);
-    private readonly HashSet<string> _monitoringCredentialBlocks = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, SemaphoreSlim> _deviceOperationGates =
-        new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<string, long> _deviceLifecycleRevisions = new(StringComparer.Ordinal);
+    private readonly DeviceOperationGateRegistry _deviceOperationGates = new();
+    private readonly DeviceCircuitBreaker _monitoringCircuitBreaker;
+    private readonly MonitoringCoordinator _monitoringCoordinator;
+    private readonly DeviceLifecycleService _deviceLifecycle = new();
+    private readonly EventFeedCoordinator _eventFeed =
+        new(MaximumBufferedEventChanges);
     private readonly Dictionary<string, AutomaticCollectionFreshness> _automaticCollectionFreshness =
         new(StringComparer.Ordinal);
-    private readonly SortedDictionary<long, AgentEventChangeDto> _changeBuffer = [];
-    private readonly HashSet<long> _liveAlertSequences = [];
-    private bool _changeBufferOverflowed;
-    private long _liveEventSignalVersion;
-    private long _liveEventPumpObservedSignalVersion;
-    private int _liveEventPumpScheduled;
-    private int _liveEventPumpStartCount;
-    private IAgentClient _client;
+    private readonly AgentConnectionCoordinator _agentConnectionCoordinator;
+    private IAgentClient _client => _agentConnectionCoordinator.CurrentClient;
     private ViewerSettings _settings;
     private DeviceViewModel? _selectedDevice;
     private EventViewModel? _selectedEvent;
     private AgentConnectionState _connectionState = AgentConnectionState.Connecting;
-    private AgentConnectionState _httpConnectionState = AgentConnectionState.Connecting;
-    private AgentConnectionState _realtimeConnectionState = AgentConnectionState.Connecting;
     private bool _isBusy;
     private string _operationMessage = "초기 상태를 불러오는 중입니다.";
     private string _collectorVersion = "-";
@@ -151,32 +139,21 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
     private string _readOnlyQueryResultMeta = "실행 결과가 없습니다.";
     private bool _isReadOnlyQueryRunning;
     private bool _readOnlyQueryTruncated;
-    private readonly List<string> _readOnlyQueryHistory = [];
-    private int _readOnlyQueryHistoryIndex;
-    private string _readOnlyQueryHistoryDraft = string.Empty;
-    private bool _movingReadOnlyQueryHistory;
-    private CancellationTokenSource? _readOnlyQueryCancellation;
-    private int _manualDeviceOperationActive;
-    private long _readOnlyQueryContextGeneration;
     private IReadOnlyList<OperationalStatusDto> _snapshotOperationalStatuses = [];
     private long _changeCursor;
     private long _settingsGeneration;
     private long _feedResetCount;
-    private long _nextDeviceLifecycleRevision;
-    private long _monitoringClientEpoch;
     private bool _hasSnapshot;
     private bool _allowLiveAlerts;
     private bool _initialized;
     private bool _disposed;
+    private Task? _disposeTask;
     private bool _statelessV4;
     private ManagedDeviceLoadStatus _managedDeviceLoadStatus = ManagedDeviceLoadStatus.Missing;
     private IReadOnlyList<ManagedDeviceProfile> _lastManagedDeviceProfiles = [];
     private Task? _snapshotLoop;
-    private Task? _monitorLoop;
     private bool _monitoringSessionStarted;
     private string? _monitoringStoreFailureCauseCode;
-    private readonly SemaphoreSlim _monitorGate = new(1, 1);
-    private readonly SemaphoreSlim _monitorConcurrency = new(2, 2);
 
     public DashboardViewModel(
         ViewerSettings settings,
@@ -195,6 +172,8 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
             new ViewerSettingsSaveCoordinator(settingsStore),
             null,
             static (delay, cancellationToken) => Task.Delay(delay, cancellationToken),
+            null,
+            null,
             null)
     {
     }
@@ -209,7 +188,9 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
         ViewerSettingsSaveCoordinator settingsSaveCoordinator,
         Action<string, string>? writeDiagnostic,
         Func<TimeSpan, CancellationToken, Task> settingsSaveDelay,
-        Action<string, string, string>? writeConnectionDiagnostic = null)
+        Action<string, string, string>? writeConnectionDiagnostic = null,
+        TimeProvider? monitoringTimeProvider = null,
+        TimeSpan? monitoringInterval = null)
     {
         _settings = ViewerSettingsSanitizer.Sanitize(settings);
         _settingsSaveCoordinator = settingsSaveCoordinator
@@ -222,8 +203,32 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
             ?? throw new ArgumentNullException(nameof(settingsSaveDelay));
         _clientFactory = clientFactory ?? new AgentClientFactory();
         _uiContext = synchronizationContext ?? SynchronizationContext.Current;
-        _client = CreateInitialClient(_settings);
+        _manualQueryService = new ManualQueryService(_deviceOperationGates);
+        var initialClient = CreateInitialClient(_settings);
+        _agentConnectionCoordinator = new AgentConnectionCoordinator(
+            initialClient,
+            initialClient is UnavailableAgentClient
+                ? AgentConnectionState.NeedsConnection
+                : AgentConnectionState.Connecting);
+        _connectionState = _agentConnectionCoordinator.GetCombinedState(
+            initialized: false,
+            hasSnapshot: false);
         SubscribeClient(_client);
+        _monitoringCircuitBreaker = new DeviceCircuitBreaker(monitoringTimeProvider);
+        _monitoringCoordinator = new MonitoringCoordinator(
+            CaptureMonitoringWorkAsync,
+            MonitorDeviceAsync,
+            CompleteMonitoringCycleAsync,
+            exception =>
+            {
+                TryWriteDiagnostic("monitoring-cycle", "VIEWER_MONITOR_CYCLE_FAILED");
+                _ = ReportMonitoringCycleFailureAsync(
+                    IsMonitoringPersistenceFailure(exception)
+                        ? "VIEWER_MONITOR_STATE_WRITE_FAILED"
+                        : "VIEWER_MONITOR_CYCLE_FAILED");
+            },
+            monitoringInterval ?? SnapshotInterval,
+            monitoringTimeProvider);
 
         EventFilters =
         [
@@ -293,17 +298,12 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
     }
     public long AppliedChangeCursor => Interlocked.Read(ref _changeCursor);
     internal int BufferedEventChangeCount
-    {
-        get
-        {
-            lock (_changeSync) return _changeBuffer.Count;
-        }
-    }
-    internal bool IsLiveEventPumpScheduled => Volatile.Read(ref _liveEventPumpScheduled) != 0;
+        => _eventFeed.BufferedCount;
+    internal bool IsLiveEventPumpScheduled => _eventFeed.IsPumpScheduled;
     internal long LiveEventPumpObservedSignalVersion =>
-        Interlocked.Read(ref _liveEventPumpObservedSignalVersion);
-    internal int LiveEventPumpStartCount => Volatile.Read(ref _liveEventPumpStartCount);
-    internal int ReadOnlyQueryHistoryCount => _readOnlyQueryHistory.Count;
+        _eventFeed.ObservedSignalVersion;
+    internal int LiveEventPumpStartCount => _eventFeed.PumpStartCount;
+    internal int ReadOnlyQueryHistoryCount => _manualQueryService.HistoryCount;
     public bool HasManagedDeviceStore => _deviceStore is not null;
     private bool IsManagedDeviceStoreOperational =>
         _deviceStore?.IsOperational == true;
@@ -357,34 +357,15 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
         out string? warningCode)
     {
         if (_deviceStore is null) throw new InvalidOperationException("VIEWER_DEVICE_STORE_UNAVAILABLE");
-        ManagedDeviceProfile result;
-        IReadOnlyList<SwitchEventDto> lifecycleEvents = [];
-        warningCode = null;
-        lock (_deviceLifecycleSync)
-        {
-            var outcome = _deviceStore.SaveWithOutcome(draft);
-            result = outcome.Profile;
-            AdvanceDeviceLifecycleRevisionUnsafe(result.Id);
-            if (result.ConnectionVerified)
-            {
-                ClearMonitoringCredentialBlock(result.Id);
-            }
-
-            if (IsMonitoringStoreOperational
-                && (outcome.ConnectionIdentityChanged || !result.MonitoringEnabled))
-            {
-                warningCode = RunPostSaveCleanup(
-                    () => lifecycleEvents =
-                        _monitoringStore?.ResetDeviceCollectionState(result.Id) ?? [],
-                    warningCode);
-            }
-            else if (IsMonitoringStoreOperational && result.ConnectionVerified)
-            {
-                warningCode = RunPostSaveCleanup(
-                    () => _monitoringStore?.ClearCapabilities(result.Id),
-                    warningCode);
-            }
-        }
+        var outcome = _deviceLifecycle.Save(
+            _deviceStore,
+            _monitoringStore,
+            IsMonitoringStoreOperational,
+            draft,
+            ResetDeviceLifecycleProjectionUnsafe);
+        var result = outcome.Profile;
+        var lifecycleEvents = outcome.LifecycleEvents;
+        warningCode = outcome.WarningCode;
         if (lifecycleEvents.Count > 0) ApplyEvents(lifecycleEvents, false);
         try
         {
@@ -408,52 +389,51 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
     public bool DeleteManagedDevice(string id)
     {
         if (_deviceStore is null) return false;
-        var removed = false;
-        string? warningCode = null;
-        IReadOnlyList<SwitchEventDto> lifecycleEvents = [];
-        lock (_deviceLifecycleSync)
+        var outcome = _deviceLifecycle.Delete(
+            _deviceStore,
+            _monitoringStore,
+            IsMonitoringStoreOperational,
+            id,
+            ResetDeviceLifecycleProjectionUnsafe);
+        if (outcome.Removed)
         {
-            removed = _deviceStore.Delete(id);
-            if (removed)
+            if (outcome.LifecycleEvents.Count > 0)
             {
-                AdvanceDeviceLifecycleRevisionUnsafe(id);
-                ClearMonitoringCredentialBlock(id);
-                warningCode = IsMonitoringStoreOperational
-                    ? RunPostSaveCleanup(
-                    () => lifecycleEvents =
-                        _monitoringStore!.ResetDeviceCollectionState(id),
-                    warningCode)
-                    : warningCode;
+                ApplyEvents(outcome.LifecycleEvents, false);
             }
-        }
-        if (removed)
-        {
-            if (lifecycleEvents.Count > 0) ApplyEvents(lifecycleEvents, false);
             ReloadManagedDevices();
-            if (warningCode is not null)
+            if (outcome.WarningCode is not null)
             {
-                ReportDeviceManagementFailure("device-management-delete", warningCode);
+                ReportDeviceManagementFailure(
+                    "device-management-delete",
+                    outcome.WarningCode);
             }
         }
-        return removed;
+        return outcome.Removed;
     }
 
     public ManagedDeviceProfile SetManagedDeviceMonitoring(string id, bool enabled)
     {
         if (_deviceStore is null) throw new InvalidOperationException("VIEWER_DEVICE_STORE_UNAVAILABLE");
-        ManagedDeviceProfile result;
-        IReadOnlyList<SwitchEventDto> lifecycleEvents = [];
-        lock (_deviceLifecycleSync)
+        var outcome = _deviceLifecycle.SetMonitoring(
+            _deviceStore,
+            _monitoringStore,
+            IsMonitoringStoreOperational,
+            id,
+            enabled,
+            ResetDeviceLifecycleProjectionUnsafe);
+        if (outcome.LifecycleEvents.Count > 0)
         {
-            result = _deviceStore.SetMonitoring(id, enabled);
-            AdvanceDeviceLifecycleRevisionUnsafe(id);
-            lifecycleEvents = IsMonitoringStoreOperational
-                ? _monitoringStore!.ResetDeviceCollectionState(id)
-                : [];
+            ApplyEvents(outcome.LifecycleEvents, false);
         }
-        if (lifecycleEvents.Count > 0) ApplyEvents(lifecycleEvents, false);
+        if (outcome.WarningCode is not null)
+        {
+            ReportDeviceManagementFailure(
+                "device-management-monitoring",
+                outcome.WarningCode);
+        }
         ReloadManagedDevices(id);
-        return result;
+        return outcome.Profile;
     }
 
     public async Task<TelnetExecutionResultDto> TestManagedDeviceAsync(
@@ -484,9 +464,9 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
             resolved.Password,
             string.IsNullOrEmpty(resolved.EnablePassword) ? null : resolved.EnablePassword,
             "test");
-        var operationGate = GetDeviceOperationGate(resolved.Host);
-        await operationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
-        try
+        using (await _deviceOperationGates.AcquireAsync(
+                   resolved.Host,
+                   cancellationToken).ConfigureAwait(false))
         {
             var result = await _client.TestTelnetAsync(request, cancellationToken).ConfigureAwait(false);
             if (result.Success
@@ -503,10 +483,6 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
                 }
             }
             return result;
-        }
-        finally
-        {
-            operationGate.Release();
         }
     }
 
@@ -526,12 +502,10 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
         }
         var profiles = loadResult.Devices;
         _lastManagedDeviceProfiles = profiles;
-        lock (_deviceLifecycleSync)
-        {
-            SynchronizeAutomaticCollectionFreshnessUnsafe(profiles);
-        }
+        _deviceLifecycle.UpdateConsistent(
+            () => SynchronizeAutomaticCollectionFreshnessUnsafe(profiles));
         ApplyManagedDeviceProfiles(profiles, preferredId);
-        EnsureMonitorLoopStarted();
+        EnsureMonitoringCoordinatorStarted();
     }
 
     private void ApplyManagedDeviceProfiles(
@@ -583,24 +557,6 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
         NotifyCommandStates();
     }
 
-    private static string? RunPostSaveCleanup(
-        Action action,
-        string? currentWarning)
-    {
-        try
-        {
-            action();
-            return currentWarning;
-        }
-        catch (Exception exception)
-        {
-            return currentWarning
-                   ?? (IsMonitoringPersistenceFailure(exception)
-                       ? "VIEWER_MONITOR_STATE_WRITE_FAILED"
-                       : "VIEWER_UNEXPECTED_ERROR");
-        }
-    }
-
     public DeviceViewModel? SelectedDevice
     {
         get => _selectedDevice;
@@ -608,7 +564,7 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
         {
             if (SetProperty(ref _selectedDevice, value))
             {
-                Interlocked.Increment(ref _readOnlyQueryContextGeneration);
+                _manualQueryService.AdvanceContext();
                 CancelActiveReadOnlyQuery();
                 ReadOnlyQueryOutput = string.Empty;
                 ReadOnlyQueryTruncated = false;
@@ -650,11 +606,12 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
 
     public AgentConnectionState HttpConnectionState
     {
-        get => _httpConnectionState;
+        get => _agentConnectionCoordinator.HttpState;
         private set
         {
-            if (SetProperty(ref _httpConnectionState, value))
+            if (_agentConnectionCoordinator.SetHttpState(value))
             {
+                OnPropertyChanged();
                 if (value == AgentConnectionState.Connected)
                 {
                     TryWriteConnectionDiagnostic("agent-http", "AGENT_CONNECTED", "recovered");
@@ -668,11 +625,12 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
 
     public AgentConnectionState RealtimeConnectionState
     {
-        get => _realtimeConnectionState;
+        get => _agentConnectionCoordinator.RealtimeState;
         private set
         {
-            if (SetProperty(ref _realtimeConnectionState, value))
+            if (_agentConnectionCoordinator.SetRealtimeState(value))
             {
+                OnPropertyChanged();
                 if (value == AgentConnectionState.Connected)
                 {
                     TryWriteConnectionDiagnostic("agent-realtime", "AGENT_CONNECTED", "recovered");
@@ -815,11 +773,7 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
         {
             var clean = value ?? string.Empty;
             if (!SetProperty(ref _readOnlyQueryCommand, clean)) return;
-            if (!_movingReadOnlyQueryHistory)
-            {
-                _readOnlyQueryHistoryIndex = _readOnlyQueryHistory.Count;
-                _readOnlyQueryHistoryDraft = clean;
-            }
+            _manualQueryService.UpdateDraft(clean);
             OnPropertyChanged(nameof(ReadOnlyQueryMayContainSensitiveData));
             NotifyCommandStates();
         }
@@ -829,11 +783,9 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
     {
         get
         {
-            var normalized = ReadOnlyQueryCommand.Trim();
-            return normalized.StartsWith("show running-config", StringComparison.OrdinalIgnoreCase)
-                   || normalized.StartsWith("show startup-config", StringComparison.OrdinalIgnoreCase)
-                   || normalized.StartsWith("show configuration", StringComparison.OrdinalIgnoreCase)
-                   || normalized.StartsWith("show tech-support", StringComparison.OrdinalIgnoreCase);
+            return _manualQueryService.IsSensitive(
+                ReadOnlyQueryCommand,
+                ReadOnlyQueryMaxCommandLength);
         }
     }
 
@@ -1135,7 +1087,7 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
                     await SetUnavailableStateAsync(exception, AgentChannel.Http).ConfigureAwait(false);
                 }
                 _initialized = true;
-                EnsureMonitorLoopStarted();
+                EnsureMonitoringCoordinatorStarted();
                 return;
             }
 
@@ -1348,18 +1300,11 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
                     }
                     var oldClient = _client;
                     UnsubscribeClient(oldClient);
-                    lock (_deviceLifecycleSync)
-                    {
-                        _client = replacement;
-                        _monitoringClientEpoch++;
-                        _automaticCollectionFreshness.Clear();
-                        lock (_changeSync)
-                        {
-                            _changeBuffer.Clear();
-                            _liveAlertSequences.Clear();
-                            _changeBufferOverflowed = false;
-                        }
-                    }
+                    _agentConnectionCoordinator.Replace(
+                        replacement,
+                        _eventFeed.Reset);
+                    _deviceLifecycle.UpdateConsistent(
+                        _automaticCollectionFreshness.Clear);
                     _statelessV4 = true;
                     _currentAgentId = identity.AgentId;
                     SubscribeClient(replacement);
@@ -1393,7 +1338,7 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
                             "AGENT_CONNECTED",
                             "recovered");
                     }
-                    EnsureMonitorLoopStarted();
+                    EnsureMonitoringCoordinatorStarted();
                     if (!ReferenceEquals(oldClient, replacement))
                     {
                         await DisposeClientBestEffortAsync(oldClient)
@@ -1443,18 +1388,11 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
                     }
                     previous = _client;
                     UnsubscribeClient(previous);
-                    lock (_deviceLifecycleSync)
-                    {
-                        _client = replacement;
-                        _monitoringClientEpoch++;
-                        _automaticCollectionFreshness.Clear();
-                        lock (_changeSync)
-                        {
-                            _changeBuffer.Clear();
-                            _liveAlertSequences.Clear();
-                            _changeBufferOverflowed = false;
-                        }
-                    }
+                    _agentConnectionCoordinator.Replace(
+                        replacement,
+                        _eventFeed.Reset);
+                    _deviceLifecycle.UpdateConsistent(
+                        _automaticCollectionFreshness.Clear);
                     _currentAgentId = snapshot.AgentId;
                     Interlocked.Exchange(ref _changeCursor, replacementCursor);
                     SubscribeClient(replacement);
@@ -1546,16 +1484,12 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
     {
         if (!settings.DemoMode && !ViewerSettingsSanitizer.IsValidForLiveConnection(settings, out _))
         {
-            HttpConnectionState = AgentConnectionState.NeedsConnection;
-            RealtimeConnectionState = AgentConnectionState.NeedsConnection;
             return new UnavailableAgentClient();
         }
 
         try { return _clientFactory.Create(settings); }
         catch (InvalidOperationException)
         {
-            HttpConnectionState = AgentConnectionState.NeedsConnection;
-            RealtimeConnectionState = AgentConnectionState.NeedsConnection;
             return new UnavailableAgentClient();
         }
     }
@@ -1564,12 +1498,7 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
     {
         if (!string.Equals(_currentAgentId, snapshot.AgentId, StringComparison.Ordinal))
         {
-            lock (_changeSync)
-            {
-                _changeBuffer.Clear();
-                _liveAlertSequences.Clear();
-                _changeBufferOverflowed = false;
-            }
+            _eventFeed.Reset();
         }
         _currentAgentId = snapshot.AgentId;
         long cursor;
@@ -1599,10 +1528,13 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
                 _ = await RefreshSnapshotAndChangesAsync(true, cancellationToken).ConfigureAwait(false);
             }
         }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            return;
+        }
     }
 
-    private void EnsureMonitorLoopStarted()
+    private void EnsureMonitoringCoordinatorStarted()
     {
         if (!_initialized
             || !_statelessV4
@@ -1614,33 +1546,36 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
             return;
         }
 
-        lock (_monitorLoopSync)
-        {
-            if (_monitorLoop is { IsCompleted: false }) return;
-            _monitorLoop = Task.Run(() => MonitorLoopAsync(_lifetime.Token));
-        }
+        _ = StartMonitoringCoordinatorSafelyAsync();
     }
 
-    private async Task MonitorLoopAsync(CancellationToken cancellationToken)
+    private async Task StartMonitoringCoordinatorSafelyAsync()
     {
         try
         {
-            while (true)
-            {
-                await RunMonitoringCycleSafelyAsync(cancellationToken).ConfigureAwait(false);
-                if (!IsAutomaticMonitoringOperational) return;
-                await Task.Delay(SnapshotInterval, cancellationToken).ConfigureAwait(false);
-            }
+            await _monitoringCoordinator.StartAsync(_lifetime.Token).ConfigureAwait(false);
         }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested)
+        {
+            return;
+        }
+        catch (ObjectDisposedException) when (_disposed)
+        {
+            return;
+        }
+        catch
+        {
+            await ReportMonitoringCycleFailureAsync(
+                "VIEWER_MONITOR_CYCLE_FAILED").ConfigureAwait(false);
+        }
     }
 
     internal async Task RunMonitoringCycleSafelyAsync(CancellationToken cancellationToken)
     {
         if (!IsManagedDeviceStoreOperational
-            && _deviceStore?.LoadErrorCode is { } deviceStoreErrorCode)
+            && _deviceStore?.LoadErrorCode is { } initialDeviceStoreErrorCode)
         {
-            await ReportManagedDeviceStoreFailureAsync(deviceStoreErrorCode)
+            await ReportManagedDeviceStoreFailureAsync(initialDeviceStoreErrorCode)
                 .ConfigureAwait(false);
             return;
         }
@@ -1701,65 +1636,129 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
             return;
         }
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _lifetime.Token);
-        await _monitorGate.WaitAsync(linked.Token).ConfigureAwait(false);
+        await _monitoringCoordinator.StartAsync(_lifetime.Token).ConfigureAwait(false);
+        await _monitoringCoordinator.RequestImmediateCollectionAsync(
+            cancellationToken: linked.Token).ConfigureAwait(false);
+    }
+
+    private async Task<IReadOnlyList<MonitoringWorkItem>> CaptureMonitoringWorkAsync(
+        CancellationToken cancellationToken)
+    {
+        if (!IsManagedDeviceStoreOperational
+            && _deviceStore?.LoadErrorCode is { } deviceStoreErrorCode)
+        {
+            await ReportManagedDeviceStoreFailureAsync(deviceStoreErrorCode)
+                .ConfigureAwait(false);
+            return [];
+        }
+        if (!IsMonitoringStoreOperational
+            && _monitoringStore?.LoadErrorCode is not null)
+        {
+            await ReportMonitoringCycleFailureAsync(
+                Volatile.Read(ref _monitoringStoreFailureCauseCode)
+                ?? CurrentMonitoringStoreErrorCode(
+                    "VIEWER_MONITOR_STATE_UNAVAILABLE")).ConfigureAwait(false);
+            return [];
+        }
+
         try
         {
             if (!TryCaptureMonitoringWorkItems(
                     out var client,
                     out var workItems,
-                    out var deviceStoreErrorCode))
+                    out var captureErrorCode))
             {
-                await ReportManagedDeviceStoreFailureAsync(deviceStoreErrorCode)
+                await ReportManagedDeviceStoreFailureAsync(captureErrorCode)
                     .ConfigureAwait(false);
-                return;
+                return [];
             }
             try
             {
-                await client.StartAsync(linked.Token).ConfigureAwait(false);
+                await client.StartAsync(cancellationToken).ConfigureAwait(false);
                 if (!ReferenceEquals(client, _client))
                 {
-                    return;
+                    return [];
                 }
             }
-            catch (OperationCanceledException) when (linked.IsCancellationRequested)
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
                 throw;
             }
             catch (Exception exception)
             {
                 await SetUnavailableStateAsync(
-                    exception,
-                    AgentChannel.Http,
-                    client).ConfigureAwait(false);
+                        exception,
+                        AgentChannel.Http,
+                        client).ConfigureAwait(false);
                 if (!TryWriteMonitoringHeartbeat()
-                    && _deviceStore.LoadErrorCode is { } startFailureCode)
+                    && _deviceStore!.LoadErrorCode is { } startFailureCode)
                 {
                     await ReportManagedDeviceStoreFailureAsync(startFailureCode)
                         .ConfigureAwait(false);
                 }
-                return;
+                return [];
             }
-            await Task.WhenAll(workItems.Select(workItem =>
-                MonitorDeviceAsync(workItem, client, linked.Token))).ConfigureAwait(false);
-            if (!IsManagedDeviceStoreOperational)
-            {
-                await ReportManagedDeviceStoreFailureAsync(
-                        _deviceStore.LoadErrorCode
-                        ?? "VIEWER_DEVICE_STORE_UNAVAILABLE")
-                    .ConfigureAwait(false);
-                return;
-            }
-            if (!IsMonitoringStoreOperational) return;
-            if (!TryWriteMonitoringHeartbeat()
-                && _deviceStore.LoadErrorCode is { } heartbeatFailureCode)
-            {
-                await ReportManagedDeviceStoreFailureAsync(heartbeatFailureCode)
-                    .ConfigureAwait(false);
-            }
+            return workItems;
         }
-        finally
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            _monitorGate.Release();
+            throw;
+        }
+        catch (Exception) when (
+            !IsManagedDeviceStoreOperational
+            && _deviceStore?.LoadErrorCode is { } runtimeDeviceStoreErrorCode)
+        {
+            await ReportManagedDeviceStoreFailureAsync(runtimeDeviceStoreErrorCode)
+                .ConfigureAwait(false);
+            return [];
+        }
+        catch (Exception) when (
+            !IsMonitoringStoreOperational
+            && _monitoringStore?.LoadErrorCode is not null)
+        {
+            await ReportMonitoringCycleFailureAsync(
+                "VIEWER_MONITOR_STATE_WRITE_FAILED").ConfigureAwait(false);
+            return [];
+        }
+        catch (Exception exception) when (IsMonitoringPersistenceFailure(exception))
+        {
+            await ReportMonitoringCycleFailureAsync(
+                "VIEWER_MONITOR_STATE_WRITE_FAILED").ConfigureAwait(false);
+            return [];
+        }
+        catch
+        {
+            await ReportMonitoringCycleFailureAsync(
+                "VIEWER_MONITOR_CYCLE_FAILED").ConfigureAwait(false);
+            return [];
+        }
+    }
+
+    private async Task CompleteMonitoringCycleAsync(
+        MonitoringCycleResult result,
+        CancellationToken cancellationToken)
+    {
+        if (result.Cancelled || cancellationToken.IsCancellationRequested)
+        {
+            return;
+        }
+        if (!IsManagedDeviceStoreOperational)
+        {
+            await ReportManagedDeviceStoreFailureAsync(
+                    _deviceStore?.LoadErrorCode
+                    ?? "VIEWER_DEVICE_STORE_UNAVAILABLE")
+                .ConfigureAwait(false);
+            return;
+        }
+        if (!IsMonitoringStoreOperational)
+        {
+            return;
+        }
+        if (!TryWriteMonitoringHeartbeat()
+            && _deviceStore?.LoadErrorCode is { } heartbeatFailureCode)
+        {
+            await ReportManagedDeviceStoreFailureAsync(heartbeatFailureCode)
+                .ConfigureAwait(false);
         }
     }
 
@@ -2008,17 +2007,23 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
         if (!TryBeginManualDeviceOperation()) return;
         try
         {
-            if (!ManagedDeviceValidator.IsSingleShowCommand(command, ReadOnlyQueryMaxCommandLength))
+            var validation = _manualQueryService.Validate(
+                command,
+                ReadOnlyQueryMaxCommandLength,
+                _settings.AllowSensitiveReadOnlyQueries);
+            if (!validation.IsAllowed)
             {
                 await RunOnUiAsync(() =>
                 {
-                    ReadOnlyQueryStatusText = "실패 · QUERY_COMMAND_BLOCKED";
-                    ReadOnlyQueryResultMeta = "한 줄짜리 show 조회 명령만 입력할 수 있습니다.";
+                    ReadOnlyQueryStatusText = $"실패 · {validation.ErrorCode}";
+                    ReadOnlyQueryResultMeta = validation.Message;
                 }).ConfigureAwait(false);
                 return;
             }
 
-            await ExecuteReadOnlyQueryCoreAsync(device, command).ConfigureAwait(false);
+            await ExecuteReadOnlyQueryCoreAsync(
+                device,
+                validation.NormalizedCommand!).ConfigureAwait(false);
         }
         finally
         {
@@ -2028,13 +2033,13 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
 
     private async Task ExecuteReadOnlyQueryCoreAsync(DeviceViewModel device, string command)
     {
-        var cancellation = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
-        if (!TryOwnReadOnlyQueryCancellation(cancellation))
+        var lease = _manualQueryService.TryBeginQuery(_lifetime.Token);
+        if (lease is null)
         {
-            cancellation.Dispose();
             return;
         }
-        var queryContextGeneration = Interlocked.Read(ref _readOnlyQueryContextGeneration);
+        var cancellation = lease.Cancellation;
+        var queryContextGeneration = lease.ContextGeneration;
         try
         {
             await RunOnUiAsync(() =>
@@ -2046,54 +2051,30 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
                 ReadOnlyQueryResultMeta = $"{device.Name} · {command}";
             }).ConfigureAwait(false);
 
-            ReadOnlyQueryResultDto result;
+            ManagedDeviceProfile? profile = null;
+            ManagedDeviceSecrets? secrets = null;
             if (_statelessV4 && _deviceStore is not null)
             {
-                var profile = _deviceStore.Load().FirstOrDefault(item => item.Id.Equals(device.Id, StringComparison.Ordinal))
-                              ?? throw new AgentClientException("VIEWER_DEVICE_NOT_FOUND", AgentConnectionState.Stale);
-                var secrets = _deviceStore.GetSecrets(profile.Id);
-                var request = new TelnetExecuteRequestDto(
-                    Guid.NewGuid().ToString("N"),
-                    profile.Host,
-                    23,
-                    profile.Model,
-                    secrets.Username,
-                    secrets.Password,
-                    secrets.EnablePassword,
-                    "manual",
-                    [command]);
-                var operationGate = GetDeviceOperationGate(profile.Host);
-                await operationGate.WaitAsync(cancellation.Token).ConfigureAwait(false);
-                TelnetExecutionResultDto execution;
-                try
-                {
-                    execution = await _client.ExecuteTelnetAsync(request, cancellation.Token).ConfigureAwait(false);
-                }
-                finally
-                {
-                    operationGate.Release();
-                }
-                var output = execution.Commands.FirstOrDefault()
-                             ?? new TelnetCommandOutputDto(command, string.Empty, false, execution.CompletedUtc);
-                result = new ReadOnlyQueryResultDto(
-                    4,
+                profile = _deviceStore.Load().FirstOrDefault(item =>
+                              item.Id.Equals(device.Id, StringComparison.Ordinal))
+                          ?? throw new AgentClientException(
+                              "VIEWER_DEVICE_NOT_FOUND",
+                              AgentConnectionState.Stale);
+                secrets = _deviceStore.GetSecrets(profile.Id);
+            }
+            var result = await _manualQueryService.ExecuteAsync(
+                    lease,
+                    _client,
                     device.Id,
-                    output.Command,
-                    execution.StartedUtc,
-                    execution.CompletedUtc,
-                    execution.DurationMs,
-                    output.Output,
-                    output.Truncated,
-                    execution.SessionCount,
-                    execution.ReconnectCount);
-            }
-            else
-            {
-                result = await _client.ExecuteReadOnlyQueryAsync(device.Id, command, cancellation.Token).ConfigureAwait(false);
-            }
+                    command,
+                    _statelessV4 && _deviceStore is not null,
+                    _settings.AllowSensitiveReadOnlyQueries,
+                    profile,
+                    secrets)
+                .ConfigureAwait(false);
             await RunOnUiAsync(() =>
             {
-                if (queryContextGeneration != Interlocked.Read(ref _readOnlyQueryContextGeneration)) return;
+                if (!_manualQueryService.IsCurrent(queryContextGeneration)) return;
                 AddReadOnlyQueryHistory(result.Command);
                 ReadOnlyQueryOutput = result.Output;
                 ReadOnlyQueryTruncated = result.Truncated;
@@ -2110,7 +2091,7 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
         {
             await RunOnUiAsync(() =>
             {
-                if (queryContextGeneration != Interlocked.Read(ref _readOnlyQueryContextGeneration)) return;
+                if (!_manualQueryService.IsCurrent(queryContextGeneration)) return;
                 ReadOnlyQueryStatusText = "취소됨 · 연결 종료 요청됨";
                 ReadOnlyQueryResultMeta = $"{device.Name} · {command} · 사용자가 취소했습니다.";
             }).ConfigureAwait(false);
@@ -2120,7 +2101,7 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
             var code = SafeMessage(exception);
             await RunOnUiAsync(() =>
             {
-                if (queryContextGeneration != Interlocked.Read(ref _readOnlyQueryContextGeneration)) return;
+                if (!_manualQueryService.IsCurrent(queryContextGeneration)) return;
                 ReadOnlyQueryStatusText = $"실패 · {code}";
                 ReadOnlyQueryResultMeta = ViewerConnectionMessages.ForCode(code);
             }).ConfigureAwait(false);
@@ -2133,17 +2114,17 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
             }
             finally
             {
-                ReleaseReadOnlyQueryCancellation(cancellation);
+                _manualQueryService.ReleaseQuery(lease);
             }
         }
     }
 
     private bool IsManualDeviceOperationActive =>
-        Volatile.Read(ref _manualDeviceOperationActive) != 0;
+        _manualQueryService.IsManualOperationActive;
 
     private bool TryBeginManualDeviceOperation()
     {
-        if (Interlocked.CompareExchange(ref _manualDeviceOperationActive, 1, 0) != 0)
+        if (!_manualQueryService.TryBeginManualOperation())
         {
             return false;
         }
@@ -2154,45 +2135,15 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
 
     private void EndManualDeviceOperation()
     {
-        if (Interlocked.Exchange(ref _manualDeviceOperationActive, 0) != 0)
+        if (_manualQueryService.EndManualOperation())
         {
             RunOnUi(NotifyCommandStates);
         }
     }
 
-    private bool TryOwnReadOnlyQueryCancellation(CancellationTokenSource cancellation)
-    {
-        lock (_readOnlyQueryCancellationSync)
-        {
-            if (_readOnlyQueryCancellation is not null)
-            {
-                return false;
-            }
-
-            _readOnlyQueryCancellation = cancellation;
-            return true;
-        }
-    }
-
     private void CancelActiveReadOnlyQuery()
     {
-        lock (_readOnlyQueryCancellationSync)
-        {
-            _readOnlyQueryCancellation?.Cancel();
-        }
-    }
-
-    private void ReleaseReadOnlyQueryCancellation(CancellationTokenSource cancellation)
-    {
-        lock (_readOnlyQueryCancellationSync)
-        {
-            if (ReferenceEquals(_readOnlyQueryCancellation, cancellation))
-            {
-                _readOnlyQueryCancellation = null;
-            }
-        }
-
-        cancellation.Dispose();
+        _manualQueryService.CancelActiveQuery();
     }
 
     private void CancelReadOnlyQuery()
@@ -2213,37 +2164,20 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
 
     private void AddReadOnlyQueryHistory(string command)
     {
-        if (_readOnlyQueryHistory.Count == 0
-            || !_readOnlyQueryHistory[^1].Equals(command, StringComparison.Ordinal))
-        {
-            _readOnlyQueryHistory.Add(command);
-            if (_readOnlyQueryHistory.Count > 20) _readOnlyQueryHistory.RemoveAt(0);
-        }
-        _readOnlyQueryHistoryIndex = _readOnlyQueryHistory.Count;
-        _readOnlyQueryHistoryDraft = string.Empty;
+        _manualQueryService.AddHistory(command);
     }
 
     public bool MoveReadOnlyQueryHistory(int direction)
     {
-        if (IsReadOnlyQueryRunning || _readOnlyQueryHistory.Count == 0 || direction == 0) return false;
-        if (_readOnlyQueryHistoryIndex >= _readOnlyQueryHistory.Count)
+        if (!_manualQueryService.TryMoveHistory(
+                ReadOnlyQueryCommand,
+                direction,
+                IsReadOnlyQueryRunning,
+                out var command)) return false;
+        if (SetProperty(ref _readOnlyQueryCommand, command))
         {
-            _readOnlyQueryHistoryDraft = ReadOnlyQueryCommand;
-        }
-
-        var next = Math.Clamp(_readOnlyQueryHistoryIndex + Math.Sign(direction), 0, _readOnlyQueryHistory.Count);
-        if (next == _readOnlyQueryHistoryIndex) return false;
-        _readOnlyQueryHistoryIndex = next;
-        _movingReadOnlyQueryHistory = true;
-        try
-        {
-            ReadOnlyQueryCommand = next == _readOnlyQueryHistory.Count
-                ? _readOnlyQueryHistoryDraft
-                : _readOnlyQueryHistory[next];
-        }
-        finally
-        {
-            _movingReadOnlyQueryHistory = false;
+            OnPropertyChanged(nameof(ReadOnlyQueryMayContainSensitiveData));
+            NotifyCommandStates();
         }
         return true;
     }
@@ -2285,37 +2219,15 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
 
     private void BufferChanges(IEnumerable<AgentEventChangeDto> changes, bool live)
     {
-        lock (_changeSync)
-        {
-            foreach (var change in changes)
-            {
-                if (change.ChangeSequence <= AppliedChangeCursor) continue;
-                if (_changeBufferOverflowed) break;
-
-                if (!_changeBuffer.ContainsKey(change.ChangeSequence)
-                    && _changeBuffer.Count >= MaximumBufferedEventChanges)
-                {
-                    _changeBuffer.Clear();
-                    _liveAlertSequences.Clear();
-                    _changeBufferOverflowed = true;
-                    break;
-                }
-
-                _changeBuffer[change.ChangeSequence] = change;
-                if (live && _allowLiveAlerts) _liveAlertSequences.Add(change.ChangeSequence);
-            }
-        }
+        _eventFeed.Buffer(
+            changes,
+            AppliedChangeCursor,
+            live,
+            _allowLiveAlerts);
     }
 
-    private bool ConsumeEventChangeBufferOverflow()
-    {
-        lock (_changeSync)
-        {
-            if (!_changeBufferOverflowed) return false;
-            _changeBufferOverflowed = false;
-            return true;
-        }
-    }
+    private bool ConsumeEventChangeBufferOverflow() =>
+        _eventFeed.ConsumeOverflow();
 
     private async Task<bool> DrainBufferedChangesAsync(
         IAgentClient expectedClient,
@@ -2324,31 +2236,28 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
     {
         while (!cancellationToken.IsCancellationRequested)
         {
-            if (!ReferenceEquals(expectedClient, _client)) return false;
-            AgentEventChangeDto? change;
-            bool liveAlert;
-            lock (_changeSync)
-            {
-                if (!ReferenceEquals(expectedClient, _client)) return false;
-                var next = AppliedChangeCursor + 1;
-                if (!_changeBuffer.Remove(next, out change)) return true;
-                liveAlert = _liveAlertSequences.Remove(next);
-            }
+            if (!_agentConnectionCoordinator.IsCurrent(expectedClient)) return false;
+            if (!_eventFeed.TryTakeNext(
+                    AppliedChangeCursor,
+                    out var change,
+                    out var liveAlert)) return true;
+            if (!_agentConnectionCoordinator.IsCurrent(expectedClient)) return false;
 
             var applied = false;
             await RunOnUiAsync(() =>
             {
-                lock (_deviceLifecycleSync)
-                {
-                    if (!ReferenceEquals(expectedClient, _client)) return;
-                    ApplyEventChangeCore(change, liveAlert);
-                    Interlocked.Exchange(ref _changeCursor, change.ChangeSequence);
-                    lock (_settingsSync)
+                _agentConnectionCoordinator.TryRunIfCurrent(
+                    expectedClient,
+                    () =>
                     {
-                        _settings.SetEventCursor(_currentAgentId, change.ChangeSequence);
-                    }
-                    applied = true;
-                }
+                        ApplyEventChangeCore(change, liveAlert);
+                        Interlocked.Exchange(ref _changeCursor, change.ChangeSequence);
+                        lock (_settingsSync)
+                        {
+                            _settings.SetEventCursor(_currentAgentId, change.ChangeSequence);
+                        }
+                        applied = true;
+                    });
             }).ConfigureAwait(false);
             if (!applied) return false;
             if (!liveAlert && catchupCandidates is not null && IsNotifiableChange(change))
@@ -2370,24 +2279,20 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
         var applied = false;
         await RunOnUiAsync(() =>
         {
-            lock (_deviceLifecycleSync)
-            {
-                if (!ReferenceEquals(client, _client)) return;
-                lock (_changeSync)
+            _agentConnectionCoordinator.TryRunIfCurrent(
+                client,
+                () =>
                 {
-                    _changeBuffer.Clear();
-                    _liveAlertSequences.Clear();
-                    _changeBufferOverflowed = false;
-                }
-                Interlocked.Exchange(ref _changeCursor, safeCursor);
-                lock (_settingsSync) _settings.SetEventCursor(_currentAgentId, safeCursor);
-                Interlocked.Increment(ref _feedResetCount);
-                RecentEvents.Clear();
-                _eventsById.Clear();
-                ApplyRecentEventsCore(recent);
-                applied = true;
-                OperationMessage = "보존 기간이 지난 이벤트 구간을 현재 상태로 다시 맞췄습니다. · EVENT_FEED_RESET";
-            }
+                    _eventFeed.Reset();
+                    Interlocked.Exchange(ref _changeCursor, safeCursor);
+                    lock (_settingsSync) _settings.SetEventCursor(_currentAgentId, safeCursor);
+                    Interlocked.Increment(ref _feedResetCount);
+                    RecentEvents.Clear();
+                    _eventsById.Clear();
+                    ApplyRecentEventsCore(recent);
+                    applied = true;
+                    OperationMessage = "보존 기간이 지난 이벤트 구간을 현재 상태로 다시 맞췄습니다. · EVENT_FEED_RESET";
+                });
         }).ConfigureAwait(false);
         if (applied) ScheduleSettingsSave();
         return applied;
@@ -2555,23 +2460,26 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
     private void OnClientEventChanged(object? sender, AgentEventChangeDto item)
     {
         if (sender is not IAgentClient client) return;
-        lock (_deviceLifecycleSync)
-        {
-            if (!ReferenceEquals(client, _client) || _disposed) return;
-            // Buffer on the callback thread so an event burst cannot allocate
-            // one waiting async state machine per event. Client replacement
-            // takes this same lock before clearing the old feed buffer.
-            BufferChanges([item], live: true);
-            Interlocked.Increment(ref _liveEventSignalVersion);
-        }
-        ScheduleLiveEventPump();
+        var buffered = false;
+        _agentConnectionCoordinator.TryRunIfCurrent(
+            client,
+            () =>
+            {
+                if (_disposed) return;
+                // Buffer on the callback thread so an event burst cannot allocate
+                // one waiting async state machine per event. Client replacement
+                // takes the connection transition lock before clearing the feed.
+                BufferChanges([item], live: true);
+                _eventFeed.Signal();
+                buffered = true;
+            });
+        if (buffered) ScheduleLiveEventPump();
     }
 
     private void ScheduleLiveEventPump()
     {
         if (_disposed || _lifetime.IsCancellationRequested) return;
-        if (Interlocked.CompareExchange(ref _liveEventPumpScheduled, 1, 0) != 0) return;
-        Interlocked.Increment(ref _liveEventPumpStartCount);
+        if (!_eventFeed.TrySchedulePump()) return;
         _ = ProcessClientEventsPumpAsync();
     }
 
@@ -2583,10 +2491,7 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
         {
             while (!_lifetime.IsCancellationRequested)
             {
-                observedSignalVersion = Interlocked.Read(ref _liveEventSignalVersion);
-                Interlocked.Exchange(
-                    ref _liveEventPumpObservedSignalVersion,
-                    observedSignalVersion);
+                observedSignalVersion = _eventFeed.ObserveSignal();
                 var client = _client;
                 activeClient = client;
                 await _syncGate.WaitAsync(_lifetime.Token).ConfigureAwait(false);
@@ -2606,13 +2511,16 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
                     _syncGate.Release();
                 }
 
-                if (observedSignalVersion == Interlocked.Read(ref _liveEventSignalVersion))
+                if (observedSignalVersion == _eventFeed.SignalVersion)
                 {
                     return;
                 }
             }
         }
-        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { }
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested)
+        {
+            return;
+        }
         catch (Exception exception)
         {
             try
@@ -2623,7 +2531,10 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
                         activeClient)
                     .ConfigureAwait(false);
             }
-            catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { }
+            catch (OperationCanceledException) when (_lifetime.IsCancellationRequested)
+            {
+                return;
+            }
             catch
             {
                 // A dispatcher that is already shutting down can reject the
@@ -2633,13 +2544,12 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
         }
         finally
         {
-            Interlocked.Exchange(ref _liveEventPumpScheduled, 0);
             // Close the lost-wakeup window between the last version check and
             // clearing the scheduled flag. If an event arrived there, either
             // its callback or this check schedules exactly one new pump.
-            if (!_disposed
-                && !_lifetime.IsCancellationRequested
-                && observedSignalVersion != Interlocked.Read(ref _liveEventSignalVersion))
+            if (_eventFeed.CompletePump(
+                    observedSignalVersion,
+                    _disposed || _lifetime.IsCancellationRequested))
             {
                 ScheduleLiveEventPump();
             }
@@ -2672,16 +2582,23 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
 
     private async Task MonitorDeviceAsync(
         MonitoringWorkItem workItem,
-        IAgentClient client,
         CancellationToken cancellationToken)
     {
-        await _monitorConcurrency.WaitAsync(cancellationToken).ConfigureAwait(false);
-        var operationGate = GetDeviceOperationGate(workItem.Profile.Host);
-        var entered = false;
+        var client = workItem.Client;
+        if (!_monitoringCircuitBreaker.TryEnter(workItem.DeviceId))
+        {
+            await SetAutomaticCollectionDeferredAsync(workItem).ConfigureAwait(false);
+            return;
+        }
+
+        var circuitOutcomeRecorded = false;
+        DeviceOperationGateRegistry.DeviceOperationLease? operationLease = null;
         try
         {
-            entered = await operationGate.WaitAsync(0, cancellationToken).ConfigureAwait(false);
-            if (!entered)
+            operationLease = await _deviceOperationGates.TryAcquireAsync(
+                workItem.Profile.Host,
+                cancellationToken).ConfigureAwait(false);
+            if (operationLease is null)
             {
                 if (!ReferenceEquals(client, _client)) return;
                 await SetAutomaticCollectionDeferredAsync(workItem).ConfigureAwait(false);
@@ -2748,6 +2665,8 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
                     workItem,
                     testRecoveries,
                     updatePresentation: true).ConfigureAwait(false);
+                _monitoringCircuitBreaker.RecordSuccess(workItem.DeviceId);
+                circuitOutcomeRecorded = true;
                 return;
             }
 
@@ -2819,6 +2738,8 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
                     workItem,
                     reclassifiedRecoveries,
                     updatePresentation: true).ConfigureAwait(false);
+                _monitoringCircuitBreaker.RecordSuccess(workItem.DeviceId);
+                circuitOutcomeRecorded = true;
                 return;
             }
             if (!TryPersistMonitoringState(
@@ -2840,6 +2761,8 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
                 workItem,
                 [],
                 updatePresentation: true).ConfigureAwait(false);
+            _monitoringCircuitBreaker.RecordSuccess(workItem.DeviceId);
+            circuitOutcomeRecorded = true;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -2849,6 +2772,8 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
             !IsManagedDeviceStoreOperational
             && _deviceStore?.LoadErrorCode is { } deviceStoreErrorCode)
         {
+            _monitoringCircuitBreaker.RecordNonAvailabilityFailure(workItem.DeviceId);
+            circuitOutcomeRecorded = true;
             await ReportManagedDeviceStoreFailureAsync(deviceStoreErrorCode)
                 .ConfigureAwait(false);
         }
@@ -2857,6 +2782,8 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
             && _monitoringStore?.LoadErrorCode is not null)
         {
             if (!ReferenceEquals(client, _client)) return;
+            _monitoringCircuitBreaker.RecordNonAvailabilityFailure(workItem.DeviceId);
+            circuitOutcomeRecorded = true;
             await ReportMonitoringCycleFailureAsync(
                 "VIEWER_MONITOR_STATE_WRITE_FAILED",
                 workItem).ConfigureAwait(false);
@@ -2864,6 +2791,8 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
         catch (Exception exception) when (IsMonitoringPersistenceFailure(exception))
         {
             if (!ReferenceEquals(client, _client) || !IsCurrentMonitoringWorkItem(workItem)) return;
+            _monitoringCircuitBreaker.RecordNonAvailabilityFailure(workItem.DeviceId);
+            circuitOutcomeRecorded = true;
             await ReportMonitoringCycleFailureAsync(
                 "VIEWER_MONITOR_STATE_WRITE_FAILED",
                 workItem).ConfigureAwait(false);
@@ -2874,6 +2803,15 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
             var code = SafeMessage(exception);
             if (IsAgentChannelFailure(code))
             {
+                if (IsCircuitBreakerAvailabilityFailure(code))
+                {
+                    _monitoringCircuitBreaker.RecordAvailabilityFailure(workItem.DeviceId);
+                }
+                else
+                {
+                    _monitoringCircuitBreaker.RecordNonAvailabilityFailure(workItem.DeviceId);
+                }
+                circuitOutcomeRecorded = true;
                 await SetUnavailableStateAsync(
                     exception,
                     AgentChannel.Http,
@@ -2881,6 +2819,15 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
                 return;
             }
             if (!IsCurrentMonitoringWorkItem(workItem)) return;
+            if (IsCircuitBreakerAvailabilityFailure(code))
+            {
+                _monitoringCircuitBreaker.RecordAvailabilityFailure(workItem.DeviceId);
+            }
+            else
+            {
+                _monitoringCircuitBreaker.RecordNonAvailabilityFailure(workItem.DeviceId);
+            }
+            circuitOutcomeRecorded = true;
             var authenticationFailure = IsAuthenticationFailure(code);
             if (IsTransientBusy(code))
             {
@@ -2964,8 +2911,11 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
         }
         finally
         {
-            if (entered) operationGate.Release();
-            _monitorConcurrency.Release();
+            operationLease?.Dispose();
+            if (!circuitOutcomeRecorded)
+            {
+                _monitoringCircuitBreaker.CancelAttempt(workItem.DeviceId);
+            }
         }
     }
 
@@ -3435,7 +3385,7 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
     private AutomaticCollectionFreshness GetAutomaticCollectionFreshness(
         ManagedDeviceProfile profile)
     {
-        lock (_deviceLifecycleSync)
+        return _deviceLifecycle.UpdateConsistent(() =>
         {
             var revision = GetOrCreateDeviceLifecycleRevisionUnsafe(profile.Id);
             if (_automaticCollectionFreshness.TryGetValue(profile.Id, out var existing)
@@ -3450,7 +3400,7 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
                 null);
             _automaticCollectionFreshness[profile.Id] = created;
             return created;
-        }
+        });
     }
 
     private void SynchronizeAutomaticCollectionFreshnessUnsafe(
@@ -3520,7 +3470,7 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
         AutomaticCollectionFreshnessState state,
         DateTimeOffset? completedUtc)
     {
-        lock (_deviceLifecycleSync)
+        return _deviceLifecycle.UpdateConsistent(() =>
         {
             if (!IsCurrentMonitoringWorkItemUnsafe(workItem, out _)) return false;
 
@@ -3540,7 +3490,7 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
                     state,
                     lastSuccessfulCollectionUtc);
             return true;
-        }
+        });
     }
 
     private bool TryCaptureMonitoringWorkItems(
@@ -3548,23 +3498,25 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
         out MonitoringWorkItem[] workItems,
         out string errorCode)
     {
-        lock (_deviceLifecycleSync)
+        var captured = _deviceLifecycle.UpdateConsistent(() =>
         {
-            client = _client;
+            var currentClient = _client;
             var loadResult = _deviceStore!.LoadWithStatus();
             _managedDeviceLoadStatus = loadResult.Status;
             if (!IsManagedDeviceStoreOperational)
             {
-                workItems = [];
-                errorCode = _deviceStore.LoadErrorCode
-                            ?? "VIEWER_DEVICE_STORE_UNAVAILABLE";
-                return false;
+                return (
+                    Success: false,
+                    Client: currentClient,
+                    WorkItems: Array.Empty<MonitoringWorkItem>(),
+                    ErrorCode: _deviceStore.LoadErrorCode
+                               ?? "VIEWER_DEVICE_STORE_UNAVAILABLE");
             }
 
             _lastManagedDeviceProfiles = loadResult.Devices;
             SynchronizeAutomaticCollectionFreshnessUnsafe(
                 _lastManagedDeviceProfiles);
-            workItems = loadResult.Devices
+            var items = loadResult.Devices
                 .Where(item =>
                     item.MonitoringEnabled
                     && item.ConnectionVerified
@@ -3572,21 +3524,29 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
                 .Select(item => new MonitoringWorkItem(
                     item,
                     GetOrCreateDeviceLifecycleRevisionUnsafe(item.Id),
-                    _monitoringClientEpoch))
+                    _agentConnectionCoordinator.Generation,
+                    currentClient))
                 .ToArray();
-            errorCode = string.Empty;
-            return true;
-        }
+            return (
+                Success: true,
+                Client: currentClient,
+                WorkItems: items,
+                ErrorCode: string.Empty);
+        });
+        client = captured.Client;
+        workItems = captured.WorkItems;
+        errorCode = captured.ErrorCode;
+        return captured.Success;
     }
 
     private bool TryWriteMonitoringHeartbeat()
     {
-        lock (_deviceLifecycleSync)
+        return _deviceLifecycle.UpdateConsistent(() =>
         {
             if (!IsAutomaticMonitoringOperational) return false;
             _monitoringStore!.Heartbeat();
             return true;
-        }
+        });
     }
 
     private bool TryLoadMonitoringContext(
@@ -3595,47 +3555,55 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
         out ManagedDeviceSecrets secrets,
         out IReadOnlyList<CollectorCapabilityDto> capabilities)
     {
-        lock (_deviceLifecycleSync)
+        var loaded = _deviceLifecycle.ReadConsistent(() =>
         {
-            if (!IsCurrentMonitoringWorkItemUnsafe(workItem, out profile))
+            if (!IsCurrentMonitoringWorkItemUnsafe(workItem, out var current))
             {
-                secrets = null!;
-                capabilities = [];
-                return false;
+                return (
+                    Success: false,
+                    Profile: (ManagedDeviceProfile?)null,
+                    Secrets: (ManagedDeviceSecrets?)null,
+                    Capabilities: (IReadOnlyList<CollectorCapabilityDto>)[]);
             }
 
-            secrets = _deviceStore!.GetSecrets(profile.Id);
-            capabilities = _monitoringStore!.LoadCapabilities(profile.Id);
-            return true;
-        }
+            return (
+                Success: true,
+                Profile: (ManagedDeviceProfile?)current,
+                Secrets: (ManagedDeviceSecrets?)_deviceStore!.GetSecrets(current.Id),
+                Capabilities: _monitoringStore!.LoadCapabilities(current.Id));
+        });
+        profile = loaded.Profile!;
+        secrets = loaded.Secrets!;
+        capabilities = loaded.Capabilities;
+        return loaded.Success;
     }
 
     private bool TryGetCurrentMonitoringProfile(
         MonitoringWorkItem workItem,
         out ManagedDeviceProfile profile)
     {
-        lock (_deviceLifecycleSync)
+        var current = _deviceLifecycle.ReadConsistent(() =>
         {
-            return IsCurrentMonitoringWorkItemUnsafe(workItem, out profile);
-        }
+            var success = IsCurrentMonitoringWorkItemUnsafe(
+                workItem,
+                out var capturedProfile);
+            return (Success: success, Profile: capturedProfile);
+        });
+        profile = current.Profile;
+        return current.Success;
     }
 
-    private bool IsCurrentMonitoringWorkItem(MonitoringWorkItem workItem)
-    {
-        lock (_deviceLifecycleSync)
-        {
-            return IsCurrentMonitoringWorkItemUnsafe(workItem, out _);
-        }
-    }
+    private bool IsCurrentMonitoringWorkItem(MonitoringWorkItem workItem) =>
+        _deviceLifecycle.ReadConsistent(
+            () => IsCurrentMonitoringWorkItemUnsafe(workItem, out _));
 
     private bool IsCurrentMonitoringWorkItemUnsafe(
         MonitoringWorkItem workItem,
         out ManagedDeviceProfile profile)
     {
         profile = null!;
-        if (workItem.ClientEpoch != _monitoringClientEpoch
-            || !_deviceLifecycleRevisions.TryGetValue(workItem.Profile.Id, out var revision)
-            || revision != workItem.Revision)
+        if (workItem.ClientEpoch != _agentConnectionCoordinator.Generation
+            || !_deviceLifecycle.IsCurrent(workItem.Profile.Id, workItem.Revision))
         {
             return false;
         }
@@ -3682,30 +3650,30 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
         Func<ManagedDeviceProfile, T> persist,
         out T result)
     {
-        lock (_deviceLifecycleSync)
+        var persisted = _deviceLifecycle.UpdateConsistent(() =>
         {
             if (!IsCurrentMonitoringWorkItemUnsafe(workItem, out var current))
             {
-                result = default!;
-                return false;
+                return (Success: false, Result: default(T)!);
             }
 
-            result = persist(current);
-            return true;
-        }
+            return (Success: true, Result: persist(current));
+        });
+        result = persisted.Result;
+        return persisted.Success;
     }
 
     private bool TryBlockMonitoringForCredentialFailure(MonitoringWorkItem workItem)
     {
-        lock (_deviceLifecycleSync)
+        return _deviceLifecycle.UpdateConsistent(() =>
         {
             if (!IsCurrentMonitoringWorkItemUnsafe(workItem, out _)) return false;
 
             // Block in memory before attempting either persistent write. This
             // prevents repeated bad credentials even when the disk is read-only.
-            BlockMonitoringForCredentialFailure(workItem.Profile.Id);
+            _deviceLifecycle.BlockForCredentialFailure(workItem.Profile.Id);
             return true;
-        }
+        });
     }
 
     private bool TryMarkConnectionTestFailure(
@@ -3713,20 +3681,21 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
         string code,
         out DeviceLifecycleToken token)
     {
-        lock (_deviceLifecycleSync)
+        var marked = _deviceLifecycle.UpdateConsistent(() =>
         {
             if (!IsCurrentMonitoringWorkItemUnsafe(workItem, out _))
             {
-                token = workItem.Token;
-                return false;
+                return (Success: false, Token: workItem.Token);
             }
 
             var updated = _deviceStore!.MarkConnectionTest(workItem.Profile.Id, false, code);
-            token = new DeviceLifecycleToken(
+            var updatedToken = new DeviceLifecycleToken(
                 updated.Id,
                 AdvanceDeviceLifecycleRevisionUnsafe(updated.Id));
-            return true;
-        }
+            return (Success: true, Token: updatedToken);
+        });
+        token = marked.Token;
+        return marked.Success;
     }
 
     private Task ApplyMonitoringResultToUiAsync(
@@ -3735,12 +3704,12 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
         bool updatePresentation) =>
         RunOnUiAsync(() =>
         {
-            lock (_deviceLifecycleSync)
+            _deviceLifecycle.UpdateConsistent(() =>
             {
                 if (!IsCurrentMonitoringWorkItemUnsafe(workItem, out _)) return;
                 if (events.Count > 0) ApplyEventsCore(events, true);
                 if (updatePresentation) UpdateManagedDevicePresentation(workItem.Profile.Id);
-            }
+            });
         });
 
     private Task RunOnUiForDeviceRevisionAsync(
@@ -3748,17 +3717,17 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
         Action action) =>
         RunOnUiAsync(() =>
         {
-            lock (_deviceLifecycleSync)
+            _deviceLifecycle.ReadConsistent(() =>
             {
-                if (!IsCurrentDeviceRevisionUnsafe(token)) return;
+                if (!IsCurrentDeviceRevisionUnsafe(token)) return false;
                 action();
-            }
+                return true;
+            });
         });
 
     private bool IsCurrentDeviceRevisionUnsafe(DeviceLifecycleToken token)
     {
-        if (!_deviceLifecycleRevisions.TryGetValue(token.DeviceId, out var revision)
-            || revision != token.Revision)
+        if (!_deviceLifecycle.IsCurrent(token))
         {
             return false;
         }
@@ -3769,16 +3738,20 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
 
     private long GetOrCreateDeviceLifecycleRevisionUnsafe(string id)
     {
-        if (_deviceLifecycleRevisions.TryGetValue(id, out var revision)) return revision;
-        return AdvanceDeviceLifecycleRevisionUnsafe(id);
+        return _deviceLifecycle.GetOrCreateRevision(id);
     }
 
     private long AdvanceDeviceLifecycleRevisionUnsafe(string id)
     {
-        var revision = ++_nextDeviceLifecycleRevision;
-        _deviceLifecycleRevisions[id] = revision;
-        _automaticCollectionFreshness.Remove(id);
+        var revision = _deviceLifecycle.AdvanceRevision(id);
+        ResetDeviceLifecycleProjectionUnsafe(id);
         return revision;
+    }
+
+    private void ResetDeviceLifecycleProjectionUnsafe(string id)
+    {
+        _automaticCollectionFreshness.Remove(id);
+        _monitoringCircuitBreaker.Remove(id);
     }
 
     private void SortDevicesByPriority()
@@ -3807,18 +3780,6 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
         _ => 5
     };
 
-    private SemaphoreSlim GetDeviceOperationGate(string host)
-    {
-        var normalizedHost = host.Trim();
-        lock (_deviceOperationGateSync)
-        {
-            if (_deviceOperationGates.TryGetValue(normalizedHost, out var existing)) return existing;
-            var created = new SemaphoreSlim(1, 1);
-            _deviceOperationGates[normalizedHost] = created;
-            return created;
-        }
-    }
-
     private static bool IsTransientBusy(string code) =>
         code is "AGENT_BUSY" or "DEVICE_BUSY" or "QUERY_RATE_LIMITED";
 
@@ -3832,33 +3793,20 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
          && !code.Equals("AGENT_BUSY", StringComparison.Ordinal))
         || code.Equals("TLS_IDENTITY_INVALID", StringComparison.Ordinal);
 
+    private static bool IsCircuitBreakerAvailabilityFailure(string code) => code is
+        "AGENT_CONNECTION_REFUSED" or
+        "AGENT_TIMEOUT" or
+        "AGENT_UNREACHABLE" or
+        "TCP_TIMEOUT" or
+        "TELNET_SESSION_CLOSED" or
+        "SESSION_CLOSED";
+
     private static bool IsMonitoringPersistenceFailure(Exception exception) =>
         exception is IOException
         or UnauthorizedAccessException;
 
     internal bool IsMonitoringCredentialBlocked(string id)
-    {
-        lock (_monitoringCredentialBlockSync)
-        {
-            return _monitoringCredentialBlocks.Contains(id);
-        }
-    }
-
-    private void BlockMonitoringForCredentialFailure(string id)
-    {
-        lock (_monitoringCredentialBlockSync)
-        {
-            _monitoringCredentialBlocks.Add(id);
-        }
-    }
-
-    private void ClearMonitoringCredentialBlock(string id)
-    {
-        lock (_monitoringCredentialBlockSync)
-        {
-            _monitoringCredentialBlocks.Remove(id);
-        }
-    }
+        => _deviceLifecycle.IsCredentialBlocked(id);
 
     private async Task ReconnectCatchupAsync()
     {
@@ -4059,14 +4007,17 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
         var errorCode = SafeMessage(exception);
         if (sourceClient is not null && !ReferenceEquals(sourceClient, _client))
         {
+            ViewerRuntimeDiagnostics.RecordStaleResultDiscarded();
             return;
         }
         await RunOnUiAsync(() =>
         {
             if (sourceClient is not null && !ReferenceEquals(sourceClient, _client))
             {
+                ViewerRuntimeDiagnostics.RecordStaleResultDiscarded();
                 return;
             }
+            ViewerRuntimeDiagnostics.RecordAgentConnectionFailure();
             TryWriteConnectionDiagnostic(
                 channel == AgentChannel.Http ? "agent-http" : "agent-realtime",
                 errorCode,
@@ -4156,9 +4107,15 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
                 .WaitAsync(MonitoringFailureReportTimeout, _lifetime.Token)
                 .ConfigureAwait(false);
         }
-        catch
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested)
         {
-            // A closed or failing UI context must not terminate shutdown.
+            return;
+        }
+        catch (Exception exception)
+        {
+            Trace.TraceWarning(
+                "Managed device failure presentation raised {0}.",
+                exception.GetType().Name);
         }
     }
 
@@ -4214,45 +4171,9 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
 
     private void UpdateCombinedConnectionState()
     {
-        AgentConnectionState combined;
-        if (HttpConnectionState == AgentConnectionState.NeedsConnection
-            || RealtimeConnectionState == AgentConnectionState.NeedsConnection)
-        {
-            combined = AgentConnectionState.NeedsConnection;
-        }
-        else if (HttpConnectionState == AgentConnectionState.Demo
-                 || RealtimeConnectionState == AgentConnectionState.Demo)
-        {
-            combined = AgentConnectionState.Demo;
-        }
-        else if (HttpConnectionState == AgentConnectionState.Offline)
-        {
-            combined = RealtimeConnectionState == AgentConnectionState.Connected && _hasSnapshot
-                ? AgentConnectionState.Stale
-                : AgentConnectionState.Offline;
-        }
-        else if (HttpConnectionState == AgentConnectionState.Stale
-                 || RealtimeConnectionState == AgentConnectionState.Offline)
-        {
-            combined = AgentConnectionState.Stale;
-        }
-        else if (RealtimeConnectionState == AgentConnectionState.Reconnecting)
-        {
-            combined = AgentConnectionState.Reconnecting;
-        }
-        else if (RealtimeConnectionState == AgentConnectionState.Connecting)
-        {
-            combined = _initialized ? AgentConnectionState.Reconnecting : AgentConnectionState.Connecting;
-        }
-        else if (HttpConnectionState == AgentConnectionState.Connecting)
-        {
-            combined = AgentConnectionState.Connecting;
-        }
-        else
-        {
-            combined = AgentConnectionState.Connected;
-        }
-        ConnectionState = combined;
+        ConnectionState = _agentConnectionCoordinator.GetCombinedState(
+            _initialized,
+            _hasSnapshot);
     }
 
     private void NotifySummaryChanged()
@@ -4304,10 +4225,13 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
         {
             RunOnUi(() => OperationMessage = message);
         }
-        catch
+        catch (Exception exception)
         {
             // UI reporting is best effort. The stable diagnostic code has
             // already been recorded and monitoring must continue.
+            Trace.TraceWarning(
+                "UI operation reporting raised {0}.",
+                exception.GetType().Name);
         }
     }
 
@@ -4317,9 +4241,12 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
         {
             _writeDiagnostic(stage, errorCode);
         }
-        catch
+        catch (Exception exception)
         {
             // Diagnostics must never stop monitoring or shutdown.
+            Trace.TraceWarning(
+                "Viewer diagnostic writer raised {0}.",
+                exception.GetType().Name);
         }
     }
 
@@ -4332,9 +4259,12 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
         {
             _writeConnectionDiagnostic(stage, errorCode, transition);
         }
-        catch
+        catch (Exception exception)
         {
             // Connection diagnostics must never affect transport recovery.
+            Trace.TraceWarning(
+                "Viewer connection diagnostic writer raised {0}.",
+                exception.GetType().Name);
         }
     }
 
@@ -4409,18 +4339,28 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
                         return;
                     }
 
-                    lock (_deviceLifecycleSync)
+                    _deviceLifecycle.ReadConsistent(() =>
                     {
-                        if (!IsCurrentMonitoringWorkItemUnsafe(workItem, out _)) return;
+                        if (!IsCurrentMonitoringWorkItemUnsafe(workItem, out _))
+                        {
+                            return false;
+                        }
                         ApplyFailureMessage();
-                    }
+                        return true;
+                    });
                 })
                 .WaitAsync(MonitoringFailureReportTimeout, _lifetime.Token)
                 .ConfigureAwait(false);
         }
-        catch
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested)
         {
-            // A closed or failing UI context must not terminate monitoring.
+            return;
+        }
+        catch (Exception exception)
+        {
+            Trace.TraceWarning(
+                "Monitoring failure presentation raised {0}.",
+                exception.GetType().Name);
         }
     }
 
@@ -4476,7 +4416,10 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
                         SettingsWriteFailureOperationMessage(settingsSaveErrorCode));
                 }
             }
-            catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { }
+            catch (OperationCanceledException) when (_lifetime.IsCancellationRequested)
+            {
+                return;
+            }
             catch
             {
                 TryWriteDiagnostic("settings-save-background", "VIEWER_UNEXPECTED_ERROR");
@@ -4608,46 +4551,63 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
     private static bool IsLogEvent(EventViewModel item) =>
         item.Kind.Contains("로그", StringComparison.Ordinal) || item.Kind.Contains("log", StringComparison.OrdinalIgnoreCase);
 
-    public async ValueTask DisposeAsync()
+    public ValueTask DisposeAsync()
     {
-        if (_disposed) return;
+        lock (_disposeSync)
+        {
+            _disposeTask ??= DisposeCoreAsync();
+            return new ValueTask(_disposeTask);
+        }
+    }
+
+    private async Task DisposeCoreAsync()
+    {
         _disposed = true;
         _allowLiveAlerts = false;
         _lifetime.Cancel();
         CancelActiveReadOnlyQuery();
+        await _manualQueryService.DisposeAsync().ConfigureAwait(false);
         Interlocked.Increment(ref _settingsGeneration);
         UnsubscribeClient(_client);
+
+        try
+        {
+            await _monitoringCoordinator.DisposeAsync().ConfigureAwait(false);
+        }
+        catch
+        {
+            TryWriteDiagnostic("monitoring-cycle", "VIEWER_MONITOR_CYCLE_FAILED");
+        }
 
         var initializeQuiesced = false;
         var syncQuiesced = false;
         var snapshotQuiesced = _snapshotLoop is null;
-        var monitorLoopQuiesced = _monitorLoop is null;
-        var monitorGateQuiesced = false;
         try { initializeQuiesced = await _initializeGate.WaitAsync(TimeSpan.FromSeconds(1)).ConfigureAwait(false); }
-        catch (ObjectDisposedException) { }
+        catch (ObjectDisposedException) { initializeQuiesced = false; }
         try { syncQuiesced = await _syncGate.WaitAsync(TimeSpan.FromSeconds(1)).ConfigureAwait(false); }
-        catch (ObjectDisposedException) { }
+        catch (ObjectDisposedException) { syncQuiesced = false; }
 
         if (_snapshotLoop is not null)
         {
             try { await _snapshotLoop.WaitAsync(TimeSpan.FromSeconds(1)).ConfigureAwait(false); }
-            catch (Exception exception) when (exception is OperationCanceledException or TimeoutException) { }
+            catch (Exception exception) when (exception is OperationCanceledException or TimeoutException)
+            {
+                snapshotQuiesced = _snapshotLoop.IsCompleted;
+            }
             snapshotQuiesced = _snapshotLoop.IsCompleted;
-        }
-        if (_monitorLoop is not null)
-        {
-            try { await _monitorLoop.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false); }
-            catch (Exception exception) when (exception is OperationCanceledException or TimeoutException) { }
-            monitorLoopQuiesced = _monitorLoop.IsCompleted;
-        }
-        if (monitorLoopQuiesced)
-        {
-            try { monitorGateQuiesced = await _monitorGate.WaitAsync(TimeSpan.FromSeconds(1)).ConfigureAwait(false); }
-            catch (ObjectDisposedException) { }
         }
         if (Volatile.Read(ref _monitoringSessionStarted))
         {
-            try { _monitoringStore?.EndSession(); } catch { }
+            try
+            {
+                _monitoringStore?.EndSession();
+            }
+            catch
+            {
+                TryWriteDiagnostic(
+                    "monitoring-cycle",
+                    "VIEWER_MONITOR_STATE_WRITE_FAILED");
+            }
         }
 
         await DisposeClientBestEffortAsync(_client).ConfigureAwait(false);
@@ -4661,16 +4621,9 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
 
         if (initializeQuiesced) _initializeGate.Dispose();
         if (syncQuiesced) _syncGate.Dispose();
-        if (monitorGateQuiesced)
-        {
-            _monitorGate.Dispose();
-            _monitorConcurrency.Dispose();
-        }
         if (initializeQuiesced
             && syncQuiesced
-            && snapshotQuiesced
-            && monitorLoopQuiesced
-            && monitorGateQuiesced)
+            && snapshotQuiesced)
         {
             _lifetime.Dispose();
         }
