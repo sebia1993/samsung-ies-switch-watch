@@ -210,6 +210,9 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncDisposable
             initialClient is UnavailableAgentClient
                 ? AgentConnectionState.NeedsConnection
                 : AgentConnectionState.Connecting);
+        _connectionState = _agentConnectionCoordinator.GetCombinedState(
+            initialized: false,
+            hasSnapshot: false);
         SubscribeClient(_client);
         _monitoringCircuitBreaker = new DeviceCircuitBreaker(monitoringTimeProvider);
         _monitoringCoordinator = new MonitoringCoordinator(

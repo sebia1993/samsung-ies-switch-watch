@@ -93,6 +93,53 @@ public sealed class MonitoringCoordinatorTests
     }
 
     [Fact]
+    public async Task ImmediateCollection_WaitsForActiveCycleAndRunsFreshWork()
+    {
+        var firstEntered = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseFirst = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var captureCount = 0;
+        var processCount = 0;
+        var client = new StubClient();
+        var coordinator = new MonitoringCoordinator(
+            _ =>
+            {
+                Interlocked.Increment(ref captureCount);
+                return Task.FromResult<IReadOnlyList<MonitoringWorkItem>>(
+                    [Work("switch-a", client)]);
+            },
+            async (_, cancellationToken) =>
+            {
+                if (Interlocked.Increment(ref processCount) == 1)
+                {
+                    firstEntered.TrySetResult();
+                    await releaseFirst.Task.WaitAsync(cancellationToken);
+                }
+            },
+            interval: TimeSpan.FromHours(1),
+            workerCount: 1,
+            capacity: 4);
+
+        await coordinator.StartAsync();
+        await firstEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        var immediate = coordinator.RequestImmediateCollectionAsync();
+        await Task.Delay(25);
+        Assert.False(immediate.IsCompleted);
+        Assert.Equal(1, Volatile.Read(ref captureCount));
+        Assert.Equal(1, Volatile.Read(ref processCount));
+
+        releaseFirst.TrySetResult();
+        var result = await immediate.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.True(result.Succeeded);
+        Assert.Equal(2, Volatile.Read(ref captureCount));
+        Assert.Equal(2, Volatile.Read(ref processCount));
+        await coordinator.DisposeAsync();
+    }
+
+    [Fact]
     public async Task BoundedQueue_DropsOldestAndNeverGrowsPastCapacity()
     {
         var release = new TaskCompletionSource(

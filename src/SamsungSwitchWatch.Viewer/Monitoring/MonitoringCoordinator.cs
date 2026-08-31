@@ -18,6 +18,7 @@ internal sealed class MonitoringCoordinator : IAsyncDisposable
     private readonly int _workerCount;
     private readonly int _capacity;
     private readonly SemaphoreSlim _lifecycleGate = new(1, 1);
+    private readonly SemaphoreSlim _cycleGate = new(1, 1);
     private readonly object _queueSync = new();
     private readonly Dictionary<string, QueueEntry> _inFlightByDeviceId =
         new(StringComparer.Ordinal);
@@ -131,7 +132,20 @@ internal sealed class MonitoringCoordinator : IAsyncDisposable
             throw new InvalidOperationException("Monitoring is not running.");
         }
 
-        return await EnqueueCycleAsync(deviceId, cancellationToken).ConfigureAwait(false);
+        CancellationToken runCancellation;
+        lock (_queueSync)
+        {
+            if (!_accepting || _runCancellation is null)
+            {
+                throw new InvalidOperationException("Monitoring is not accepting work.");
+            }
+            runCancellation = _runCancellation.Token;
+        }
+
+        using var linkedCancellation = CancellationTokenSource.CreateLinkedTokenSource(
+            cancellationToken,
+            runCancellation);
+        return await RunCycleAsync(deviceId, linkedCancellation.Token).ConfigureAwait(false);
     }
 
     public MonitoringCoordinatorStatus GetStatus() =>
@@ -222,11 +236,11 @@ internal sealed class MonitoringCoordinator : IAsyncDisposable
     {
         try
         {
-            await EnqueueCycleAsync(null, cancellationToken).ConfigureAwait(false);
+            await RunCycleAsync(null, cancellationToken).ConfigureAwait(false);
             using var timer = new PeriodicTimer(_interval, _timeProvider);
             while (await timer.WaitForNextTickAsync(cancellationToken).ConfigureAwait(false))
             {
-                await EnqueueCycleAsync(null, cancellationToken).ConfigureAwait(false);
+                await RunCycleAsync(null, cancellationToken).ConfigureAwait(false);
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -235,6 +249,22 @@ internal sealed class MonitoringCoordinator : IAsyncDisposable
         catch (Exception exception)
         {
             ReportUnhandled(exception);
+        }
+    }
+
+    private async Task<MonitoringCycleResult> RunCycleAsync(
+        string? deviceId,
+        CancellationToken cancellationToken)
+    {
+        await _cycleGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return await EnqueueCycleAsync(deviceId, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            _cycleGate.Release();
         }
     }
 
