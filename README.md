@@ -6,6 +6,12 @@ Samsung iES 스위치의 반복 점검을 한 화면에서 수행하고 변화�
 
 현재 공개 버전은 **`v0.13.0-poc`**입니다. 이 저장소는 실제 회사망 성과를 꾸며내지 않습니다. 공개된 검증 결과는 합성 Telnet 서버, 비식별 fixture, Windows CI와 패키지 smoke에 한정되며 실제 모델·펌웨어 검증은 별도 항목으로 표시합니다.
 
+## 채용 검토를 위한 읽기 순서
+
+1. 아래 시스템 구조에서 **Viewer의 운영 상태와 Agent의 장비 접근 권한**을 구분합니다.
+2. [설계 사례와 코드·테스트 근거](docs/PORTFOLIO_CASE_STUDY_KO.md)에서 명령 검증, 제한적 재연결, 감시 queue와 설치 복구를 검토합니다.
+3. 같은 문서의 장비 없는 재현 절차와 [Windows CI 실행](https://github.com/sebia1993/samsung-ies-switch-watch/actions/workflows/windows-ci.yml)을 확인합니다. 실제 Samsung 모델·펌웨어 검증은 별도입니다.
+
 ## 프로젝트가 해결하는 문제
 
 운영자는 여러 스위치에 반복 로그인해 같은 상태 명령을 실행하고 이전 결과와 비교해야 합니다. 이 프로젝트는 그 과정을 다음처럼 분리했습니다.
