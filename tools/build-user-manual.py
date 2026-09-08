@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the Korean Samsung Switch Watch v0.12 operator manual.
+"""Build the Korean Samsung Switch Watch v0.13 operator manual.
 
 The manual is intentionally generated from sanitized, deterministic WPF
 screenshots. It never needs a company switch, a real IP address, or a secret.
@@ -21,7 +21,7 @@ from docx.shared import Inches, Pt, RGBColor
 
 
 VERSION = "0.13.0-poc"
-DOCUMENT_DATE = "2026-08-24"
+DOCUMENT_DATE = "2026-09-08"
 FONT = "Noto Sans KR"
 MONO = "Consolas"
 
@@ -703,7 +703,7 @@ def build_manual(output_path: Path, images_dir: Path):
         doc,
         [
             "원격 PC에서 Agent ZIP을 풀고 SamsungSwitchWatch.Agent.Setup.exe를 실행한 뒤 UAC를 승인합니다.",
-            "Agent Setup에는 Viewer IP나 관리망 CIDR을 입력하지 않습니다. 설치 내용을 확인하고 '설치 / 업데이트'를 누릅니다.",
+            "Agent Setup에서 승인된 스위치 관리망 CIDR(한 줄에 하나, 최대 32개)을 확인한 뒤 '설치 / 업데이트'를 누릅니다.",
             "설치가 끝나면 '페어링 코드 보기'를 누르고 SSW1 코드를 Viewer 연결 설정에 직접 입력합니다.",
             "Viewer PC에서 Viewer ZIP을 풀고 SamsungSwitchWatch.Viewer.Setup.exe로 사용자 전용 설치를 진행합니다.",
             "Viewer의 Agent 연결에서 Agent PC 주소와 페어링 코드를 입력하고 '연결 확인 및 저장'을 누릅니다.",
@@ -786,7 +786,7 @@ Viewer PC                 Agent PC                    Samsung Switch
         [
             "Agent 릴리스 ZIP을 원격 PC의 임시 폴더에 압축 해제합니다.",
             "SamsungSwitchWatch.Agent.Setup.exe를 실행하고 UAC 관리자 승인을 합니다.",
-            "설치 내용을 확인합니다. Viewer와 스위치 허용 범위는 RFC1918 사설 대역으로 자동 적용되므로 별도 입력이 없습니다.",
+            "설치 내용과 허용할 스위치 관리망 CIDR을 확인합니다. 기본 RFC1918 범위를 승인된 관리 VLAN으로 좁히고 canonical 사설 CIDR을 한 줄에 하나씩 입력합니다.",
             "Setup이 중단된 이전 설치 기록을 발견하면 설치/업데이트가 잠깁니다. '이전 상태 복구'를 먼저 누르고 새 작업 기록 검사까지 완료됐는지 확인합니다.",
             "'설치 / 업데이트'를 누르면 자동 점검과 설치가 이어집니다. 완료 또는 '설치 완료 · 연결 확인 필요' 경고를 확인합니다.",
         ],
@@ -796,15 +796,15 @@ Viewer PC                 Agent PC                    Samsung Switch
         images_dir / "00-agent-setup.png",
         width=4.5,
         title="Agent Setup 화면",
-        alt_text="Viewer IP와 관리망 CIDR 입력 없이 설치 내용과 설치 버튼을 보여 주는 Agent Setup 화면",
-        caption="그림 1. 별도 네트워크 입력이 없는 Agent Setup 화면",
+        alt_text="허용할 스위치 관리망 CIDR과 설치·페어링 버튼을 보여 주는 Agent Setup 합성 화면",
+        caption="그림 1. 관리망 CIDR을 확인하는 Agent Setup 합성 화면",
     )
     add_callout(
         doc,
-        "입력 없이 설치",
-        "Setup은 제품 파일, Windows 서비스와 방화벽 규칙을 준비합니다. Viewer IP와 스위치 CIDR은 "
-        "요구하지 않습니다. Agent는 10/8, 172.16/12, 192.168/16에서 들어오는 Viewer 요청과 "
-        "같은 사설 대역의 Telnet/23 장비만 자동으로 허용합니다.",
+        "스위치 관리망을 확인한 뒤 설치",
+        "Setup은 제품 파일, Windows 서비스와 방화벽 규칙을 준비합니다. Viewer의 인바운드 경계와 "
+        "스위치 대상 allowlist를 구분하세요. 스위치 관리망은 1~32개의 canonical RFC1918 CIDR로 "
+        "입력하며, 빈 값·공인망·IPv6·host bit가 포함된 범위는 거부됩니다. 이 화면의 CIDR은 합성 예시입니다.",
         "info",
     )
     add_image(
@@ -1015,10 +1015,10 @@ Viewer 허용 범위      : 10/8, 172.16/12, 192.168/16
     )
     add_callout(
         doc,
-        "네트워크 정책은 자동 적용",
-        "Viewer PC 주소나 스위치 관리망이 바뀌어도 CIDR을 다시 입력하지 않습니다. Viewer와 "
-        "스위치가 10/8, 172.16/12 또는 192.168/16에 있고 Agent까지 라우팅 가능한지 확인합니다. "
-        "공인 주소와 그 밖의 특수 주소는 허용되지 않습니다.",
+        "관리망 변경 시 허용 범위를 다시 확인",
+        "스위치 관리망이 바뀌면 Agent Setup의 허용 대상 CIDR과 라우팅을 함께 확인합니다. "
+        "빈 기존 AllowedTargetCidrs는 업그레이드 호환을 위해 RFC1918 세 범위로 해석되므로 "
+        "필요한 관리 VLAN만 허용하도록 범위를 좁히세요. Viewer는 별도로 SSW1 재페어링 여부를 확인합니다.",
         "info",
     )
     add_unnumbered_heading(

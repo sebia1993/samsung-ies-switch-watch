@@ -133,10 +133,11 @@ internal static class Program
                 new AgentSetupWindow(
                             setupDiagnostics,
                             setupDeployment,
-                            diagnosticsOnly: false)
+                            diagnosticsOnly: false,
+                            initialTargetCidrs: ["10.20.30.0/24"])
                        {
                             Width = 760,
-                            Height = 700,
+                            Height = 900,
                            ShowInTaskbar = previewAgentSetup,
                            WindowStartupLocation = WindowStartupLocation.Manual,
                            Left = 48,
@@ -192,7 +193,7 @@ internal static class Program
                 Capture(
                     setupLifetime.Window,
                     Path.Combine(outputDirectory, "00-agent-setup.png"),
-                    "Viewer IP와 관리망 CIDR 입력 없이 Agent 서비스 설치 완료와 연결 확인 경고를 보여 주는 Agent Setup 화면");
+                    "합성 관리망 CIDR과 페어링 코드 보기 버튼, 설치 완료 및 연결 확인 경고를 보여 주는 Agent Setup 화면");
 
                 setupLifetime.Window.Height = 900;
                 resultItems.ItemsSource = new[]
@@ -388,7 +389,7 @@ internal static class Program
                            new ManualSuccessfulAgentConnectionProbe())
                        {
                             Width = 650,
-                            Height = 820,
+                            Height = 1050,
                             ShowInTaskbar = false,
                             WindowStartupLocation = WindowStartupLocation.Manual,
                            Left = 80,
@@ -396,6 +397,7 @@ internal static class Program
                        }))
             {
                 ShowAndLayout(connectionLifetime.Window);
+                SetSyntheticPairingCode(connectionLifetime.Window);
                 var saveButton = (Button)connectionLifetime.Window.FindName(
                     "SaveButton");
                 var progressPanel = (Border)connectionLifetime.Window.FindName(
@@ -413,7 +415,7 @@ internal static class Program
                 Capture(
                     connectionLifetime.Window,
                     Path.Combine(outputDirectory, "02-agent-connection.png"),
-                    "Agent PC 주소 하나만 입력하고 HTTPS 18443, Agent API와 호환 버전을 자동 확인한 연결 설정 창");
+                    "합성 SSW1 코드를 마스킹하여 입력하고 SPKI 고정 및 API v5 인증 흐름을 표시하는 연결 설정 창");
             }
 
             using (var connectionFailureLifetime = new WindowLifetime(
@@ -423,7 +425,7 @@ internal static class Program
                            new ManualFailingAgentConnectionProbe())
                        {
                            Width = 650,
-                           Height = 820,
+                           Height = 1050,
                            ShowInTaskbar = false,
                            WindowStartupLocation = WindowStartupLocation.Manual,
                            Left = 80,
@@ -431,6 +433,7 @@ internal static class Program
                        }))
             {
                 ShowAndLayout(connectionFailureLifetime.Window);
+                SetSyntheticPairingCode(connectionFailureLifetime.Window);
                 var saveButton = (Button)connectionFailureLifetime.Window.FindName(
                     "SaveButton");
                 var supportCodePanel = (Border)connectionFailureLifetime.Window.FindName(
@@ -606,6 +609,14 @@ internal static class Program
         }
     }
 
+    private static void SetSyntheticPairingCode(Window window)
+    {
+        // Fixed documentation-only bytes. Never connect to an Agent or display/log the code.
+        var payload = Enumerable.Range(1, 64).Select(value => (byte)value).ToArray();
+        var encoded = Convert.ToBase64String(payload).TrimEnd('=').Replace('+', '-').Replace('/', '_');
+        ((PasswordBox)window.FindName("PairingCodePasswordBox")).Password = "SSW1." + encoded;
+    }
+
     private sealed class ManualSuccessfulAgentConnectionProbe : IAgentConnectionProbe
     {
         public Task<AgentConnectionProbeResult> ProbeAsync(
@@ -630,7 +641,7 @@ internal static class Program
             }
 
             var identity = new AgentIdentityDto(
-                4,
+                5,
                 "manual-agent",
                 "manual-instance",
                 new string('A', 64),
