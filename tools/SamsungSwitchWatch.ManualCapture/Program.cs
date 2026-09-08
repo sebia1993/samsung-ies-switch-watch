@@ -40,7 +40,7 @@ internal static class Program
     ];
 
     private static readonly DateTimeOffset DemoNow =
-        new(2026, 7, 23, 10, 24, 18, TimeSpan.FromHours(9));
+        DateTimeOffset.Now.AddMinutes(-2);
 
     [STAThread]
     private static int Main(string[] args)
