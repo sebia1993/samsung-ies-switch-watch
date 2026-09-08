@@ -124,7 +124,7 @@
       "samsungswitchwatch.viewer": {
         "type": "Project",
         "dependencies": {
-          "Microsoft.AspNetCore.SignalR.Client": "10.0.11",
+          "Microsoft.AspNetCore.SignalR.Client": "[10.0.11, )",
           "SamsungSwitchWatch.Core": "[0.13.0-poc, )"
         }
       },
