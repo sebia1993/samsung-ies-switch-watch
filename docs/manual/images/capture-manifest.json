@@ -1,0 +1,55 @@
+{
+  "source_sha": "f62dc891ef5793e61d82c27cd5c33a9892a8656a",
+  "os": "Microsoft Windows 10.0.26100",
+  "product_version": "0.13.0-poc",
+  "tool": "tools/SamsungSwitchWatch.ManualCapture/Program.cs",
+  "synthetic": true,
+  "device_connections": false,
+  "screenshots": [
+    {
+      "sha256": "7808f8347097d32f6f8a9501cb8c5e35d764bd387d2aef7346510c37a064a339",
+      "file": "00-agent-setup-recovery-failed.png"
+    },
+    {
+      "sha256": "6b68f3ad3b1a83d54dc4bdab328f24bd61905c43bc680d39d443b95567e3c9de",
+      "file": "00-agent-setup.png"
+    },
+    {
+      "sha256": "9727f8a6695ae26af03743426c758090dc2b5e323496043671f21ac404947777",
+      "file": "00-viewer-setup-failed.png"
+    },
+    {
+      "sha256": "722fe741743c7245d5564eb537e10c19f1b13b8be2f52a749453345c9ed09907",
+      "file": "00-viewer-setup.png"
+    },
+    {
+      "sha256": "52b0ac839fd29d9696f13da17815ea6f0013c777ac2c7f652697807ee0f21b90",
+      "file": "01-dashboard.png"
+    },
+    {
+      "sha256": "7490c06ac89b2140944456e1213124c123b07f9094fd0e2f73ac8121ab3f9e64",
+      "file": "02-agent-connection-failed.png"
+    },
+    {
+      "sha256": "1da2e16818434a63af8f3dbce785f3244e13717144584ea9a6a0852059c25427",
+      "file": "02-agent-connection.png"
+    },
+    {
+      "sha256": "a4a5c84a7b6d5b892fdb0beb7d4481af4ff866360a61ee3c35b5c04eb51ea9af",
+      "file": "03-device-management.png"
+    },
+    {
+      "sha256": "bd29b4ef6370edc710e17b0157dc439d759b0fc51040a83c2f5dc77b4b53050b",
+      "file": "04-command-output.png"
+    },
+    {
+      "sha256": "f68a18722c8389be3c8e801ffc7faa754e329cb553dd0cb9bd97c5ce68225dfb",
+      "file": "05-mini-window.png"
+    },
+    {
+      "sha256": "7ef020d0c66febe396d90d2adb966c21354c9ad6bb58b95420fb0200cf71ed09",
+      "file": "06-alert-popup.png"
+    }
+  ],
+  "run_url": "https://github.com/sebia1993/samsung-ies-switch-watch/actions/runs/34176523225"
+}

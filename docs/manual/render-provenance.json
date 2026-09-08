@@ -1,0 +1,13 @@
+{
+  "capture_source_sha": "f62dc891ef5793e61d82c27cd5c33a9892a8656a",
+  "generator": "tools/build-user-manual.py",
+  "generator_sha256": "016dd1fcfea89d5763e0bbaa5eb9428aa734099240b3b9b197007aab5dd1cae6",
+  "pdf_page_count": 33,
+  "docx_image_count": 11,
+  "font": "Noto Sans CJK KR (Noto Sans KR substitution)",
+  "render": "Bundled headless LibreOffice through documents render_docx.py; macOS; every rendered page visually inspected",
+  "artifacts": {
+    "SamsungSwitchWatch_User_Manual_KO.docx": "061bd112474c84173b1969637b2c4c81003ed277debce088fa0ca28184913145",
+    "SamsungSwitchWatch_User_Manual_KO.pdf": "283fd5fd06fc75d56830335707e1c54e6f9e0757647481ec03ede07da4a9913e"
+  }
+}

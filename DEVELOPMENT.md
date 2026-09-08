@@ -156,7 +156,7 @@ CI의 candidate artifact는 업로드 후 다시 다운로드해 SHA/manifest/pa
 운영 흐름이 변경되면 사용자 매뉴얼 생성 입력도 함께 갱신합니다.
 
 ```powershell
-python tools\build-user-manual.py
+python tools\build-user-manual.py --output docs\SamsungSwitchWatch_User_Manual_KO.docx --images docs\manual\images
 ```
 
 Release ZIP에는 생성된 사용자용 PDF를 포함하며 editable source는 저장소 개발 자료로 관리합니다.
@@ -165,7 +165,7 @@ Release ZIP에는 생성된 사용자용 PDF를 포함하며 editable source는 
 
 `tools/SamsungSwitchWatch.ManualCapture`는 실제 WPF 화면을 Demo 데이터로 렌더링합니다. 문서 화면에는 RFC 5737 주소와 합성 상태만 사용합니다.
 
-스크린샷은 코드에서 실제 UI를 렌더링한 것임을 명확히 하며, 실제 회사 화면처럼 오해할 수 있는 데이터를 넣지 않습니다.
+스크린샷은 코드에서 실제 UI를 렌더링한 것임을 명확히 하며, 실제 회사 화면처럼 오해할 수 있는 데이터를 넣지 않습니다. 캡처 명령과 source SHA·Windows 실행 근거는 [화면 안내](docs/USAGE_SCREENSHOTS_KO.md)에 기록합니다.
 
 ## Release 원칙
 

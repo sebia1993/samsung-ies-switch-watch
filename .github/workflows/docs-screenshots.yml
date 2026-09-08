@@ -1,0 +1,53 @@
+name: Documentation screenshots
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["codex/usage-evidence-20260908"]
+    paths:
+      - "tools/SamsungSwitchWatch.ManualCapture/**"
+      - "src/**"
+      - ".github/workflows/docs-screenshots.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  capture:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: 10.0.302
+      - name: Render actual WPF windows with isolated synthetic data
+        shell: pwsh
+        run: |
+          dotnet restore tools/SamsungSwitchWatch.ManualCapture/SamsungSwitchWatch.ManualCapture.csproj --locked-mode
+          if ($LASTEXITCODE -ne 0) { throw 'Locked restore failed' }
+          dotnet build tools/SamsungSwitchWatch.ManualCapture/SamsungSwitchWatch.ManualCapture.csproj -c Release --no-restore
+          if ($LASTEXITCODE -ne 0) { throw 'Capture build failed' }
+          dotnet run --project tools/SamsungSwitchWatch.ManualCapture/SamsungSwitchWatch.ManualCapture.csproj -c Release --no-build --no-restore -- artifacts/manual-images
+          if ($LASTEXITCODE -ne 0) { throw 'WPF capture failed' }
+          $images = Get-ChildItem artifacts/manual-images/*.png | Sort-Object Name | ForEach-Object {
+            @{ file = $_.Name; sha256 = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower() }
+          }
+          @{
+            source_sha = $env:GITHUB_SHA
+            run_url = "https://github.com/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
+            product_version = '0.13.0-poc'
+            tool = 'tools/SamsungSwitchWatch.ManualCapture/Program.cs'
+            os = [System.Runtime.InteropServices.RuntimeInformation]::OSDescription
+            synthetic = $true
+            device_connections = $false
+            screenshots = @($images)
+          } | ConvertTo-Json -Depth 6 | Set-Content artifacts/manual-images/capture-manifest.json -Encoding utf8
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: wpf-documentation-${{ github.sha }}
+          path: artifacts/manual-images/
+          if-no-files-found: error
+          retention-days: 14
