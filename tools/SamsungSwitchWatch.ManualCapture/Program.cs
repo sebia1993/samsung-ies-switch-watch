@@ -467,13 +467,17 @@ internal static class Program
                 }
 
                 RefreshLayout(connectionFailureLifetime.Window);
-                ScrollAllToTop(connectionFailureLifetime.Window);
+                foreach (var scroll in FindVisualChildren<ScrollViewer>(connectionFailureLifetime.Window))
+                {
+                    scroll.ScrollToBottom();
+                }
+                RefreshLayout(connectionFailureLifetime.Window);
                 Capture(
                     connectionFailureLifetime.Window,
                     Path.Combine(
                         outputDirectory,
                         "02-agent-connection-failed.png"),
-                    "Agent TCP 18443 연결 거부 단계와 선택 가능한 SWD1 지원 코드를 함께 보여 주고 익명 진단 저장을 유지하는 Viewer 연결 실패 화면");
+                    "연결 창을 아래로 스크롤하여 TCP 18443 거부 단계와 SWD1 지원 코드, 익명 진단 저장을 보여 주는 합성 Viewer 실패 화면");
                 Console.WriteLine(
                     $"Viewer failure support code: {viewerSupportCode}");
             }
@@ -1090,34 +1094,16 @@ internal static class Program
 
     private static void Capture(Window window, string path, string altText)
     {
-        // Render the real WPF content at the requested documentation size. Hosted
-        // runners have a small desktop work area; capturing the native window would
-        // clip the connection stages and add unused chrome/transparent margins.
-        var width = Math.Max(1, (int)Math.Ceiling(window.Width));
-        var height = Math.Max(1, (int)Math.Ceiling(window is ConnectionSettingsWindow ? 1050 : window.Height));
-        var content = (FrameworkElement)window.Content;
+        var width = Math.Max(1, (int)Math.Ceiling(window.ActualWidth));
+        var height = Math.Max(1, (int)Math.Ceiling(window.ActualHeight));
         var bitmap = new RenderTargetBitmap(width, height, 96, 96, PixelFormats.Pbgra32);
-        window.Content = null;
-        try
+        var background = new DrawingVisual();
+        using (var drawing = background.RenderOpen())
         {
-            // Detach only for the render so the native desktop's size constraint
-            // cannot re-arrange this real UI root during UpdateLayout.
-            content.Measure(new Size(width, height));
-            content.Arrange(new Rect(0, 0, width, height));
-            content.UpdateLayout();
-            var background = new DrawingVisual();
-            using (var drawing = background.RenderOpen())
-            {
-                drawing.DrawRectangle(window.Background ?? Brushes.White, null, new Rect(0, 0, width, height));
-            }
-            bitmap.Render(background);
-            bitmap.Render(content);
+            drawing.DrawRectangle(window.Background ?? Brushes.White, null, new Rect(0, 0, width, height));
         }
-        finally
-        {
-            window.Content = content;
-            RefreshLayout(window);
-        }
+        bitmap.Render(background);
+        bitmap.Render(window);
 
         var metadata = new BitmapMetadata("png");
         metadata.SetQuery("/tEXt/Description", altText);
