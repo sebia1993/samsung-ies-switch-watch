@@ -1096,11 +1096,28 @@ internal static class Program
         var width = Math.Max(1, (int)Math.Ceiling(window.Width));
         var height = Math.Max(1, (int)Math.Ceiling(window is ConnectionSettingsWindow ? 1050 : window.Height));
         var content = (FrameworkElement)window.Content;
-        content.Measure(new Size(width, height));
-        content.Arrange(new Rect(0, 0, width, height));
-        content.UpdateLayout();
         var bitmap = new RenderTargetBitmap(width, height, 96, 96, PixelFormats.Pbgra32);
-        bitmap.Render(content);
+        window.Content = null;
+        try
+        {
+            // Detach only for the render so the native desktop's size constraint
+            // cannot re-arrange this real UI root during UpdateLayout.
+            content.Measure(new Size(width, height));
+            content.Arrange(new Rect(0, 0, width, height));
+            content.UpdateLayout();
+            var background = new DrawingVisual();
+            using (var drawing = background.RenderOpen())
+            {
+                drawing.DrawRectangle(window.Background ?? Brushes.White, null, new Rect(0, 0, width, height));
+            }
+            bitmap.Render(background);
+            bitmap.Render(content);
+        }
+        finally
+        {
+            window.Content = content;
+            RefreshLayout(window);
+        }
 
         var metadata = new BitmapMetadata("png");
         metadata.SetQuery("/tEXt/Description", altText);
