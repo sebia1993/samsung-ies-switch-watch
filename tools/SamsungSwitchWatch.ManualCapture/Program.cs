@@ -1090,10 +1090,17 @@ internal static class Program
 
     private static void Capture(Window window, string path, string altText)
     {
-        var width = Math.Max(1, (int)Math.Ceiling(window.ActualWidth));
-        var height = Math.Max(1, (int)Math.Ceiling(window.ActualHeight));
+        // Render the real WPF content at the requested documentation size. Hosted
+        // runners have a small desktop work area; capturing the native window would
+        // clip the connection stages and add unused chrome/transparent margins.
+        var width = Math.Max(1, (int)Math.Ceiling(window.Width));
+        var height = Math.Max(1, (int)Math.Ceiling(window is ConnectionSettingsWindow ? 1050 : window.Height));
+        var content = (FrameworkElement)window.Content;
+        content.Measure(new Size(width, height));
+        content.Arrange(new Rect(0, 0, width, height));
+        content.UpdateLayout();
         var bitmap = new RenderTargetBitmap(width, height, 96, 96, PixelFormats.Pbgra32);
-        bitmap.Render(window);
+        bitmap.Render(content);
 
         var metadata = new BitmapMetadata("png");
         metadata.SetQuery("/tEXt/Description", altText);
