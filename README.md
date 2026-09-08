@@ -64,7 +64,7 @@ flowchart LR
 
 ## 주요 화면
 
-화면은 실제 WPF UI를 문서용 IP와 합성 데이터로 렌더링한 예시입니다.
+화면은 **0.13.0-poc 실제 WPF UI**를 Windows runner에서 문서용 IP·합성 데이터로 렌더링한 예시입니다. [설치 → 페어링 → 상태/명령 → 실패 복구 화면](docs/USAGE_SCREENSHOTS_KO.md)에서 조작 순서, 읽을 값, 캡처 SHA와 검증 한계를 확인하세요.
 
 ![Samsung iES Switch Watch 대시보드](docs/images/dashboard.png)
 

@@ -698,7 +698,16 @@ def build_manual(output_path: Path, images_dir: Path):
         ],
         [1600, 3900, 3860],
     )
-    add_unnumbered_heading(doc, "3분 빠른 시작", 2)
+    add_callout(
+        doc,
+        "화면의 출처와 검증 범위",
+        "이 설명서의 모든 그림은 0.13.0-poc 실제 WPF 창을 Windows runner에서 렌더링한 합성 예시입니다. "
+        "문서용 주소·계정·응답과 fake client/probe를 사용했으며 실제 스위치 접속이나 서비스 설치를 수행하지 않았습니다. "
+        "페어링 코드는 공개 fixture를 마스킹했습니다. UI 캡처 source SHA, 실행 URL과 PNG SHA-256은 "
+        "docs/manual/images/capture-manifest.json에서 확인할 수 있습니다. 실제 설치·원격 연결·펌웨어 호환성은 별도 검증해야 합니다.",
+        "info",
+    )
+    add_unnumbered_heading(doc, "3분 빠른 시작", 2, page_break_before=True)
     add_steps(
         doc,
         [
@@ -745,7 +754,7 @@ Viewer PC                 Agent PC                    Samsung Switch
         ["구간", "고정 통신", "운영 제한"],
         [
             ("Viewer → Agent", "HTTPS/TCP 18443", "10/8, 172.16/12, 192.168/16 사설 주소에서 접근"),
-            ("Agent → Switch", "Telnet/TCP 23", "같은 RFC1918 사설 주소의 장비만 허용"),
+            ("Agent → Switch", "Telnet/TCP 23", "설정된 허용 관리망 CIDR 안의 RFC1918 장비만 허용"),
         ],
         [1900, 2100, 5360],
     )
@@ -871,7 +880,7 @@ Viewer PC                 Agent PC                    Samsung Switch
 서비스 계정          : NT SERVICE\\SamsungSwitchWatchAgent
 통신 포트            : HTTPS/TCP 18443
 Viewer 허용 범위      : 10/8, 172.16/12, 192.168/16
-장비 허용 범위        : 10/8, 172.16/12, 192.168/16 · Telnet/23
+장비 허용 범위        : Setup에서 승인한 RFC1918 CIDR · Telnet/23
         """,
     )
     add_callout(
@@ -1148,11 +1157,27 @@ Viewer 허용 범위      : 10/8, 172.16/12, 192.168/16
         heading_num_id,
         page_break_before=True,
     )
+    add_image(
+        doc,
+        images_dir / "02-agent-connection.png",
+        width=4.5,
+        title="Agent 페어링 연결 화면",
+        alt_text="마스킹된 합성 페어링 코드, SPKI 고정과 API v5 전용 연결 안내",
+        caption="그림 5. 페어링과 SPKI 고정을 안내하는 현재 연결 창",
+    )
     add_unnumbered_heading(
         doc,
         "연결 실패 화면과 확인 순서",
         level=3,
-        page_break_before=False,
+        page_break_before=True,
+    )
+    add_image(
+        doc,
+        images_dir / "02-agent-connection-failed.png",
+        width=4.0,
+        title="Agent 연결 실패 단계",
+        alt_text="아래로 스크롤한 실제 연결 창에서 TCP 18443 실패와 이후 미수행 단계를 표시",
+        caption="그림 6. TCP 실패와 이후 미수행 단계의 합성 재현",
     )
     add_bullets(
         doc,
@@ -1239,7 +1264,7 @@ Viewer 허용 범위      : 10/8, 172.16/12, 192.168/16
         [
             ("장비명", "예", "운영자가 구분하기 쉬운 표시 이름"),
             ("모델 (자동)", "자동", "로그인 확인에서 IES4224GP, IES4028XP, IES4226XP 중 판별"),
-            ("장비 IPv4", "예", "10/8, 172.16/12 또는 192.168/16의 스위치 관리 IPv4"),
+            ("장비 IPv4", "예", "Agent Setup에서 허용한 CIDR 안의 RFC1918 스위치 관리 IPv4"),
             ("계정 ID", "예", "Telnet 로그인 계정"),
             ("로그인 PW", "예", "현재 Windows 사용자 DPAPI로 보호"),
             ("enable PW", "아니요", "로그인 후 프롬프트가 >인 장비에서만 사용"),
@@ -1473,7 +1498,7 @@ Viewer 허용 범위      : 10/8, 172.16/12, 192.168/16
             "Viewer는 authority별 Agent SPKI SHA-256 pin과 DPAPI CurrentUser로 보호한 bearer token을 "
             "저장합니다. 둘 중 하나라도 없거나 일치하지 않으면 자동 우회 없이 연결을 차단합니다.",
             "제품 방화벽 규칙은 RFC1918 사설 Viewer 주소를 허용하고 Agent 업무 API v5는 bearer를 추가로 요구합니다. "
-            "Agent는 RFC1918 사설 장비의 Telnet/23만 사용합니다.",
+            "Agent는 설정된 허용 관리망 CIDR 안의 RFC1918 사설 장비에만 Telnet/23을 사용합니다.",
         ],
         bullet_num_id,
     )
@@ -1539,7 +1564,7 @@ Viewer 허용 범위      : 10/8, 172.16/12, 192.168/16
             ("VIEWER_SETUP_ROLLBACK_FAILED", "반복 설치와 폴더 수동 삭제를 중지하고 남은 Setup journal·증거를 Windows 관리자에게 전달"),
             ("Viewer format 3 복구 필요", "v0.13.0-poc 또는 더 최신 Viewer Setup으로 이전 상태 복구 완료 → 설치/업데이트 별도 실행 → 그 뒤에만 downgrade"),
             ("SWS1 지원 코드", "Viewer Setup 실패 전용 코드만 전달 → 경로·사용자·해시·transaction ID·자격 증명·장비 정보는 포함되지 않음"),
-            ("TARGET_NOT_ALLOWED", "장비 IPv4가 10/8, 172.16/12 또는 192.168/16인지 확인"),
+            ("TARGET_NOT_ALLOWED", "장비 IPv4가 RFC1918이고 Agent Setup의 허용 대상 CIDR에 포함되는지 확인"),
             ("TCP_TIMEOUT", "Agent PC에서 장비 TCP/23 경로, ACL, 장비 Telnet 상태 확인"),
             ("AUTH_FAILED", "감시를 즉시 차단함. ID/PW와 login local 적용 여부 확인"),
             ("ENABLE_FAILED", "enable 필요 여부와 enable PW, 로그인 직후 프롬프트 확인"),
@@ -1701,14 +1726,14 @@ Viewer 허용 범위      : 10/8, 172.16/12, 192.168/16
         "업데이트·종료·운영 체크",
         1,
         heading_num_id,
-        page_break_before=False,
+        page_break_before=True,
     )
     add_heading(doc, "오프라인 수동 업데이트", 2, heading_num_id)
     add_steps(
         doc,
         [
             "새 Agent/Viewer ZIP을 승인된 경로로 전달하고 각각 임시 폴더에 압축 해제합니다.",
-            "Agent PC에서 SamsungSwitchWatch.Agent.Setup.exe를 실행합니다. 입력 없이 설치/업데이트를 진행합니다.",
+            "Agent PC에서 SamsungSwitchWatch.Agent.Setup.exe를 실행합니다. 승인된 스위치 관리망 CIDR을 확인한 뒤 설치/업데이트하고 새 SSW1 코드로 Viewer를 페어링합니다.",
             "Viewer PC에서 새 Viewer 패키지의 SamsungSwitchWatch.Viewer.Setup.exe로 설치/업데이트를 실행합니다.",
             "Agent 연결, 장비 목록, 로그인 확인, 수집 진단, show 명령과 주기 감시를 순서대로 확인합니다.",
         ],
